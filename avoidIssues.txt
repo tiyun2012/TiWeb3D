@@ -1,0 +1,131 @@
+# Avoid Issue Cache & Best Practices
+# Use this file to context-load the AI before refactoring to prevent regressions.
+
+---
+
+### 1. GENERAL / ARCHITECTURE
+- **PRESERVE FEATURES:** Never remove existing functionality during optimization. If replacing a loop or system, ensure the new implementation covers all previous use cases (e.g., selection highlighting, grid toggling).
+- **SOURCE OF TRUTH:** The `engineInstance` (ECS + SceneGraph) is the source of truth. React components (`SceneView`, `Inspector`) should sync *from* the engine, not drive it directly.
+- **TYPESCRIPT STRICTNESS:** Respect strict type boundaries. Do not pass `Float32Array` where `ArrayBuffer` is expected without proper casting or union types in helper signatures.
+
+---
+
+### 2. NODE GRAPH (`components/NodeGraph.tsx`)
+- **AVOID RELATIVE UNITS:** Do NOT use CSS classes (e.g., `h-9`, `p-2`, `rem`) for node headers or ports.
+  - **Reason:** DOM element sizes must exactly match the `GraphMath` constants used to draw SVG wires.
+  - **Solution:** Use explicit pixel values in `style={{ height: HEADER_HEIGHT, ... }}`.
+- **PERFORMANCE:** Avoid `array.find()` in render loops or drag handlers. Use `Map<string, Node>` for O(1) lookups.
+- **ACCESSIBILITY:** All inputs (`<input>`) and interactive elements must have `aria-label` or `title`. Missing these causes Severity 8 build failures.
+- **DEBOUNCING:** Debounce the `compileGraph` call. Do not run heavy graph logic on every `mousemove` event.
+
+---
+
+### 3. RENDERER (`services/renderers/WebGLRenderer.ts`)
+- **VIEWPORT SYNC:** Always check and set `gl.viewport` at the start of the `render()` frame. Do not rely solely on a `resize` event listener, as it may miss the initial layout pass.
+- **BUFFER BINDING:** Explicitly `bindBuffer` immediately before calling `vertexAttribPointer`. Do not assume the buffer is still bound from previous operations.
+- **TEXTURE SAFETY:** When using `sampler2DArray` (WebGL2), you MUST explicitly set `TEXTURE_WRAP_S` and `TEXTURE_WRAP_T`. Failing to do so causes black textures on some drivers.
+- **CULLING RISKS:** Be cautious with `gl.enable(gl.CULL_FACE)`. If geometry disappears, disable culling first to rule out winding order mismatches.
+- **BUFFER ORPHANING:** When updating instance data, call `gl.bufferData(..., gl.DYNAMIC_DRAW)` to orphan the buffer before `gl.bufferSubData`. This prevents GPU pipeline stalls.
+
+---
+
+### 4. SCENE VIEW & CAMERA (`components/SceneView.tsx`)
+- **3D PANNING:** Do not use 2D screen X/Y offsets for camera panning.
+  - **Solution:** Calculate the camera's local "Right" and "Up" vectors and apply movement along those vectors to ensure panning follows the camera's orientation.
+- **LINTER COMPLIANCE:** Ensure all toolbar buttons (Icons) have `title` and `aria-label` attributes.
+
+---
+
+### 5. SCENE GRAPH (`services/SceneGraph.ts`)
+- **ITERATION OVER RECURSION:** Avoid recursive functions for `updateWorldMatrix` or `setDirty`. Use a stack-based `while` loop to prevent stack overflow crashes in deep hierarchies (100+ entities).
+
+---
+
+### 6. COMMENT & LOST FEATURES
+- **PRESERVATION:** Keep all comments during refactoring to aid understanding. Ensure no features are lost when optimizing code.
+
+---
+
+### 7. UI & COMPONENTS
+- **ACCESSIBILITY (BLOCKING):** Every interactive element (`button`, `input`, `select`, `range`) MUST have a `title` and `aria-label`. The linter treats missing labels as Severity 8 (Build Fail).
+- **INLINE STYLES (WARNINGS):** Ignore "no-inline-styles" warnings (Severity 4) for dynamic components like `DraggableWindow`, `NodeGraph`, and `Gizmo`. These require runtime calculation of coordinates and cannot be moved to static CSS.
+- **ICONS:** Verify icon names against the `lucide-react` library. Do not use non-existent names (e.g., use `Cuboid` instead of `Scene`).
+
+---
+
+### 8. BUILD & CONFIGURATION
+- **STRICT MODE:** `tsconfig.json` must have `"strict": true` and `"forceConsistentCasingInFileNames": true` to pass validation.
+- **TYPE DEFINITIONS:** Ensure `@types/react` and `@types/react-dom` are installed. Do NOT restrict `"types": ["node"]` in `tsconfig.json` as it breaks React type resolution.
+- **CSS COMPATIBILITY:** Always include vendor prefixes for newer CSS features (e.g., `-webkit-backdrop-filter` alongside `backdrop-filter`) to support Safari/iOS.
+
+---
+
+### 9. ASSET VIEWPORTS & CODE INHERITANCE CONSISTENCY
+- **INHERIT FROM `AssetViewport3D`:** All 3D asset editors (StaticMeshEditor, SkeletonEditor, MaterialEditor, etc.) MUST inherit from `editor/components/AssetViewport3D.tsx`. Never duplicate WebGL loop, HiDPI canvas handling, camera navigation math (orbit/pan/zoom), or ground grid buffers.
+- **ALWAYS UPDATE DOCUMENTATION:** Whenever creating new components, changing architectural flows, or refactoring engine/editor layers, immediately update the relevant documentation in `/docs/` and summarize design decisions.
+- **CONSISTENCY FLOW:** Keep tool shortcuts (`Q`, `W`, `E`, `R`, `G`, `F`), camera navigation (Alt+LMB/MMB/RMB), and UI styling consistent with the Scene View and existing asset editors.
+
+---
+
+### 10. RUNTIME SAFETY & DEPENDENCY RESOLUTION
+- **NO IMPORT MAP CDN CONFLICTS:** Do not place `<script type="importmap">` tags in `index.html` pointing to external CDNs with mismatched major package versions (e.g. React 19 / rc-dock 4.0 alpha vs local React 18). In Vite applications, all dependency resolution is handled locally.
+- **DEFENSIVE LOOKUP GUARDS:** Always guard Map lookups and ECS indices (`engineInstance?.ecs?.idToIndex?.get(...)`, `entityMap?.get?.(...)`, `perObjectModes?.get?.(...)`). Never assume instances or maps are fully populated during initial render or before asynchronous subscriptions fire.
+- **SoA STORAGE FIELD CONVENTIONS:** In `ComponentStorage`, always reference transform arrays by their actual field names (`posX`, `posY`, `posZ`, `rotX`, `rotY`, `rotZ`, `scaleX`, `scaleY`, `scaleZ`), never assumed aliases like `positionX` or `rotationX`.
+- **ASSET MUTATIONS VIA `assetManager.updateAsset`:** Maintain the generic `updateAsset(id: string, partial: Partial<Asset>)` contract on `AssetManagerService` with eventBus `ASSET_UPDATED` notification so all asset viewports and hierarchy panels can mutate asset fields consistently without missing method exceptions.
+
+---
+
+### 11. HIERARCHY TREE ELEMENTS & SHARED INLINE RENAMING API
+- **INHERIT FROM `HierarchyTreeItem`:** Every UI element in hierarchical trees (Scene Hierarchy, Skeleton Bone Hierarchy, Asset trees) representing specific object types MUST use or inherit from `editor/components/HierarchyTreeItem.tsx`. Never re-implement bespoke indentation, tree expand/collapse chevrons, selection styling, or inline text inputs from scratch.
+- **SHARED RENAMING HOOK (`useInlineRename`):** Use the shared `useInlineRename()` hook (`editor/hooks/useInlineRename.ts`) to manage inline renaming state across tree views and asset lists. This ensures consistent double-click rename, F2 shortcut, Enter-to-commit, Escape-to-cancel, and blur handling while preventing redundant state creation and optimizing memory.
+- **ISOLATE KEYBOARD EVENTS ON EDIT:** Always call `e.stopPropagation()` on input keydown events during inline renaming so global viewport hotkeys (such as Q, W, E, R, F, Space, Delete) are not accidentally triggered while typing names.
+- **ACCESSIBLE RENAMING INPUTS:** Ensure rename input fields always include descriptive `title="Rename item"` and `aria-label="Rename item"` attributes to comply with strict accessibility requirements.
+
+---
+
+### 12. SKELETON DISPLAY & INSPECTOR REUSABILITY
+- **SELECTION SYSTEM CONTRACTS:** `SelectionSystem` maintains `selectedIndices: Set<number>` indexing the ECS store. To query whether an entity is selected, look up its ECS index with `ecs.idToIndex.get(entityId)` and check `selectedIndices.has(idx)`, or use `selectionSystem.isSelected(entityId)` / `selectionSystem.selectedEntities.has(entityId)`. Never call `.has()` on non-existent properties.
+- **CONSISTENT SKELETON DRAWING PIPELINE (SPHERE-ONLY JOINTS):** Skeleton visualization (drawing joints, bones, and RGB coordinate axes) must remain mathematically and optically consistent between the global workspace (`SkeletonTool.ts`), asset-specific editors (`SkeletonEditor.tsx`), and animation playback (`AnimationSystem.ts`). All joints MUST be drawn as wireframe spheres (never diamonds or arbitrary dot sprites) across all contexts.
+- **SCENE BONE TRANSFORM SYNCHRONIZATION:** Bone entities spawned into the scene graph (`engine.ts`) must initialize their local position, rotation, and scale by decomposing `bone.bindPose`. Furthermore, `ASSET_UPDATED` on a skeleton asset triggers `syncSkeletonEntities` so scene instances remain synchronized with skeleton editor additions, deletions, and transform updates.
+- **MATCHING SCALING & COLOR PALETTES:** Skeletons in the Scene View (`SkeletonTool.ts`) and Skeleton Editor (`SkeletonEditor.tsx`) share identical joint radius formulas (`baseRadius * (jointRadius / 10) * rootScaleFactor`), bone octahedrons (soft off-white), and coordinate axes (only drawn when `drawAxes` is enabled, scaled with `(isSelected ? 0.22 : 0.16) * radiusScale * rootScaleFactor`).
+- **CENTRALIZED GEOMETRY GENERATION (`DebugRenderer`):** Shared pure geometry generators (`generateWireSphereLines`, `generateBoneOctahedronLines`, `generateAxisLines`) and rendering methods (`drawWireSphere`, `drawAxis`, `drawBoneOctahedron`) are centralized in `engine/renderers/DebugRenderer.ts`. Never write duplicate private line-generation algorithms in tools or asset viewports.
+- **USE REUSABLE `SkeletonDisplayOptions`:** Always use `editor/components/inspector/SkeletonDisplayOptions.tsx` to render skeleton visualization controls (`enabled`, `drawJoints`, `drawBones`, `drawAxes`, `jointRadius`, `rootScale`). Never hardcode duplicate checkbox and slider sets across `InspectorPanel`, `ToolOptionsPanel`, or asset viewports.
+- **DECOUPLED STATE BINDING:** `SkeletonDisplayOptions` accepts decoupled `options: SkeletonVizSettings` and `onChange: (opts: SkeletonVizSettings) => void` props, allowing it to bind to global `EditorContext` (for global tools and entity inspection) or component-local state with equal fidelity.
+- **INSPECTOR AS SINGLE POINT OF CONTROL:** When editing specific assets in dedicated viewports (such as `SkeletonEditor`), provide a dedicated right-side Inspector panel containing `JointInspector` (when a joint is selected) and `SkeletonAssetInspector` (when inspecting the skeleton asset), while embedding `SkeletonDisplayOptions` for unified visualization management.
+- **ACCESSIBLE FORM CONTROLS:** All checkboxes, range sliders, numeric inputs, and buttons in skeleton and inspector components must declare descriptive `title` and `aria-label` attributes to maintain accessibility standards.
+
+---
+
+### 13. UNIFIED JOINT & BONE SELECTION AND HIERARCHY TRIGGERING
+- **UNIFIED JOINT & BONE OBJECT BEHAVIOR:** A bone connecting parent joint $J_1$ to child joint $J_2$ is conceptually part of the parent joint $J_1$. Clicking or raycasting the bone segment in 3D (both in Scene View via `SelectionSystem.ts` ray-segment intersection and in Skeleton Editor via 2D segment projection) selects $J_1$.
+- **COHESIVE HIGHLIGHTING:** When joint $J_1$ is selected, both $J_1$'s joint sphere AND its outgoing bone octahedron(s) are highlighted with the identical golden amber accent (`#fbbf24` / `rgba(0.98, 0.65, 0.12, 1.0)`). They appear and interact as one continuous entity.
+- **ZERO-LATENCY HIERARCHY SELECTION TRIGGER:** In `HierarchyTreeItem.tsx` and `HierarchyPanel.tsx`, selection is bound to `onPointerDown` (debounced against subsequent `onClick`) and `onDragStart`. Because native HTML5 `draggable={true}` can absorb clicks upon cursor movement, binding `onPointerDown` guarantees 100% trigger reliability without missing clicks or drag activations.
+- **ISOLATE SELECTION EVENT PROPAGATION:** In `HierarchyTreeItem.tsx`, `handleSelectTrigger` must always invoke `e.stopPropagation()`. Furthermore, all hierarchy containers with background deselect handlers (such as `SkeletonHierarchy.tsx`) must strictly check `if (e.target === e.currentTarget)` before deselecting; otherwise, releasing a mouse press (`click`) over a child item will bubble to the container and immediately deselect the clicked item.
+- **SYNCHRONOUS SELECTION REACTION:** In `SkeletonEditor.tsx` and `engine.ts`, `handleSelectBone` and `engine.setSelected` immediately update refs, sync transforms (`engine.syncTransforms(false)`), and call `engine.notifyUI()` synchronously so Gizmo, Inspector, and Viewport respond on the exact frame selection occurs without reactive lag.
+
+---
+
+### 14. GIZMO INTERACTION & TRANSFORM API IN ASSET VIEWPORTS
+- **PASS LIVE INSTANCES TO `AssetViewport3D` VIA STATE:** `AssetViewport3D` requires `engine` and `gizmoSystem` props to bind renderer facades and run the gizmo render/interaction loops. Never pass stale or uninitialized `ref.current` values that do not trigger re-renders upon creation in `useEffect`. Store engine and gizmo system in local `useState` (`[previewEngine, setPreviewEngine]`, `[gizmoSystem, setGizmoSystem]`) so `AssetViewport3D` safely receives live instances on mount.
+- **ATTACH GIZMO RENDERER FACADE DYNAMICALLY:** In `AssetViewport3D`, track `gizmoRendererRef`. When `engine` updates via prop changes, immediately wire `engine.setRenderer({ renderGizmos: (...) })`. Never rely solely on the initial WebGL mount effect, which executes before child asset editors create their engine instances.
+- **KEEP UI TRANSFORMS LIVE DURING GIZMO DRAG:** In asset editors (`SkeletonEditor`, `StaticMeshEditor`), ensure `onNotifyUI` triggers a reactive revision tick (`setTransformRevision(r => r + 1)`). Pass this revision to inspectors (`JointInspector`) so numeric input fields (X, Y, Z coordinates, rotation, scale) reflect real-time gizmo translation without waiting for mouse release or manual reload.
+- **ALWAYS MARK SCENE GRAPH DIRTY ON TRANSFORM APPLIES:** When modifying ECS component store coordinates (`store.setPosition`, `store.setRotation`, `store.setScale`), always invoke `sceneGraph.setDirty(entityId)` followed by `sceneGraph.update()`. In `AssetViewportEngine`, use `sceneGraph.setDirty` (never nonexistent `markDirty`) and pass 4 numeric arguments `(idx, x, y, z)` (never an object `{x, y, z}`).
+- **UNIFIED ENGINE API COMMANDS (`EngineAPI`):** `EngineAPI.commands.transform` (`setPosition`, `setRotation`, `setScale`, `move`, `setWorldPosition`) and `EngineAPI.commands.gizmo` (`setTool`) provide a stable, decoupled interface for moving and transforming objects across viewports and UI panels without direct coupling to engine singletons.
+
+---
+
+### 15. ECS TRANSFORM PROXY DIRTY FLAG & MULTI-ENGINE INSPECTOR CONTROL
+- **SOA TRANSFORM DIRTY FLAG PROPAGATION:** Whenever modifying entity transform coordinates through proxy getters/setters (`transformProxy.position`, `rotation`, `scale`) or individual axis coordinates (`.x`, `.y`, `.z`), always set `store.transformDirty[index] = 1` in addition to calling `sceneGraph.setDirty(id)`. Without setting `transformDirty`, `ComponentStorage.updateWorldMatrix` skips matrix recalculation, causing 3D objects to appear locked/frozen during numeric inspector edits or gizmo updates.
+- **SYNC TRANSFORMS ON TRANSFORM COMPONENT UPDATE:** In inspector panels (`InspectorPanel.tsx`), when updating the `TRANSFORM` component, invoke `engineInstance.syncTransforms(true)` rather than just `notifyUI()`. This ensures the scene graph matrix recalculates before the UI re-renders.
+- **REUSABLE INPUT CONTROLS WITH LOCAL STRING DRAFTING:** Numeric inputs like `DraggableNumber` and `Vector3Input` (`editor/components/ui/InputControls.tsx`) must manage local string drafts on focus to permit typing minus signs, decimal points, and multi-digit values without race conditions against high-frequency engine notify events. Commit changes on blur and pointer release.
+
+---
+
+### 16. ZERO-LATENCY DEPTH-AWARE JOINT & BONE DETECTION
+- **SYNCHRONOUS HIT-TESTING:** Never defer hover or click detection exclusively to the `requestAnimationFrame` render loop (`handleRender`). When the mouse moves (`onMouseMove`), run `findBoneAtScreen` immediately to update hover states and tooltips synchronously for 0ms lag. When the mouse clicks (`onMouseDown`), execute `findBoneAtScreen` synchronously at the exact click coordinates instead of reading a stale ref from the previous frame.
+- **JOINT SPHERE HIT PRIORITY OVER BONE SEGMENTS:** Joint spheres are primary interactive handles. If the cursor is within the joint hit threshold (22px), a joint MUST be selected. Bone segment line tests must NEVER override or replace a direct joint hit.
+- **3D DEPTH / OCCLUSION SORTING:** In 3D viewports, multiple joints or bones can project to nearby screen coordinates (e.g., overlapping limbs or joints viewed in profile). Always sort candidates by camera view depth (`pw`), prioritizing elements visually closest to the camera (smaller `pw`). Use screen-space proximity only as a tie-breaker when depth differences are negligible (<= 0.05).
+- **GIZMO INTERACTION SEPARATION IN SELECT MODE:** In asset viewports like `SkeletonEditor`, ensure `gizmoSystem.renderInSelectTool = false`. When the `SELECT` tool (Q) is active, gizmos must neither render nor intercept mouse events. When transform tools (`MOVE`, `ROTATE`, `SCALE`) are active, clicking another joint outside of active axis/plane handles must immediately transfer selection to that joint.
+- **CLEAN AXES STATE ON EARLY RETURNS:** In `GizmoSystem.update`, always reset `this.hoverAxis = null` and `this.activeAxis = null` on early returns (e.g., when selection is empty or entity is invalid) to prevent ghost active axes from blocking viewport clicks.
+
+
