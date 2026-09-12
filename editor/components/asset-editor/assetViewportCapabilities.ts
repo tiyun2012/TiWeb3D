@@ -86,7 +86,7 @@ const CAPABILITY_TABLE: Partial<Record<AssetType, AssetViewportCapabilities>> = 
   },
   CAMERA_PRESET: {
     assetType: 'CAMERA_PRESET',
-    actions: new Set(['view.grid', 'view.focus', 'view.autoRotate', 'panel.inspector']),
+    actions: new Set(['view.grid', 'view.focus', 'panel.inspector']),
     tools: [],
     meshModes: [],
     hasHierarchy: false,

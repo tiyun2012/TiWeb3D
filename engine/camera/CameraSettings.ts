@@ -1,4 +1,4 @@
-import { CameraSettings } from '@/types';
+import type { CameraComponentData, CameraSettings } from '@/types';
 
 export const createDefaultCameraSettings = (): CameraSettings => ({
   projection: 'PERSPECTIVE',
@@ -13,6 +13,29 @@ export const createDefaultCameraSettings = (): CameraSettings => ({
   postProcessProfileId: '',
 });
 
-export const cloneCameraSettings = (settings: CameraSettings): CameraSettings => ({
-  ...settings,
+export const createDefaultCameraComponentData = (): CameraComponentData => ({
+  ...createDefaultCameraSettings(),
+  configSource: 'LOCAL',
+  controlMode: 'MANUAL',
+  presetId: '',
 });
+
+export const cloneCameraSettings = (settings: CameraSettings): CameraSettings => ({
+  projection: settings.projection,
+  fov: settings.fov,
+  orthoSize: settings.orthoSize,
+  near: settings.near,
+  far: settings.far,
+  clearMode: settings.clearMode,
+  clearColor: settings.clearColor,
+  renderLayerMask: settings.renderLayerMask,
+  postProcessEnabled: settings.postProcessEnabled,
+  postProcessProfileId: settings.postProcessProfileId ?? '',
+});
+
+/**
+ * Extract only serializable camera settings from a Camera component/proxy.
+ * Runtime/cinematic driver state intentionally lives outside this object.
+ */
+export const cameraSettingsFromComponent = (camera: CameraComponentData): CameraSettings =>
+  cloneCameraSettings(camera);

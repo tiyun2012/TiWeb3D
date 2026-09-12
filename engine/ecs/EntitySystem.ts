@@ -137,6 +137,8 @@ export class SoAEntitySystem {
             this.store.cameraPostProcessEnabled[idx] = 1;
             this.store.cameraPostProcessProfileId[idx] = '';
             this.store.cameraPresetId[idx] = '';
+            this.store.cameraConfigSource[idx] = 0;
+            this.store.cameraControlMode[idx] = 0;
         } else if (type === ComponentType.PARTICLE_SYSTEM) {
             mask = COMPONENT_MASKS.PARTICLE_SYSTEM;
             // Defaults
@@ -338,7 +340,16 @@ export class SoAEntitySystem {
             get postProcessProfileId() { return store.cameraPostProcessProfileId[index] || ''; },
             set postProcessProfileId(v: string) { store.cameraPostProcessProfileId[index] = v || ''; },
             get presetId() { return store.cameraPresetId[index] || ''; },
-            set presetId(v: string) { store.cameraPresetId[index] = v || ''; }
+            set presetId(v: string) { store.cameraPresetId[index] = v || ''; },
+            get configSource() { return store.cameraConfigSource[index] === 1 ? 'PRESET' : 'LOCAL'; },
+            set configSource(v: string) { store.cameraConfigSource[index] = v === 'PRESET' ? 1 : 0; },
+            get controlMode() {
+                const mode = store.cameraControlMode[index];
+                return mode === 1 ? 'RUNTIME' : mode === 2 ? 'CINEMATIC' : 'MANUAL';
+            },
+            set controlMode(v: string) {
+                store.cameraControlMode[index] = v === 'RUNTIME' ? 1 : v === 'CINEMATIC' ? 2 : 0;
+            }
         };
 
         const particleProxy = {

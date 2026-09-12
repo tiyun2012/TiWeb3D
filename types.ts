@@ -304,6 +304,8 @@ export interface SnapSettings {
 
 export type CameraProjection = 'PERSPECTIVE' | 'ORTHOGRAPHIC';
 export type CameraClearMode = 'COLOR' | 'SKY' | 'NONE';
+export type CameraConfigSource = 'LOCAL' | 'PRESET';
+export type CameraControlMode = 'MANUAL' | 'RUNTIME' | 'CINEMATIC';
 
 export interface CameraSettings {
     projection: CameraProjection;
@@ -319,6 +321,20 @@ export interface CameraSettings {
 }
 
 export interface CameraComponentData extends CameraSettings {
+    /** Where the serialized/base camera settings come from. */
+    configSource: CameraConfigSource;
+    /** Who may drive temporary camera overrides at runtime. */
+    controlMode: CameraControlMode;
+    /** Reusable base configuration used when configSource === 'PRESET'. */
+    presetId?: string;
+}
+
+export interface ResolvedCameraState {
+    settings: CameraSettings;
+    configSource: CameraConfigSource;
+    controlMode: CameraControlMode;
+    baseSource: 'LOCAL' | 'PRESET' | 'LOCAL_FALLBACK';
+    overrideSource: 'NONE' | 'RUNTIME' | 'CINEMATIC';
     presetId?: string;
 }
 

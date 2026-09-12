@@ -8,7 +8,7 @@ import { AnimationSystem } from './systems/AnimationSystem';
 import { SelectionSystem } from './systems/SelectionSystem';
 import { WebGLRenderer, PostProcessConfig } from './renderers/WebGLRenderer';
 import { DebugRenderer } from './renderers/DebugRenderer';
-import { TimelineState, ComponentType, MeshComponentMode, SimulationMode, PerformanceMetrics, Vector3, SoftSelectionFalloff, UIConfiguration, GridConfiguration, SnapSettings, StaticMeshAsset, SkeletalMeshAsset, SkeletonAsset, SceneAsset, CameraComponentData, PostProcessProfileAsset } from '@/types';
+import { TimelineState, ComponentType, MeshComponentMode, SimulationMode, PerformanceMetrics, Vector3, SoftSelectionFalloff, UIConfiguration, GridConfiguration, SnapSettings, StaticMeshAsset, SkeletalMeshAsset, SkeletonAsset, SceneAsset, CameraComponentData, CameraSettings, PostProcessProfileAsset, ResolvedCameraState } from '@/types';
 import { assetManager } from './AssetManager';
 import { consoleService } from './Console';
 import { GizmoSystem } from './GizmoSystem';
@@ -22,6 +22,7 @@ import { eventBus } from './EventBus';
 import { MESH_TYPES, COMPONENT_MASKS } from './constants';
 import { MeshTopologyUtils } from './MeshTopologyUtils';
 import { resolvePostProcessProfile } from './postprocess/PostProcessProfile';
+import { CameraResolver } from './camera/CameraResolver';
 import { compileShader } from './ShaderCompiler'; 
 import * as THREE from 'three'; 
 
@@ -39,6 +40,7 @@ export class Engine {
     gizmoSystem: GizmoSystem;
     renderer: WebGLRenderer;
     debugRenderer: DebugRenderer;
+    cameraResolver: CameraResolver;
 
     // State
     isPlaying: boolean = false;
@@ -111,6 +113,7 @@ export class Engine {
         this.selectionSystem = new SelectionSystem(this);
         this.renderer = new WebGLRenderer();
         this.debugRenderer = new DebugRenderer();
+        this.cameraResolver = new CameraResolver();
         this.gizmoSystem = new GizmoSystem(this as any);
         
         registerCoreModules(this.physicsSystem, this.particleSystem, this.animationSystem);
@@ -135,6 +138,9 @@ export class Engine {
                      this.compileGraph(a.data.nodes, a.data.connections, a.id);
                  } else if (a.type === 'SKELETON') {
                      this.syncSkeletonEntities(a.id);
+                 } else if (a.type === 'CAMERA_PRESET' || a.type === 'POST_PROCESS_PROFILE') {
+                     // Resolved cameras/profiles read assets by reference, so edits become live immediately.
+                     this.notifyUI();
                  }
              }
         });
@@ -588,7 +594,8 @@ export class Engine {
         const camera = entity?.components?.[ComponentType.CAMERA];
         if (camera) {
             camera.presetId = asset.id;
-            Object.assign(camera, asset.data);
+            camera.configSource = 'PRESET';
+            camera.controlMode = 'MANUAL';
         }
 
         this.syncTransforms(true);
@@ -611,6 +618,7 @@ export class Engine {
             this.skeletonMap.delete(id);
         }
 
+        this.cameraResolver.clearEntity(id);
         this.ecs.deleteEntity(id, sceneGraph);
         this.notifyUI();
     }
@@ -726,6 +734,8 @@ export class Engine {
         store.cameraPostProcessEnabled[newIdx] = store.cameraPostProcessEnabled[idx];
         store.cameraPostProcessProfileId[newIdx] = store.cameraPostProcessProfileId[idx];
         store.cameraPresetId[newIdx] = store.cameraPresetId[idx];
+        store.cameraConfigSource[newIdx] = store.cameraConfigSource[idx];
+        store.cameraControlMode[newIdx] = store.cameraControlMode[idx];
         
         this.sceneGraph.registerEntity(newId);
         this.notifyUI();
@@ -737,6 +747,7 @@ export class Engine {
     }
 
     loadScene(json: string) {
+        this.cameraResolver.clearAll();
         // Clear existing Selection to prevent index errors
         this.setSelected([]);
         this.sceneGraph.clear(); // Ensure clean state before loading
@@ -770,12 +781,29 @@ export class Engine {
         }
     }
 
+    getResolvedCamera(cameraEntityId: string): ResolvedCameraState | null {
+        const entity = this.ecs.createProxy(cameraEntityId, this.sceneGraph);
+        const camera = (entity?.components?.[ComponentType.CAMERA] as CameraComponentData | undefined) ?? null;
+        return camera ? this.cameraResolver.resolve(cameraEntityId, camera) : null;
+    }
+
+    setCameraRuntimeOverride(cameraEntityId: string, override: Partial<CameraSettings> | null) {
+        this.cameraResolver.setRuntimeOverride(cameraEntityId, override);
+        this.notifyUI();
+    }
+
+    setCameraCinematicOverride(cameraEntityId: string, override: Partial<CameraSettings> | null) {
+        this.cameraResolver.setCinematicOverride(cameraEntityId, override);
+        this.notifyUI();
+    }
+
+    clearCameraDriverOverrides(cameraEntityId: string) {
+        this.cameraResolver.clearEntity(cameraEntityId);
+        this.notifyUI();
+    }
+
     getResolvedPostProcessProfile(cameraEntityId?: string, viewportProfileId?: string): PostProcessProfileAsset | null {
-        let camera: CameraComponentData | null = null;
-        if (cameraEntityId) {
-            const entity = this.ecs.createProxy(cameraEntityId, this.sceneGraph);
-            camera = (entity?.components?.[ComponentType.CAMERA] as CameraComponentData | undefined) ?? null;
-        }
+        const resolvedCamera = cameraEntityId ? this.getResolvedCamera(cameraEntityId) : null;
 
         const sceneAsset = this.currentSceneAssetId
             ? assetManager.getAsset(this.currentSceneAssetId) as SceneAsset | undefined
@@ -783,7 +811,7 @@ export class Engine {
 
         return resolvePostProcessProfile({
             viewportProfileId,
-            camera,
+            camera: resolvedCamera?.settings ?? null,
             sceneProfileId: sceneAsset?.type === 'SCENE' ? sceneAsset.data.postProcessProfileId : '',
         });
     }

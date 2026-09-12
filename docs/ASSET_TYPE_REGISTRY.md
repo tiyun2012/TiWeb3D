@@ -150,3 +150,10 @@ Those capabilities have different runtime dependencies and should be registered 
 ## Related editor capability registry
 
 Double-click editor opening is registered separately through `editor/AssetEditorRegistry.ts`. See `docs/ASSET_EDITOR_REGISTRY.md`. This separation is intentional: an asset can be creatable without having a dedicated editor, and optional editor modules can register UI behavior without adding React dependencies to the engine-facing asset type registry.
+
+
+## Content Browser visibility
+
+Asset visibility is independent from creation/editing/placement capabilities. `AssetTypeDefinition.contentVisibility` is one of `PUBLIC`, `INTERNAL`, or `GENERATED`. Content Browser lists only `PUBLIC` types by default.
+
+Do not use `editable: false` as a proxy for hiding content. A future visible read-only package asset and an internal generated cache are different cases. Creation is controlled by `creatable`, Scene dragging by `placeable`, and double-click editing by `AssetEditorRegistry`.

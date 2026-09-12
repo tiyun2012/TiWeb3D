@@ -288,3 +288,11 @@ ASSET TYPE / CONTENT BROWSER REGISTRY
 - **CAMERA PRESET LAYOUT:** `CAMERA_PRESET` uses `AssetEditorTemplate` with hierarchy disabled, `AssetViewport3D` in the center, and the shared `CameraSettings` `AutoInspector` on the right.
 - **CAMERA PRESET HAS NO TRANSFORM:** The Camera Preset viewport may visualize a canonical frustum, but position/rotation belong to live Scene Camera entities. Never serialize preview-orbit state into the preset.
 - **REUSE CAMERA SCHEMA:** Do not duplicate Camera fields in `CameraPresetEditor`; use `schemaId="CameraSettings"` so Scene Camera and Camera Preset remain aligned.
+
+CAMERA RESOLUTION / PRESET RULES
+- Keep Camera base source (`LOCAL`/`PRESET`) separate from control mode (`MANUAL`/`RUNTIME`/`CINEMATIC`).
+- Assigning a Camera Preset must keep a live preset reference; do not copy preset settings into the Scene Camera on assignment.
+- Runtime/cinematic evaluated values are transient CameraResolver overrides; never write them into CameraPreset assets or serialized Camera fields every frame.
+- Scene/post-process consumers that need camera settings should use the resolved camera state.
+- Camera Preset editor preview mode is editor-only: Through Camera previews the preset lens; Inspect Camera visualizes the frustum.
+- Content Browser visibility comes from AssetTypeRegistry `contentVisibility`; do not conflate hidden content with non-editable content.

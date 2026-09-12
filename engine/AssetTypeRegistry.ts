@@ -1,5 +1,7 @@
 import type { Asset, AssetType } from '@/types';
 
+export type AssetContentVisibility = 'PUBLIC' | 'INTERNAL' | 'GENERATED';
+
 export type AssetCreateCategory =
   | 'Project'
   | 'Rendering'
@@ -19,6 +21,9 @@ export interface AssetTypeDefinition<TAsset extends Asset = Asset> {
   icon: string;
   colorClass?: string;
   description?: string;
+
+  /** PUBLIC assets are shown in Content Browser. INTERNAL/GENERATED stay hidden by default. */
+  contentVisibility?: AssetContentVisibility;
 
   /** Whether Content Browser exposes this type in its Create menu. */
   creatable?: boolean;
@@ -68,9 +73,21 @@ class AssetTypeRegistryService {
     return Array.from(this.definitions.values());
   }
 
+  isVisibleInContentBrowser(type: AssetType) {
+    return (this.definitions.get(type)?.contentVisibility ?? 'PUBLIC') === 'PUBLIC';
+  }
+
+  getBrowsable() {
+    return this.getAll().filter(definition => (definition.contentVisibility ?? 'PUBLIC') === 'PUBLIC');
+  }
+
   getCreatable() {
     return this.getAll()
-      .filter((definition) => definition.creatable && definition.create)
+      .filter((definition) =>
+        (definition.contentVisibility ?? 'PUBLIC') === 'PUBLIC' &&
+        definition.creatable &&
+        definition.create
+      )
       .sort((a, b) => {
         const categoryA = CATEGORY_ORDER[a.createCategory ?? 'Other'];
         const categoryB = CATEGORY_ORDER[b.createCategory ?? 'Other'];

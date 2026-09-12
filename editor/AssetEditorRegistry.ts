@@ -16,14 +16,44 @@ export interface AssetEditorDefinition<TAsset extends Asset = Asset> {
   createWindow: (asset: TAsset) => AssetEditorWindowConfig;
 }
 
+/**
+ * Registry storage deliberately erases the concrete asset subtype.
+ *
+ * The public register() API remains generic/strongly typed. A checked wrapper
+ * restores the subtype before invoking each editor factory, which avoids
+ * treating `(CameraPresetAsset) => ...` as `(Asset) => ...` (an invalid
+ * function-parameter variance conversion under strict TypeScript).
+ */
+interface StoredAssetEditorDefinition {
+  type: AssetType;
+  createWindow: (asset: Asset) => AssetEditorWindowConfig;
+}
+
 type RegistryListener = () => void;
 
+const matchesDefinition = <TAsset extends Asset>(
+  asset: Asset,
+  definition: AssetEditorDefinition<TAsset>,
+): asset is TAsset => asset.type === definition.type;
+
 class AssetEditorRegistryService {
-  private definitions = new Map<AssetType, AssetEditorDefinition>();
+  private definitions = new Map<AssetType, StoredAssetEditorDefinition>();
   private listeners = new Set<RegistryListener>();
 
   register<TAsset extends Asset>(definition: AssetEditorDefinition<TAsset>) {
-    this.definitions.set(definition.type, definition as AssetEditorDefinition);
+    const stored: StoredAssetEditorDefinition = {
+      type: definition.type,
+      createWindow: asset => {
+        if (!matchesDefinition(asset, definition)) {
+          throw new Error(
+            `Asset editor for ${definition.type} cannot open asset ${asset.id} of type ${asset.type}`,
+          );
+        }
+        return definition.createWindow(asset);
+      },
+    };
+
+    this.definitions.set(definition.type, stored);
     this.notify();
     return definition;
   }
@@ -34,8 +64,8 @@ class AssetEditorRegistryService {
     return deleted;
   }
 
-  get<TAsset extends Asset = Asset>(type: AssetType): AssetEditorDefinition<TAsset> | undefined {
-    return this.definitions.get(type) as AssetEditorDefinition<TAsset> | undefined;
+  get(type: AssetType): StoredAssetEditorDefinition | undefined {
+    return this.definitions.get(type);
   }
 
   has(type: AssetType) {

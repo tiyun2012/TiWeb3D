@@ -1,7 +1,10 @@
-import { CameraComponentData, CameraSettings } from '@/types';
+import type { CameraComponentData, CameraSettings } from '@/types';
 import { inspectorRegistry } from '@/editor/inspector/InspectorRegistry';
 import { LIGHT_TYPES } from '@/engine/constants';
-import { InspectorSectionSchema } from '@/editor/inspector/InspectorSchema';
+import type {
+  InspectorFieldSchema,
+  InspectorSectionSchema,
+} from '@/editor/inspector/InspectorSchema';
 
 let registered = false;
 
@@ -18,6 +21,8 @@ const cameraSettingSections: InspectorSectionSchema<CameraSettings>[] = [
           { label: 'Perspective', value: 'PERSPECTIVE' },
           { label: 'Orthographic', value: 'ORTHOGRAPHIC' },
         ],
+        animatable: true,
+        animationMode: 'discrete',
       },
       {
         path: 'fov',
@@ -27,6 +32,8 @@ const cameraSettingSections: InspectorSectionSchema<CameraSettings>[] = [
         max: 179,
         step: 1,
         visibleWhen: ({ value }) => value.projection === 'PERSPECTIVE',
+        animatable: true,
+        animationMode: 'continuous',
       },
       {
         path: 'orthoSize',
@@ -35,9 +42,27 @@ const cameraSettingSections: InspectorSectionSchema<CameraSettings>[] = [
         min: 0.01,
         step: 0.1,
         visibleWhen: ({ value }) => value.projection === 'ORTHOGRAPHIC',
+        animatable: true,
+        animationMode: 'continuous',
       },
-      { path: 'near', type: 'number', label: 'Near', min: 0.001, step: 0.01 },
-      { path: 'far', type: 'number', label: 'Far', min: 0.01, step: 1 },
+      {
+        path: 'near',
+        type: 'number',
+        label: 'Near',
+        min: 0.001,
+        step: 0.01,
+        animatable: true,
+        animationMode: 'continuous',
+      },
+      {
+        path: 'far',
+        type: 'number',
+        label: 'Far',
+        min: 0.01,
+        step: 1,
+        animatable: true,
+        animationMode: 'continuous',
+      },
     ],
   },
   {
@@ -53,12 +78,16 @@ const cameraSettingSections: InspectorSectionSchema<CameraSettings>[] = [
           { label: 'Color', value: 'COLOR' },
           { label: 'None', value: 'NONE' },
         ],
+        animatable: true,
+        animationMode: 'discrete',
       },
       {
         path: 'clearColor',
         type: 'color',
         label: 'Clear Color',
         visibleWhen: ({ value }) => value.clearMode === 'COLOR',
+        animatable: true,
+        animationMode: 'continuous',
       },
       {
         path: 'renderLayerMask',
@@ -75,7 +104,13 @@ const cameraSettingSections: InspectorSectionSchema<CameraSettings>[] = [
     id: 'post-process',
     label: 'Post Process',
     fields: [
-      { path: 'postProcessEnabled', type: 'boolean', label: 'Enabled' },
+      {
+        path: 'postProcessEnabled',
+        type: 'boolean',
+        label: 'Enabled',
+        animatable: true,
+        animationMode: 'discrete',
+      },
       {
         path: 'postProcessProfileId',
         type: 'asset',
@@ -88,6 +123,27 @@ const cameraSettingSections: InspectorSectionSchema<CameraSettings>[] = [
     ],
   },
 ];
+
+const buildCameraComponentSettingSections = (): InspectorSectionSchema<CameraComponentData>[] =>
+  cameraSettingSections.map(section => ({
+    ...section,
+    fields: section.fields.map(baseField => {
+      const field = baseField as InspectorFieldSchema<CameraSettings>;
+      return {
+        ...field,
+        visibleWhen: field.visibleWhen
+          ? (ctx => field.visibleWhen?.({ value: ctx.value, scope: ctx.scope }) !== false)
+          : undefined,
+        enabledWhen: ctx => {
+          if (ctx.value.configSource === 'PRESET') return false;
+          return field.enabledWhen?.({ value: ctx.value, scope: ctx.scope }) !== false;
+        },
+        normalize: field.normalize
+          ? ((value, ctx) => field.normalize?.(value, { value: ctx.value, scope: ctx.scope }))
+          : undefined,
+      } satisfies InspectorFieldSchema<CameraComponentData>;
+    }),
+  }));
 
 export const registerCoreInspectorSchemas = () => {
   if (registered) return;
@@ -106,20 +162,42 @@ export const registerCoreInspectorSchemas = () => {
     icon: 'Camera',
     sections: [
       {
-        id: 'preset',
-        label: 'Preset',
+        id: 'configuration',
+        label: 'Configuration',
         fields: [
+          {
+            path: 'configSource',
+            type: 'enum',
+            label: 'Source',
+            options: [
+              { label: 'Local', value: 'LOCAL' },
+              { label: 'Camera Preset', value: 'PRESET' },
+            ],
+            tooltip: 'Preset uses the referenced Camera Preset as the serialized base. Local uses this component\'s values.',
+          },
           {
             path: 'presetId',
             type: 'asset',
             label: 'Camera Preset',
             assetTypes: ['CAMERA_PRESET'],
-            defaultLabel: 'Custom / No Preset',
-            tooltip: 'Choosing a preset copies its camera settings into this Scene camera.',
+            defaultLabel: 'None (local fallback)',
+            visibleWhen: ({ value }) => value.configSource === 'PRESET',
+            tooltip: 'Reusable base configuration. Runtime/cinematic drivers never modify the preset asset.',
+          },
+          {
+            path: 'controlMode',
+            type: 'enum',
+            label: 'Control Mode',
+            options: [
+              { label: 'Manual', value: 'MANUAL' },
+              { label: 'Runtime', value: 'RUNTIME' },
+              { label: 'Cinematic', value: 'CINEMATIC' },
+            ],
+            tooltip: 'Manual uses base settings. Runtime accepts gameplay/script overrides. Cinematic accepts timeline/sequencer overrides.',
           },
         ],
       },
-      ...(cameraSettingSections as InspectorSectionSchema<CameraComponentData>[]),
+      ...buildCameraComponentSettingSections(),
     ],
   });
 
@@ -160,8 +238,8 @@ export const registerCoreInspectorSchemas = () => {
             label: 'Type',
             options: LIGHT_TYPES.map(value => ({ label: value, value })),
           },
-          { path: 'color', type: 'color', label: 'Color' },
-          { path: 'intensity', type: 'number', label: 'Intensity', min: 0, step: 0.1 },
+          { path: 'color', type: 'color', label: 'Color', animatable: true, animationMode: 'continuous' },
+          { path: 'intensity', type: 'number', label: 'Intensity', min: 0, step: 0.1, animatable: true, animationMode: 'continuous' },
         ],
       },
     ],

@@ -1,4 +1,4 @@
-import type { SimulationMode, MeshComponentMode, ToolType } from '@/types';
+import type { CameraSettings, MeshComponentMode, ResolvedCameraState, SimulationMode, ToolType } from '@/types';
 
 export type EngineAPI = {
   // Commands: stable surface that UI should call
@@ -23,6 +23,13 @@ export type EngineAPI = {
     gizmo: {
       setTool(tool: ToolType): void;
     };
+    camera: {
+      /** Gameplay/script driver layer; only applied when Camera Control Mode is Runtime. */
+      setRuntimeOverride(id: string, override: Partial<CameraSettings> | null): void;
+      /** Timeline/sequencer driver layer; only applied when Camera Control Mode is Cinematic. */
+      setCinematicOverride(id: string, override: Partial<CameraSettings> | null): void;
+      clearDriverOverrides(id: string): void;
+    };
   };
 
   // Events: subscribe to engine/editor events
@@ -33,4 +40,5 @@ export type EngineAPI = {
   getPosition(id: string): { x: number; y: number; z: number } | null;
   getWorldPosition(id: string): { x: number; y: number; z: number } | null;
   getTool(): ToolType;
+  getResolvedCamera(id: string): ResolvedCameraState | null;
 };

@@ -55,6 +55,8 @@ export class ComponentStorage {
     cameraPostProcessEnabled = new Uint8Array(this.capacity);
     cameraPostProcessProfileId: string[] = new Array(this.capacity).fill('');
     cameraPresetId: string[] = new Array(this.capacity).fill('');
+    cameraConfigSource = new Uint8Array(this.capacity); // 0 local, 1 preset
+    cameraControlMode = new Uint8Array(this.capacity); // 0 manual, 1 runtime, 2 cinematic
 
     // --- Physics ---
     mass = new Float32Array(this.capacity);
@@ -98,6 +100,8 @@ export class ComponentStorage {
         this.cameraClearR.fill(0.125); this.cameraClearG.fill(0.145); this.cameraClearB.fill(0.176);
         this.cameraRenderLayerMask.fill(0xffffffff);
         this.cameraPostProcessEnabled.fill(1);
+        this.cameraConfigSource.fill(0);
+        this.cameraControlMode.fill(0);
         
         // Initialize world matrices
         for (let i = 0; i < this.capacity; i++) {
@@ -214,6 +218,8 @@ export class ComponentStorage {
         this.cameraClearR = resizeFloat(this.cameraClearR); this.cameraClearG = resizeFloat(this.cameraClearG); this.cameraClearB = resizeFloat(this.cameraClearB);
         this.cameraRenderLayerMask = resizeUint32(this.cameraRenderLayerMask);
         this.cameraPostProcessEnabled = resizeUint8(this.cameraPostProcessEnabled);
+        this.cameraConfigSource = resizeUint8(this.cameraConfigSource);
+        this.cameraControlMode = resizeUint8(this.cameraControlMode);
         const newCameraProfileIds = new Array(newCapacity).fill('');
         const newCameraPresetIds = new Array(newCapacity).fill('');
         for (let i = 0; i < this.cameraPostProcessProfileId.length; i++) {
@@ -284,6 +290,8 @@ export class ComponentStorage {
             cameraPostProcessEnabled: new Uint8Array(this.cameraPostProcessEnabled),
             cameraPostProcessProfileId: [...this.cameraPostProcessProfileId],
             cameraPresetId: [...this.cameraPresetId],
+            cameraConfigSource: new Uint8Array(this.cameraConfigSource),
+            cameraControlMode: new Uint8Array(this.cameraControlMode),
             mass: new Float32Array(this.mass),
             useGravity: new Uint8Array(this.useGravity),
             physicsMaterialIndex: new Int32Array(this.physicsMaterialIndex),
@@ -351,6 +359,17 @@ export class ComponentStorage {
         if (snap.cameraPostProcessEnabled) this.cameraPostProcessEnabled.set(snap.cameraPostProcessEnabled);
         if (snap.cameraPostProcessProfileId) this.cameraPostProcessProfileId = [...snap.cameraPostProcessProfileId];
         if (snap.cameraPresetId) this.cameraPresetId = [...snap.cameraPresetId];
+        if (snap.cameraConfigSource) {
+            this.cameraConfigSource.set(snap.cameraConfigSource);
+        } else if (snap.cameraPresetId) {
+            // Migration for scenes saved before CameraConfigSource existed:
+            // a non-empty preset reference represented the old preset/copy workflow.
+            for (let i = 0; i < this.cameraPresetId.length; i++) {
+                this.cameraConfigSource[i] = this.cameraPresetId[i] ? 1 : 0;
+            }
+        }
+        if (snap.cameraControlMode) this.cameraControlMode.set(snap.cameraControlMode);
+        else this.cameraControlMode.fill(0);
 
         if (snap.mass) this.mass.set(snap.mass);
         if (snap.useGravity) this.useGravity.set(snap.useGravity);

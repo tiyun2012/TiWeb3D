@@ -32,6 +32,10 @@ export interface InspectorFieldSchema<T = any> {
   assetTypes?: AssetType[];
   defaultLabel?: string;
   readOnly?: boolean;
+  /** Field can be driven by a sequencer/timeline. UI hosts may expose a keyframe control. */
+  animatable?: boolean;
+  /** Discrete fields keyframe by stepping values; continuous fields may interpolate. */
+  animationMode?: 'continuous' | 'discrete';
   visibleWhen?: (ctx: InspectorContext<T>) => boolean;
   enabledWhen?: (ctx: InspectorContext<T>) => boolean;
   normalize?: (value: unknown, ctx: InspectorContext<T>) => unknown;

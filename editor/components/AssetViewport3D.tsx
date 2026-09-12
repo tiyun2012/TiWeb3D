@@ -4,7 +4,7 @@ import { AssetViewportEngine } from '@/editor/viewports/AssetViewportEngine';
 import { GizmoSystem } from '@/engine/GizmoSystem';
 import { GizmoRenderer } from '@/engine/renderers/GizmoRenderer';
 import { Mat4Utils } from '@/engine/math';
-import { AssetType, ToolType } from '@/types';
+import { AssetType, CameraSettings, ToolType } from '@/types';
 import {
   ASSET_MESH_SURFACE_FS,
   ASSET_MESH_SURFACE_VS,
@@ -124,6 +124,12 @@ export interface AssetViewport3DProps {
   camera?: CameraState;
   onCameraChange?: (camera: CameraState) => void;
   defaultCamera?: CameraState;
+  /** Optional lens/projection override. View transform still comes from the editor orbit camera. */
+  projectionSettings?: Pick<CameraSettings, 'projection' | 'fov' | 'orthoSize' | 'near' | 'far'>;
+  /** Disable orbit/pan/zoom when the host wants a locked camera preview. */
+  navigationEnabled?: boolean;
+  /** Optional direct-to-canvas clear color in display space. */
+  backgroundColor?: readonly [number, number, number, number];
   fitCamera?: { radius: number; target: { x: number; y: number; z: number } } | null;
   showGrid?: boolean;
   onToggleGrid?: () => void;
@@ -156,6 +162,9 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
   camera: controlledCamera,
   onCameraChange,
   defaultCamera = { theta: 0.6, phi: 1.2, radius: 3.5, target: { x: 0, y: 0.5, z: 0 } },
+  projectionSettings,
+  navigationEnabled = true,
+  backgroundColor,
   fitCamera,
   showGrid = true,
   onToggleGrid,
@@ -186,6 +195,16 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
   useEffect(() => {
     viewportSizeRef.current = viewportSize;
   }, [viewportSize]);
+
+  const backgroundColorRef = useRef(backgroundColor);
+  useEffect(() => {
+    backgroundColorRef.current = backgroundColor;
+  }, [backgroundColor]);
+
+  const projectionSettingsRef = useRef(projectionSettings);
+  useEffect(() => {
+    projectionSettingsRef.current = projectionSettings;
+  }, [projectionSettings]);
 
   // Internal vs controlled camera
   const [internalCamera, setInternalCamera] = useState<CameraState>(defaultCamera);
@@ -275,7 +294,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
         if (onToggleGrid) onToggleGrid();
       }
 
-      if ((e.key === 'f' || e.key === 'F') && assetViewportAllows(assetType, 'view.focus')) {
+      if (navigationEnabled && (e.key === 'f' || e.key === 'F') && assetViewportAllows(assetType, 'view.focus')) {
         e.preventDefault();
         if (fitCamera) {
           updateCamera(p => ({ ...p, radius: fitCamera.radius, target: { ...fitCamera.target } }));
@@ -290,7 +309,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [assetType, allowedTools, setTool, onToggleGrid, fitCamera, defaultCamera, onCustomKeyDown]);
+  }, [assetType, allowedTools, setTool, onToggleGrid, fitCamera, defaultCamera, onCustomKeyDown, navigationEnabled]);
 
   // Main WebGL Loop
   useEffect(() => {
@@ -349,7 +368,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
     gl.bindVertexArray(null);
 
     gl.enable(gl.DEPTH_TEST);
-    gl.clearColor(...VIEWPORT_BACKGROUND_DISPLAY_COLOR);
+    gl.clearColor(...(backgroundColorRef.current ?? VIEWPORT_BACKGROUND_DISPLAY_COLOR));
 
     if (onInitGl) onInitGl(gl);
 
@@ -397,7 +416,25 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
       const eye = getCameraEye(cam);
 
       const aspect = canvas.width / canvas.height;
-      Mat4Utils.perspective((45 * Math.PI) / 180, aspect, 0.1, 1000.0, proj);
+      const lens = projectionSettingsRef.current;
+      if (lens?.projection === 'ORTHOGRAPHIC') {
+        const halfHeight = Math.max(0.0005, lens.orthoSize * 0.5);
+        const halfWidth = halfHeight * aspect;
+        Mat4Utils.orthographic(
+          -halfWidth,
+          halfWidth,
+          -halfHeight,
+          halfHeight,
+          Math.max(0.0001, lens.near),
+          Math.max(lens.near + 0.0001, lens.far),
+          proj,
+        );
+      } else {
+        const fov = lens?.fov ?? 45;
+        const near = Math.max(0.0001, lens?.near ?? 0.1);
+        const far = Math.max(near + 0.0001, lens?.far ?? 1000);
+        Mat4Utils.perspective((fov * Math.PI) / 180, aspect, near, far, proj);
+      }
       Mat4Utils.lookAt(eye, cam.target, { x: 0, y: 1, z: 0 }, view);
       Mat4Utils.multiply(proj, view, vp);
 
@@ -408,7 +445,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
         eng.sceneGraph.update();
       }
 
-      gl.clearColor(...VIEWPORT_BACKGROUND_DISPLAY_COLOR);
+      gl.clearColor(...(backgroundColorRef.current ?? VIEWPORT_BACKGROUND_DISPLAY_COLOR));
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
       // Draw standard 3D ground grid
@@ -484,7 +521,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
     const height = rect.height;
 
     // Camera controls with Alt
-    if (e.altKey) {
+    if (navigationEnabled && e.altKey) {
       e.preventDefault();
       let mode: 'ORBIT' | 'PAN' | 'ZOOM' = 'ORBIT';
       if (e.button === 1) mode = 'PAN';
@@ -579,7 +616,9 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
   }, [onMouseMove, onMouseUp]);
 
   const handleWheel = (e: React.WheelEvent) => {
-    updateCamera(p => wheelZoomCamera(p, e.deltaY, { minRadius: 0.2, sensitivity: 0.005 }));
+    if (navigationEnabled) {
+      updateCamera(p => wheelZoomCamera(p, e.deltaY, { minRadius: 0.2, sensitivity: 0.005 }));
+    }
     if (onWheel) onWheel(e);
   };
 
@@ -595,6 +634,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
   };
 
   const handleFocus = () => {
+    if (!navigationEnabled) return;
     if (fitCamera) {
       updateCamera(p => ({ ...p, radius: fitCamera.radius, target: { ...fitCamera.target } }));
     } else {

@@ -55,7 +55,7 @@ Core pieces:
 - `editor/components/inspector/AutoInspector.tsx` — renders common field types.
 - `engine/modules/CoreInspectorSchemas.ts` — built-in Camera, Scene Rendering, and Light registrations.
 
-Supported automatic fields currently include number, string, boolean, enum, color, vector3, asset reference, and read-only values. Fields can define visibility, enabled state, min/max/step, validation/normalization, and asset-type filtering.
+Supported automatic fields currently include number, string, boolean, enum, color, vector3, asset reference, and read-only values. Fields can define visibility, enabled state, min/max/step, validation/normalization, asset-type filtering, and animatable metadata (`animatable`, `animationMode`) for future timeline/keyframe discovery.
 
 ## Camera schema reuse
 
@@ -69,7 +69,7 @@ CameraSettings schema
     └── same CameraSettings sections
 ```
 
-Selecting a Camera Preset on a Scene Camera copies its current settings into the component. The component remains editable afterward; this avoids hidden live-link mutation while providing a useful preset workflow.
+A Scene Camera now separates `Source = Local | Preset` from `Control Mode = Manual | Runtime | Cinematic`. When Source is Preset, the preset remains a live reusable base and Camera setting fields are read-only in the Scene Inspector; edit the preset asset itself. Switching from Preset to Local copies the current preset values once so detaching does not visually jump. See `CAMERA_RESOLUTION_FLOW.md`.
 
 ## Post Process Profile inspector
 

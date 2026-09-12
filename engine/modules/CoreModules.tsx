@@ -241,12 +241,23 @@ const CameraInspector: React.FC<InspectorProps> = ({ component, onUpdate, onStar
             if (path === 'presetId') {
                 const presetId = String(value || '');
                 onUpdate('presetId', presetId);
-                const preset = presetId ? assetManager.getAsset(presetId) : null;
-                if (preset?.type === 'CAMERA_PRESET') {
-                    Object.entries(preset.data).forEach(([key, presetValue]) => onUpdate(key, presetValue));
-                }
+                if (presetId) onUpdate('configSource', 'PRESET');
                 return;
             }
+
+            if (path === 'configSource') {
+                const nextSource = String(value || 'LOCAL');
+                if (nextSource === 'LOCAL' && component.configSource === 'PRESET' && component.presetId) {
+                    const preset = assetManager.getAsset(component.presetId);
+                    // Preserve the current preset appearance when detaching to local editing.
+                    if (preset?.type === 'CAMERA_PRESET') {
+                        Object.entries(preset.data).forEach(([key, presetValue]) => onUpdate(key, presetValue));
+                    }
+                }
+                onUpdate('configSource', nextSource);
+                return;
+            }
+
             onUpdate(path, value);
         }}
         onStartUpdate={onStartUpdate}

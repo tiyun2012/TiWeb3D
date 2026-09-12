@@ -112,3 +112,5 @@ Content Browser asset creation is registry-driven. Built-in asset definitions ar
 Content Browser editor opening is registered through `editor/AssetEditorRegistry.ts`; built-ins are installed by `editor/BuiltInAssetEditors.tsx`. `ProjectPanel.tsx` must query the registry instead of hardcoding editor components by asset type. See `docs/ASSET_EDITOR_REGISTRY.md`.
 
 Camera Preset uses this path and opens a two-panel `CameraPresetEditor` (Viewport + Inspector) that reuses `AssetViewport3D` and the `CameraSettings` AutoInspector schema. See `docs/CAMERA_PRESET_EDITOR.md`.
+
+- Camera configuration/runtime layering is documented in `docs/CAMERA_RESOLUTION_FLOW.md`; renderer-facing code should consume resolved camera state rather than mutating presets or serialized camera fields during runtime/cinematic control.

@@ -2,7 +2,7 @@
 import type { EngineAPI } from './EngineAPI';
 import { eventBus } from '@/engine/EventBus';
 import { engineInstance } from '@/engine/engine';
-import type { SimulationMode, MeshComponentMode, ToolType } from '@/types';
+import type { CameraSettings, SimulationMode, MeshComponentMode, ToolType } from '@/types';
 import { Mat4Utils, Vec3Utils } from '@/engine/math';
 
 export function createEngineAPI(engine: any = engineInstance): EngineAPI {
@@ -101,6 +101,17 @@ export function createEngineAPI(engine: any = engineInstance): EngineAPI {
           engine.notifyUI();
         },
       },
+      camera: {
+        setRuntimeOverride(id: string, override: Partial<CameraSettings> | null) {
+          engine.setCameraRuntimeOverride?.(id, override);
+        },
+        setCinematicOverride(id: string, override: Partial<CameraSettings> | null) {
+          engine.setCameraCinematicOverride?.(id, override);
+        },
+        clearDriverOverrides(id: string) {
+          engine.clearCameraDriverOverrides?.(id);
+        },
+      },
     },
 
     subscribe(event: string, cb: (payload: any) => void) {
@@ -135,6 +146,10 @@ export function createEngineAPI(engine: any = engineInstance): EngineAPI {
 
     getTool(): ToolType {
       return (engine.gizmoSystem as any)?.tool || 'SELECT';
+    },
+
+    getResolvedCamera(id: string) {
+      return engine.getResolvedCamera?.(id) ?? null;
     },
   };
 }

@@ -396,6 +396,67 @@ assert(
   'Camera must remain a first-class ECS component with serialized camera/post-process fields',
 );
 
+assert(exists('engine/camera/CameraResolver.ts'), 'CameraResolver must exist');
+const cameraResolverSource = read('engine/camera/CameraResolver.ts');
+assert(
+  cameraResolverSource.includes("controlMode === 'RUNTIME'") &&
+    cameraResolverSource.includes("controlMode === 'CINEMATIC'") &&
+    cameraResolverSource.includes("configSource === 'PRESET'"),
+  'CameraResolver must preserve separate base-source and runtime/cinematic driver layers',
+);
+assert(
+  read('types.ts').includes("CameraConfigSource = 'LOCAL' | 'PRESET'") &&
+    read('types.ts').includes("CameraControlMode = 'MANUAL' | 'RUNTIME' | 'CINEMATIC'"),
+  'Camera source/control mode enums must remain explicit',
+);
+assert(
+  read('engine/ecs/ComponentStorage.ts').includes('cameraConfigSource') &&
+    read('engine/ecs/ComponentStorage.ts').includes('cameraControlMode') &&
+    read('engine/ecs/EntitySystem.ts').includes('get configSource()') &&
+    read('engine/ecs/EntitySystem.ts').includes('get controlMode()'),
+  'Camera source/control modes must remain serialized ECS fields',
+);
+assert(
+  coreInspectorSchemas.includes("path: 'configSource'") &&
+    coreInspectorSchemas.includes("path: 'controlMode'") &&
+    coreInspectorSchemas.includes("value: 'CINEMATIC'"),
+  'Camera Inspector must expose source and Manual/Runtime/Cinematic control modes',
+);
+assert(
+  cameraPresetEditorSource.includes("'THROUGH_CAMERA'") &&
+    cameraPresetEditorSource.includes("'INSPECT_CAMERA'") &&
+    cameraPresetEditorSource.includes('projectionSettings={previewMode'),
+  'CameraPresetEditor must offer Through Camera and Inspect Camera preview modes',
+);
+assert(
+  assetViewport.includes('projectionSettings?:') && assetViewport.includes('Mat4Utils.orthographic('),
+  'AssetViewport3D must support reusable perspective/orthographic projection overrides',
+);
+assert(
+  assetTypeRegistrySource.includes('contentVisibility') &&
+    assetTypeRegistrySource.includes('isVisibleInContentBrowser') &&
+    projectPanel.includes('assetTypeRegistry.isVisibleInContentBrowser(a.type)'),
+  'Content Browser visibility must be controlled by AssetTypeRegistry metadata, not editability',
+);
+assert(
+  read('engine/api/EngineAPI.ts').includes('setRuntimeOverride') &&
+    read('engine/api/EngineAPI.ts').includes('setCinematicOverride') &&
+    read('engine/api/createEngineAPI.ts').includes('getResolvedCamera'),
+  'EngineAPI must expose camera runtime/cinematic driver overrides and resolved-camera queries',
+);
+
+const engineSource = read('engine/engine.ts');
+assert(
+  engineSource.includes("camera.configSource = 'PRESET'") &&
+    !engineSource.includes('Object.assign(camera, asset.data)'),
+  'placing a Camera Preset must keep a live preset reference instead of copying preset settings into the Camera component',
+);
+assert(
+  coreModulesSource.includes("if (presetId) onUpdate('configSource', 'PRESET')") &&
+    coreModulesSource.includes('Preserve the current preset appearance when detaching to local editing'),
+  'Camera Inspector must assign presets by reference and copy only when explicitly detaching to Local',
+);
+
 const sourceFiles = [];
 const walk = (dir) => {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

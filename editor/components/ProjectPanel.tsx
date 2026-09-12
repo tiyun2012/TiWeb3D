@@ -61,7 +61,7 @@ const AssetItem: React.FC<{
                 onDoubleClick();
             }}
             onContextMenu={onContextMenu}
-            draggable={asset.type !== 'FOLDER'}
+            draggable={!!assetDefinition?.placeable}
             onDragStart={(e) => e.dataTransfer.setData('application/ti3d-asset', asset.id)}
         >
             <div className={`${viewMode === 'GRID' ? 'w-12 h-12 mb-2 bg-black/20' : 'w-6 h-6 mr-3'} rounded flex items-center justify-center shrink-0`}>
@@ -140,6 +140,7 @@ export const ProjectPanel: React.FC = () => {
 
     const filteredAssets = useMemo(() => {
         return assets.filter(a => {
+            if (!assetTypeRegistry.isVisibleInContentBrowser(a.type)) return false;
             if (search) return a.name.toLowerCase().includes(search.toLowerCase());
             return a.path === currentPath;
         }).sort((a, b) => {

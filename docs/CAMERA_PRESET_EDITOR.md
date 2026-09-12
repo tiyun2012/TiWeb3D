@@ -8,8 +8,8 @@ A Camera Preset is reusable camera configuration, not a live Scene transform. Do
 +--------------------------------------+----------------------+
 |              Viewport                |      Inspector       |
 |                                      |                      |
-| canonical camera/frustum preview     | CameraSettings       |
-| orbit / pan / zoom / grid / focus    | AutoInspector        |
+| Through / Inspect camera preview     | CameraSettings       |
+| reusable viewport controls           | AutoInspector        |
 |                                      |                      |
 +--------------------------------------+----------------------+
 ```
@@ -18,61 +18,49 @@ There is intentionally no hierarchy panel.
 
 ## Reused systems
 
-The editor does not build a new viewport implementation.
-
 - Outer layout: `AssetEditorTemplate`
 - Viewport: `AssetViewport3D`
 - Inspector schema: `CameraSettings` through `AutoInspector`
 - Asset mutations: `assetManager.updateAsset`
 - Double-click routing: `AssetEditorRegistry`
 
-This keeps Camera editing consistent with the rest of the editor while avoiding duplicated camera controls.
+Do not create a Camera-Preset-specific copy of camera setting controls.
 
-## Viewport preview
+## Preview modes
 
-`engine/camera/CameraPreviewGeometry.ts` generates a canonical camera/frustum facing local `-Z`.
+Preview mode is editor state only and is not serialized into the Camera Preset.
 
-A Camera Preset has no position or rotation, so the preview origin is illustrative only. It visualizes:
+### Through Camera
 
-- Perspective versus Orthographic projection.
-- Perspective FOV.
-- Orthographic size.
-- The camera's forward direction and frustum shape.
+This is the default mode. It uses:
 
-Near/far values remain authoritative in the Inspector and HUD. Frustum depth is normalized in the editor preview so a common runtime far plane such as `1000` does not make the preview impossible to frame.
+- a canonical fixed preview transform;
+- the Camera Preset's real Perspective/Orthographic projection;
+- the Camera Preset FOV or Orthographic Size;
+- the Camera Preset near/far values.
 
-The preview currently uses a representative 16:9 aspect ratio because Camera Preset does not yet store an authored aspect ratio/output target.
+Because a Camera Preset deliberately has no Scene transform, Through Camera previews the authored **lens/configuration**, not a world-space camera placement.
 
-## Inspector contract
+Reference frames at several depths make FOV and Perspective-vs-Orthographic behavior easy to compare.
 
-The editor renders:
+### Inspect Camera
 
-```tsx
-<AutoInspector
-  schemaId="CameraSettings"
-  value={asset.data}
-  scope="asset"
-  onChange={...}
-/>
-```
+This mode uses the regular orbit/pan/zoom editor camera and renders the preset frustum externally through `CameraPreviewGeometry`.
 
-This is the same schema used by Scene Camera components. Do not create a separate Camera Preset field list.
+Use Inspect Camera to understand frustum shape and clipping configuration spatially.
 
-## Asset update flow
+## Relationship to Scene Camera
+
+A Scene Camera may use the preset as a live base configuration:
 
 ```text
-Inspector field change
-      |
-      v
-assetManager.updateAsset(cameraPresetId, { data })
-      |
-      v
-ASSET_UPDATED
-      |
-      +--> CameraPresetEditor rerenders
-      +--> Content Browser/other subscribers refresh
+Camera Component
+  Source = Preset
+  Preset = Cinematic35mm
 ```
 
-## Future camera preview modes
+Editing `Cinematic35mm` updates the resolved settings of cameras that reference it. The preset is not copied into the Camera component on assignment.
 
-If a future Camera Preset viewport adds a "Look Through Camera" mode, it should remain inside `CameraPresetEditor`/`AssetViewport3D` and consume the same `CameraSettings` data. Do not create a second camera-settings model for preview rendering.
+Scene transforms remain on the entity Transform component.
+
+See `CAMERA_RESOLUTION_FLOW.md` for Local/Preset and Manual/Runtime/Cinematic layering.
