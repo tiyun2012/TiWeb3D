@@ -5,6 +5,7 @@ import { SceneGraph } from '../SceneGraph';
 import { ComponentType, Entity, RotationOrder } from '@/types';
 import type { HistorySystem } from '../systems/HistorySystem';
 import { assetManager } from '../AssetManager';
+import { componentDefinitionRegistry } from '../components/ComponentDefinitionRegistry';
 
 type ECSEventType = 'COMPONENT_ADDED' | 'COMPONENT_REMOVED' | 'ENTITY_DESTROYED';
 type ECSEventListener = (type: ECSEventType, entityId: string, componentType?: ComponentType) => void;
@@ -52,7 +53,7 @@ export class SoAEntitySystem {
         this.store.names[index] = name;
         this.store.ids[index] = id;
         
-        this.store.componentMask[index] = COMPONENT_MASKS.TRANSFORM;
+        this.store.componentMask[index] = 0;
 
         this.store.posX[index] = 0; this.store.posY[index] = 0; this.store.posZ[index] = 0;
         this.store.rotX[index] = 0; this.store.rotY[index] = 0; this.store.rotZ[index] = 0;
@@ -74,8 +75,11 @@ export class SoAEntitySystem {
         
         this.idToIndex.set(id, index);
         
-        // Transform is added by default, notify listeners
-        this.notify('COMPONENT_ADDED', id, ComponentType.TRANSFORM);
+        // Default/structural components come from the component registry. Runtime
+        // "inheritance" is composition: required bases are installed automatically.
+        for (const componentType of componentDefinitionRegistry.getDefaultComponents()) {
+            this.addComponent(id, componentType);
+        }
         
         return id;
     }
@@ -114,18 +118,44 @@ export class SoAEntitySystem {
     addComponent(id: string, type: ComponentType) {
         const idx = this.idToIndex.get(id);
         if (idx === undefined) return;
-        
-        let mask = 0;
-        if (type === ComponentType.TRANSFORM) mask = COMPONENT_MASKS.TRANSFORM;
-        else if (type === ComponentType.MESH) mask = COMPONENT_MASKS.MESH;
-        else if (type === ComponentType.LIGHT) mask = COMPONENT_MASKS.LIGHT;
-        else if (type === ComponentType.PHYSICS) mask = COMPONENT_MASKS.PHYSICS;
-        else if (type === ComponentType.SCRIPT) mask = COMPONENT_MASKS.SCRIPT;
-        else if (type === ComponentType.VIRTUAL_PIVOT) { 
-            mask = COMPONENT_MASKS.VIRTUAL_PIVOT;
-            this.store.vpLength[idx] = 1.0; 
+
+        // Dependency-first install means Camera/Light/Mesh/etc. automatically receive
+        // their required structural components (currently Transform).
+        for (const componentType of componentDefinitionRegistry.getInstallOrder(type)) {
+            this.addComponentDirect(id, idx, componentType);
+        }
+    }
+
+    private addComponentDirect(id: string, idx: number, type: ComponentType) {
+        const mask = this.getComponentMask(type);
+        if (mask === 0 || (this.store.componentMask[idx] & mask) !== 0) return;
+
+        this.initializeComponent(idx, type);
+        this.store.componentMask[idx] |= mask;
+        this.notify('COMPONENT_ADDED', id, type);
+    }
+
+    private getComponentMask(type: ComponentType): number {
+        if (type === ComponentType.TRANSFORM) return COMPONENT_MASKS.TRANSFORM;
+        if (type === ComponentType.MESH) return COMPONENT_MASKS.MESH;
+        if (type === ComponentType.LIGHT) return COMPONENT_MASKS.LIGHT;
+        if (type === ComponentType.PHYSICS) return COMPONENT_MASKS.PHYSICS;
+        if (type === ComponentType.SCRIPT) return COMPONENT_MASKS.SCRIPT;
+        if (type === ComponentType.VIRTUAL_PIVOT) return COMPONENT_MASKS.VIRTUAL_PIVOT;
+        if (type === ComponentType.PARTICLE_SYSTEM) return COMPONENT_MASKS.PARTICLE_SYSTEM;
+        if (type === ComponentType.CAMERA) return COMPONENT_MASKS.CAMERA;
+        return 0;
+    }
+
+    private initializeComponent(idx: number, type: ComponentType) {
+        if (type === ComponentType.TRANSFORM) {
+            this.store.posX[idx] = 0; this.store.posY[idx] = 0; this.store.posZ[idx] = 0;
+            this.store.rotX[idx] = 0; this.store.rotY[idx] = 0; this.store.rotZ[idx] = 0;
+            this.store.scaleX[idx] = 1; this.store.scaleY[idx] = 1; this.store.scaleZ[idx] = 1;
+            this.store.rotationOrder[idx] = 0;
+        } else if (type === ComponentType.VIRTUAL_PIVOT) {
+            this.store.vpLength[idx] = 1.0;
         } else if (type === ComponentType.CAMERA) {
-            mask = COMPONENT_MASKS.CAMERA;
             this.store.cameraProjection[idx] = 0;
             this.store.cameraFov[idx] = 60;
             this.store.cameraOrthoSize[idx] = 10;
@@ -140,45 +170,58 @@ export class SoAEntitySystem {
             this.store.cameraConfigSource[idx] = 0;
             this.store.cameraControlMode[idx] = 0;
         } else if (type === ComponentType.PARTICLE_SYSTEM) {
-            mask = COMPONENT_MASKS.PARTICLE_SYSTEM;
-            // Defaults
             this.store.psMaxCount[idx] = 100;
             this.store.psRate[idx] = 10;
             this.store.psSpeed[idx] = 2.0;
             this.store.psLife[idx] = 2.0;
-            this.store.psColorR[idx] = 1.0; this.store.psColorG[idx] = 0.5; this.store.psColorB[idx] = 0.0; // Fire Orange
+            this.store.psColorR[idx] = 1.0; this.store.psColorG[idx] = 0.5; this.store.psColorB[idx] = 0.0;
             this.store.psSize[idx] = 0.5;
-            this.store.psShape[idx] = 1; // Cone
-            this.store.psMaterialIndex[idx] = 0; // Default
+            this.store.psShape[idx] = 1;
+            this.store.psMaterialIndex[idx] = 0;
             this.store.effectIndex[idx] = 0;
-        }
-        
-        if ((this.store.componentMask[idx] & mask) === 0) {
-            this.store.componentMask[idx] |= mask;
-            this.notify('COMPONENT_ADDED', id, type);
         }
     }
 
-    removeComponent(id: string, type: ComponentType) {
+    getComponentTypes(id: string): ComponentType[] {
         const idx = this.idToIndex.get(id);
-        if (idx === undefined) return;
-        
-        let mask = 0;
-        if (type === ComponentType.TRANSFORM) mask = COMPONENT_MASKS.TRANSFORM;
-        else if (type === ComponentType.MESH) mask = COMPONENT_MASKS.MESH;
-        else if (type === ComponentType.LIGHT) mask = COMPONENT_MASKS.LIGHT;
-        else if (type === ComponentType.PHYSICS) mask = COMPONENT_MASKS.PHYSICS;
-        else if (type === ComponentType.SCRIPT) mask = COMPONENT_MASKS.SCRIPT;
-        else if (type === ComponentType.VIRTUAL_PIVOT) mask = COMPONENT_MASKS.VIRTUAL_PIVOT;
-        else if (type === ComponentType.PARTICLE_SYSTEM) mask = COMPONENT_MASKS.PARTICLE_SYSTEM;
-        else if (type === ComponentType.CAMERA) mask = COMPONENT_MASKS.CAMERA;
-        
-        if ((this.store.componentMask[idx] & mask) !== 0) {
-            this.store.componentMask[idx] &= ~mask;
-            this.notify('COMPONENT_REMOVED', id, type);
-        }
+        if (idx === undefined) return [];
+        return componentDefinitionRegistry.getAll()
+            .map(definition => definition.type)
+            .filter(type => {
+                const mask = this.getComponentMask(type);
+                return mask !== 0 && (this.store.componentMask[idx] & mask) !== 0;
+            });
     }
-    
+
+    hasComponent(id: string, type: ComponentType): boolean {
+        const idx = this.idToIndex.get(id);
+        if (idx === undefined) return false;
+        const mask = this.getComponentMask(type);
+        return mask !== 0 && (this.store.componentMask[idx] & mask) !== 0;
+    }
+
+    hasCapability(id: string, capability: string): boolean {
+        return componentDefinitionRegistry.hasCapability(this.getComponentTypes(id), capability);
+    }
+
+    removeComponent(id: string, type: ComponentType): boolean {
+        const idx = this.idToIndex.get(id);
+        if (idx === undefined) return false;
+
+        const mask = this.getComponentMask(type);
+        if (mask === 0 || (this.store.componentMask[idx] & mask) === 0) return false;
+
+        const check = componentDefinitionRegistry.canRemove(type, this.getComponentTypes(id));
+        if (!check.allowed) {
+            console.warn(check.reason ?? `Cannot remove ${type}`);
+            return false;
+        }
+
+        this.store.componentMask[idx] &= ~mask;
+        this.notify('COMPONENT_REMOVED', id, type);
+        return true;
+    }
+
     resize(newCapacity: number) {
         this.store.resize(newCapacity);
         const oldCache = this.proxyCache;
@@ -475,7 +518,14 @@ export class SoAEntitySystem {
             }
 
             this.idToIndex.forEach((idx, id) => {
-                if (this.store.isActive[idx]) sceneGraph.registerEntity(id);
+                if (this.store.isActive[idx]) {
+                    // Migration safety: when a component gains a new dependency later,
+                    // old scenes are repaired by the same registry contract on load.
+                    const existing = this.getComponentTypes(id);
+                    for (const componentType of existing) this.addComponent(id, componentType);
+                    for (const defaultType of componentDefinitionRegistry.getDefaultComponents()) this.addComponent(id, defaultType);
+                    sceneGraph.registerEntity(id);
+                }
                 sceneGraph.setDirty(id);
             });
 

@@ -148,15 +148,16 @@ The Camera Preset editor has two editor-only preview modes. Neither is stored in
 
 ### Through Camera
 
-Uses a canonical fixed preview transform and the actual preset lens:
+Uses the actual preset lens with the shared viewport navigation controller:
 
 - Perspective FOV.
 - Orthographic size.
 - Near/far clipping.
+- Orbit / pan / drag zoom / wheel zoom / reset.
 
-Equal-size reference frames at multiple depths make perspective vs orthographic behavior visible.
+The navigation pose is transient editor state and is not written into the Camera Preset. Equal-size reference frames at multiple depths make perspective vs orthographic behavior visible. Orthographic zoom uses an editor-only scale multiplier because transform dolly does not change orthographic apparent size.
 
-A Camera Preset has no Scene transform, so this view previews the **lens/configuration**, not an authored world position.
+A Camera Preset has no Scene transform, so this mode previews the **lens/configuration through a temporary viewport camera pose**, not an authored world position.
 
 ### Inspect Camera
 
@@ -202,3 +203,10 @@ When adding a new camera driver:
 3. Do not write evaluated animation values back into ECS serialized fields every frame.
 4. Renderer and post-process consumers should request the resolved camera.
 5. Clear transient driver state when an entity is deleted or a Scene is loaded.
+
+
+## Scene viewport binding
+
+The Scene viewport can bind to a live Camera entity without creating a second navigation implementation. `SceneCameraViewportBinding` reads/writes the entity Transform while `Engine.getResolvedCamera(...)` supplies the lens. Orbit/pan/zoom therefore behave like the normal editor camera and leaving View Through restores the previous editor camera.
+
+See `CAMERA_VIEWPORT_BINDING.md` for the pose/lens ownership contract and orthographic navigation rule.

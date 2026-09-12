@@ -138,7 +138,7 @@ export class Engine {
                      this.compileGraph(a.data.nodes, a.data.connections, a.id);
                  } else if (a.type === 'SKELETON') {
                      this.syncSkeletonEntities(a.id);
-                 } else if (a.type === 'CAMERA_PRESET' || a.type === 'POST_PROCESS_PROFILE') {
+                 } else if (a.type === 'CAMERA_PRESET' || a.type === 'POST_PROCESS_PROFILE' || a.type === 'VIEWPORT_PROFILE') {
                      // Resolved cameras/profiles read assets by reference, so edits become live immediately.
                      this.notifyUI();
                  }

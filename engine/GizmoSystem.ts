@@ -37,6 +37,26 @@ export class GizmoSystem {
     activeAxis: GizmoAxis = null;
     hoverAxis: GizmoAxis = null;
 
+    /** Viewport-level visibility. Camera-through binding may hide editor gizmos without changing the active tool. */
+    private viewportEnabled = true;
+    /** Entity helpers that must not be drawn/picked in the current viewport (for example the camera being viewed through). */
+    private suppressedEntityIds = new Set<string>();
+
+    setViewportEnabled(enabled: boolean) {
+        this.viewportEnabled = enabled;
+        if (!enabled) {
+            this.hoverAxis = null;
+            this.activeAxis = null;
+            this.isDragging = false;
+        }
+    }
+
+    setSuppressedEntityIds(entityIds: Iterable<string>) {
+        this.suppressedEntityIds = new Set(entityIds);
+        if (this.activeAxis) this.activeAxis = null;
+        this.hoverAxis = null;
+    }
+
     /** If true, render the gizmo even while the active tool is SELECT (no interaction). */
     renderInSelectTool = false;
     
@@ -60,6 +80,11 @@ export class GizmoSystem {
     }
 
     update(dt: number, mx: number, my: number, width: number, height: number, isDown: boolean, isUp: boolean) {
+        if (!this.viewportEnabled) {
+            this.hoverAxis = null;
+            this.activeAxis = null;
+            return;
+        }
         if (this.tool === 'SELECT' && !this.renderInSelectTool) {
             this.hoverAxis = null;
             this.activeAxis = null;
@@ -109,7 +134,7 @@ export class GizmoSystem {
             return;
         }
 
-        if (!entityId) {
+        if (!entityId || this.suppressedEntityIds.has(entityId)) {
             this.hoverAxis = null;
             this.activeAxis = null;
             return;
@@ -158,6 +183,7 @@ export class GizmoSystem {
     }
 
     render() {
+        if (!this.viewportEnabled) return;
         if (this.tool === 'SELECT' && !this.renderInSelectTool) return;
 
         const selected = this.engine.selectionSystem.selectedIndices; // Updated
@@ -173,9 +199,12 @@ export class GizmoSystem {
 
             const idx = Array.from(selected)[0];
             const entityId = this.engine.ecs.store.ids[idx];
+            if (!entityId || this.suppressedEntityIds.has(entityId)) return;
             pos = this.getSelectedComponentCentroid(entityId);
         } else if (selected.size === 1) {
             const idx = Array.from(selected)[0];
+            const entityId = this.engine.ecs.store.ids[idx];
+            if (!entityId || this.suppressedEntityIds.has(entityId)) return;
             pos = {
                 x: this.engine.ecs.store.worldMatrix[idx*16 + 12],
                 y: this.engine.ecs.store.worldMatrix[idx*16 + 13],

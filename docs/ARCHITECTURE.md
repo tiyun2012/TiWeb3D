@@ -114,3 +114,13 @@ Content Browser editor opening is registered through `editor/AssetEditorRegistry
 Camera Preset uses this path and opens a two-panel `CameraPresetEditor` (Viewport + Inspector) that reuses `AssetViewport3D` and the `CameraSettings` AutoInspector schema. See `docs/CAMERA_PRESET_EDITOR.md`.
 
 - Camera configuration/runtime layering is documented in `docs/CAMERA_RESOLUTION_FLOW.md`; renderer-facing code should consume resolved camera state rather than mutating presets or serialized camera fields during runtime/cinematic control.
+
+## Component composition & Inspector inheritance
+
+Scene-object "inheritance" is capability-based ECS composition, not class inheritance. Runtime component dependencies/default structural components are registered in `engine/components/ComponentDefinitionRegistry.ts`; for example Camera, Light, Mesh, Physics, and Particle System require Transform, so adding one automatically guarantees the spatial base exists. Reusable editable-data contracts use `InspectorSchema.extends`, so adding fields to a base schema such as `CameraSettings` automatically flows into derived schemas such as `CameraComponent`. See [`COMPONENT_COMPOSITION_AND_INSPECTOR_INHERITANCE.md`](./COMPONENT_COMPOSITION_AND_INSPECTOR_INHERITANCE.md).
+
+## Viewport Profile + Camera Binding
+
+Viewport behavior and Camera state are deliberately separate. `VIEWPORT_PROFILE` assets store editor-only navigation/overlay policy (orbit/pan/zoom/focus, grid/helpers/gizmos). A Camera Preset may reference one through `asset.editor.viewportProfileId`; runtime Camera resolution ignores that editor metadata. Scene View Through Camera keeps the viewport profile while binding pose changes to the live Camera entity Transform, and the bound Camera helper/gizmo is suppressed from its own image. Through Camera in the Camera Preset editor never renders frustum/lens-reference geometry; Inspect Camera is the external frustum view. See [`VIEWPORT_PROFILE_AND_CAMERA_BINDING.md`](./VIEWPORT_PROFILE_AND_CAMERA_BINDING.md).
+
+Scene Camera View Through navigation uses explicit interaction ownership: the viewport drives the live Camera Transform during orbit/pan/zoom, external Transform edits resync only outside the active gesture, and Camera roll is transported around the live forward axis rather than stored as a stale world-space up vector. Camera Presets expose an editor-only Transform [Preview] component but do not serialize a Scene Transform. See [`SCENE_CAMERA_NAVIGATION_STABILITY.md`](./SCENE_CAMERA_NAVIGATION_STABILITY.md).

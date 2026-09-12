@@ -71,6 +71,14 @@ assert(
   builtInAssetEditors.includes("type: 'CAMERA_PRESET'") && builtInAssetEditors.includes('<CameraPresetEditor assetId={asset.id} />'),
   'CAMERA_PRESET must register CameraPresetEditor for double-click opening',
 );
+const cameraPresetNavigationSource = read('editor/components/CameraPresetEditor.tsx');
+assert(
+  cameraPresetNavigationSource.includes('const [throughCamera, setThroughCamera]') &&
+    cameraPresetNavigationSource.includes('const [inspectCamera, setInspectCamera]') &&
+    cameraPresetNavigationSource.includes('navigationEnabled') &&
+    !cameraPresetNavigationSource.includes("navigationEnabled={previewMode === 'INSPECT_CAMERA'}"),
+  'CameraPresetEditor Through Camera must reuse normal viewport navigation and preserve independent Through/Inspect poses',
+);
 assert(
   projectPanel.includes('assetEditorRegistry.get(asset.type)') &&
     !projectPanel.includes("asset.type === 'CAMERA_PRESET'") &&
@@ -81,6 +89,13 @@ assert(
 
 assert(exists('editor/components/viewport/ViewportTemplate.tsx'), 'ViewportTemplate must exist');
 assert(exists('editor/viewports/viewportCamera.ts'), 'shared viewportCamera utilities must exist');
+const viewportCameraSource = read('editor/viewports/viewportCamera.ts');
+assert(
+  viewportCameraSource.includes('orthoScale?: number') &&
+    viewportCameraSource.includes('dragOrthographicZoomCamera') &&
+    viewportCameraSource.includes('wheelOrthographicZoomCamera'),
+  'shared viewportCamera must support transient orthographic zoom for navigable camera-through views',
+);
 for (const host of ['editor/components/AssetViewport3D.tsx', 'editor/components/SceneView.tsx']) {
   const source = read(host);
   assert(source.includes('ViewportTemplate'), `${host} must compose through ViewportTemplate`);
@@ -88,6 +103,21 @@ for (const host of ['editor/components/AssetViewport3D.tsx', 'editor/components/
 }
 
 const sceneView = read('editor/components/SceneView.tsx');
+assert(exists('editor/viewports/SceneCameraViewportBinding.ts'), 'SceneCameraViewportBinding must exist for live Scene Camera view-through navigation');
+const sceneCameraViewportBindingSource = read('editor/viewports/SceneCameraViewportBinding.ts');
+assert(
+  sceneCameraViewportBindingSource.includes('readSceneCameraViewportState') &&
+    sceneCameraViewportBindingSource.includes('writeSceneCameraViewportState') &&
+    sceneCameraViewportBindingSource.includes('ComponentType.TRANSFORM'),
+  'Scene Camera view-through must adapt the shared viewport camera pose to the Camera entity Transform',
+);
+assert(
+  sceneView.includes('View Through Selected Camera') &&
+    sceneView.includes('writeSceneCameraViewportState') &&
+    sceneView.includes('engineInstance.getResolvedCamera(viewCameraEntityId)') &&
+    sceneView.includes('exitSceneCameraView'),
+  'SceneView must support binding the normal viewport controller to a selected Scene Camera and restoring the editor camera',
+);
 assert(
   sceneView.includes("window.addEventListener('mouseup', handleGlobalMouseUp)"),
   'SceneView rectangle selection must finalize through the global mouseup path so edge/corner releases are not lost',
@@ -531,6 +561,91 @@ for (const file of sourceFiles.filter((f) => f.endsWith('.tsx'))) {
   }
 }
 
+assert(exists('engine/components/ComponentDefinitionRegistry.ts'), 'ComponentDefinitionRegistry must exist');
+const componentRegistrySource = read('engine/components/ComponentDefinitionRegistry.ts');
+assert(
+  componentRegistrySource.includes('requires: [ComponentType.TRANSFORM]') &&
+    componentRegistrySource.includes("provides: ['SPATIAL']") &&
+    componentRegistrySource.includes('getInstallOrder') &&
+    componentRegistrySource.includes('canRemove'),
+  'component composition must keep dependency-first installation, Transform spatial capability, and protected removal',
+);
+const entitySystemSource = read('engine/ecs/EntitySystem.ts');
+assert(
+  entitySystemSource.includes('componentDefinitionRegistry.getDefaultComponents()') &&
+    entitySystemSource.includes('componentDefinitionRegistry.getInstallOrder(type)') &&
+    entitySystemSource.includes('componentDefinitionRegistry.canRemove'),
+  'EntitySystem must derive default/dependency/removal behavior from ComponentDefinitionRegistry',
+);
+const inspectorSchemaSource = read('editor/inspector/InspectorSchema.ts');
+const inspectorRegistrySource = read('editor/inspector/InspectorRegistry.ts');
+const coreInspectorSchemasSource = read('engine/modules/CoreInspectorSchemas.ts');
+assert(
+  inspectorSchemaSource.includes('extends?: Array<string | InspectorSchemaExtension<T>>') &&
+    inspectorRegistrySource.includes('Inspector schema inheritance cycle detected') &&
+    coreInspectorSchemasSource.includes("schemaId: 'CameraSettings'"),
+  'Inspector schemas must support resolved inheritance and CameraComponent must extend CameraSettings instead of cloning it',
+);
+
+
+const viewportProfileTypesSource = read('types.ts');
+const viewportBuiltInAssetTypesSource = read('engine/BuiltInAssetTypes.ts');
+const viewportCameraPresetEditorSource = read('editor/components/CameraPresetEditor.tsx');
+const viewportSceneViewSource = read('editor/components/SceneView.tsx');
+const viewportAssetViewportSource = read('editor/components/AssetViewport3D.tsx');
+assert(
+  viewportProfileTypesSource.includes("| 'VIEWPORT_PROFILE'") &&
+    viewportBuiltInAssetTypesSource.includes("type: 'VIEWPORT_PROFILE'") &&
+    exists('editor/components/ViewportProfileEditor.tsx'),
+  'Viewport Profile must remain a registered reusable asset with an editor',
+);
+assert(
+  viewportCameraPresetEditorSource.includes('showGrid={effectiveShowGrid}') &&
+    viewportCameraPresetEditorSource.includes('viewportProfile={viewportProfile}') &&
+    !viewportCameraPresetEditorSource.includes('LENS_PREVIEW_LINES'),
+  'Camera Through view must reuse viewport profile grid/navigation and must not draw lens-reference geometry into its own image',
+);
+assert(
+  viewportSceneViewSource.includes('setSuppressedEntityIds(viewCameraEntityId ? [viewCameraEntityId] : [])') &&
+    viewportSceneViewSource.includes('const commitBoundCameraViewportState') &&
+    viewportSceneViewSource.includes('writeSceneCameraViewportState(engineInstance, boundCameraId, cameraRef.current)'),
+  'Scene View Through Camera must commit navigation into the Camera Transform at gesture boundaries and suppress the source Camera helper/gizmo',
+);
+assert(
+  viewportSceneViewSource.includes('publishCameraState') &&
+    viewportSceneViewSource.includes('requestAnimationFrame') &&
+    viewportSceneViewSource.includes('publishCameraState(cameraRef.current, true)'),
+  'Scene View camera navigation must coalesce React camera publication and flush only the final pose at gesture commit',
+);
+assert(
+  viewportSceneViewSource.includes('boundCameraNavigationActiveRef') &&
+    viewportSceneViewSource.includes('if (boundCameraNavigationActiveRef.current) return;'),
+  'Scene View bound-camera navigation must suppress Transform-to-viewport feedback while a viewport gesture owns the Camera',
+);
+const sceneCameraBindingSource = read('editor/viewports/SceneCameraViewportBinding.ts');
+const sceneViewportCameraSource = read('editor/viewports/viewportCamera.ts');
+assert(
+  !sceneCameraBindingSource.includes('engine.sceneGraph.update();') &&
+    sceneCameraBindingSource.includes('getCameraUp(camera)') &&
+    sceneViewportCameraSource.includes('cameraStateFromWorldPose') &&
+    sceneViewportCameraSource.includes('roll?: number'),
+  'Scene Camera binding must avoid whole-scene updates during navigation and transport roll around the live forward axis',
+);
+assert(
+  viewportCameraPresetEditorSource.includes('schemaId="CameraPreviewTransform"') &&
+    viewportCameraPresetEditorSource.includes('badge="Preview"'),
+  'Camera Preset editor must expose an editor-only Transform Preview component without serializing a Scene Transform into the asset',
+);
+assert(
+  viewportAssetViewportSource.includes('viewportProfile?: ViewportProfileSettings') &&
+    viewportAssetViewportSource.includes('navigationPolicy?: Partial<ViewportNavigationSettings>') &&
+    viewportAssetViewportSource.includes('navigation.orbit') &&
+    viewportAssetViewportSource.includes('navigation.pan') &&
+    viewportAssetViewportSource.includes('navigation.zoom'),
+  'AssetViewport3D must keep per-gesture navigation policy reusable across camera-bound asset editors',
+);
+
+
 console.log(`Project audit: ${sourceFiles.length} TypeScript source files checked.`);
 if (warnings.length) {
   console.log(`Accessibility warnings: ${warnings.length}`);
@@ -545,3 +660,4 @@ if (failures.length) {
 }
 
 console.log('Audit passed.');
+

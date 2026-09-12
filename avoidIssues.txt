@@ -296,3 +296,38 @@ CAMERA RESOLUTION / PRESET RULES
 - Scene/post-process consumers that need camera settings should use the resolved camera state.
 - Camera Preset editor preview mode is editor-only: Through Camera previews the preset lens; Inspect Camera visualizes the frustum.
 - Content Browser visibility comes from AssetTypeRegistry `contentVisibility`; do not conflate hidden content with non-editable content.
+
+### Component composition / schema inheritance
+- Do not model Camera/Light/Mesh as subclasses of a TransformObject. Scene entities reuse spatial behavior by composing the Transform component.
+- Register component dependencies in `engine/components/ComponentDefinitionRegistry.ts`; `ecs.addComponent()` must remain dependency-aware so required bases are installed automatically and old scenes can be repaired on load.
+- Do not remove required/structural components by directly editing ECS masks. Use `ecs.removeComponent()` / the Engine API so dependency protection runs.
+- Use component capabilities (for example `SPATIAL`, `CAMERA`, `RENDERABLE`) when behavior matters more than concrete component identity.
+- Do not manually clone Inspector sections to make a derived editable data type. Use `InspectorSchema.extends` so base-schema improvements automatically flow into derived inspectors.
+- Runtime composition (`requires`) and Inspector schema inheritance (`extends`) are separate concepts; Camera Preset assets inherit CameraSettings fields but do not receive a Scene Transform.
+
+### View-through camera navigation
+- A viewport looking through a Camera/Preset must reuse the shared `viewportCamera` orbit/pan/zoom math; do not lock Through Camera merely because its lens comes from a Camera asset.
+- Keep viewport pose separate from lens ownership. Camera Preset stores lens/render settings only; its Through/Inspect navigation poses are transient editor state and must never be serialized into the preset.
+- Preserve separate Through Camera and Inspect Camera poses when switching preview modes so mode changes do not destroy user navigation state.
+- Orthographic camera navigation needs screen-scale zoom (`CameraState.orthoScale`) because changing camera radius/dolly does not change apparent size in an orthographic projection. `orthoScale` is editor navigation state, not authored `CameraSettings.orthoSize`.
+- Scene `View Through Camera` must bind the same viewport pose controller to the Camera entity Transform through `SceneCameraViewportBinding` and read lens data through `getResolvedCamera`; do not create another camera-control implementation. Leaving the bound Camera must restore the independent editor camera.
+
+---
+
+### 31. VIEWPORT PROFILE / CAMERA SOURCE SEPARATION
+- **VIEWPORT != CAMERA:** Camera owns lens; live Scene Camera pose belongs to Transform. Grid, helpers, gizmos, and orbit/pan/zoom/focus availability belong to `VIEWPORT_PROFILE` / viewport host.
+- **THROUGH CAMERA MUST NOT DRAW ITSELF:** Never draw lens-reference frames, camera frustum, camera icon, or the bound Camera's transform gizmo into the viewport produced by that same Camera. Camera Preset Through mode renders no camera helper; Scene Through mode suppresses the bound entity in `GizmoSystem`.
+- **DO NOT HIDE GRID JUST BECAUSE CAMERA SOURCE CHANGED:** Grid visibility comes from the active Viewport Profile. If the grid becomes edge-on because of camera orientation, that is projection behavior, not a reason to special-case Camera mode.
+- **LIVE CAMERA NAVIGATION COMMITS TRANSFORM:** Scene View orbit/pan/perspective zoom while bound to a Camera must flow through shared `viewportCamera.ts` math. Keep the live gesture in viewport-local `CameraState`, then commit the final pose through `writeSceneCameraViewportState(...)` once at mouse-up / wheel-idle so the Camera entity moves/rotates without dirtying the SceneGraph per pointer sample.
+- **PRESET NAVIGATION IS TRANSIENT:** Camera Preset Through mode has no Scene Transform, so its preview pose stays editor-only while the preset lens remains persistent asset data.
+- **REUSE PROFILE BINDING:** Future 3D assets should reference a Viewport Profile through editor metadata (`asset.editor.viewportProfileId`) and resolve it via `ViewportProfileResolver`; do not copy viewport flags into each asset type.
+- **REFERENCE:** Read `docs/VIEWPORT_PROFILE_AND_CAMERA_BINDING.md` before changing camera-through behavior, viewport grid/helper rules, or camera-bound navigation.
+
+---
+
+### SCENE CAMERA VIEW-THROUGH STABILITY
+- **ONE ACTIVE DRIVER PER GESTURE:** While a Scene viewport is orbiting/panning/zooming a bound Camera, do not resync CameraState from Transform notifications. The viewport owns the gesture; Transform is the committed scene state.
+- **NO FULL SCENEGRAPH UPDATE PER POINTER SAMPLE:** `writeSceneCameraViewportState` may dirty the Camera branch but must not call whole-scene `sceneGraph.update()` on every mousemove. Resolve only required parent matrices and let the render/update loop process dirtiness.
+- **TRANSPORT ROLL, DO NOT FREEZE WORLD UP:** Orbit state must represent Camera roll as a scalar around the live forward direction. Keeping the original world-space `up` vector while forward changes causes flips/corkscrew rotation. Use `getCameraUp()` / `cameraStateFromWorldPose()`.
+- **BATCH CAMERA NAVIGATION:** During a bound-camera gesture, keep the latest pose in `cameraRef`, coalesce React `setCamera` publication to at most one animation frame, and do not write the Camera Transform on every pointer sample. Mouse-up / wheel-idle flushes the final React pose, writes Transform once, calls `notifyUI()` while the self-resync guard is still active, then releases ownership.
+- **CAMERA PRESET PREVIEW TRANSFORM IS EDITOR-ONLY:** A Camera Preset does not own a Scene Transform, but its editor should expose `Transform [Preview]` as component-like editor state. Never serialize that preview pose into runtime CameraPreset settings.

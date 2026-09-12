@@ -1,10 +1,7 @@
-import type { CameraComponentData, CameraSettings } from '@/types';
+import type { CameraComponentData, CameraSettings, Vector3, ViewportProfileSettings } from '@/types';
 import { inspectorRegistry } from '@/editor/inspector/InspectorRegistry';
 import { LIGHT_TYPES } from '@/engine/constants';
-import type {
-  InspectorFieldSchema,
-  InspectorSectionSchema,
-} from '@/editor/inspector/InspectorSchema';
+import type { InspectorSectionSchema } from '@/editor/inspector/InspectorSchema';
 
 let registered = false;
 
@@ -124,30 +121,88 @@ const cameraSettingSections: InspectorSectionSchema<CameraSettings>[] = [
   },
 ];
 
-const buildCameraComponentSettingSections = (): InspectorSectionSchema<CameraComponentData>[] =>
-  cameraSettingSections.map(section => ({
-    ...section,
-    fields: section.fields.map(baseField => {
-      const field = baseField as InspectorFieldSchema<CameraSettings>;
-      return {
-        ...field,
-        visibleWhen: field.visibleWhen
-          ? (ctx => field.visibleWhen?.({ value: ctx.value, scope: ctx.scope }) !== false)
-          : undefined,
-        enabledWhen: ctx => {
-          if (ctx.value.configSource === 'PRESET') return false;
-          return field.enabledWhen?.({ value: ctx.value, scope: ctx.scope }) !== false;
-        },
-        normalize: field.normalize
-          ? ((value, ctx) => field.normalize?.(value, { value: ctx.value, scope: ctx.scope }))
-          : undefined,
-      } satisfies InspectorFieldSchema<CameraComponentData>;
-    }),
-  }));
+
+
+interface CameraPreviewTransformSettings {
+  position: Vector3;
+  rotation: Vector3;
+  scale: Vector3;
+}
+
+interface CameraPresetEditorSettings {
+  viewportProfileId?: string;
+}
 
 export const registerCoreInspectorSchemas = () => {
   if (registered) return;
   registered = true;
+
+
+  inspectorRegistry.register<CameraPreviewTransformSettings>({
+    id: 'CameraPreviewTransform',
+    title: 'Transform',
+    icon: 'Move',
+    sections: [
+      {
+        id: 'transform',
+        label: 'Preview Transform',
+        fields: [
+          { path: 'position', type: 'vector3', label: 'Position', step: 0.05, tooltip: 'Editor-only Camera Preset preview position. Not serialized into the asset.' },
+          { path: 'rotation', type: 'vector3', label: 'Rotation', step: 0.01, tooltip: 'Editor-only Camera Preset preview Euler rotation in radians.' },
+          { path: 'scale', type: 'vector3', label: 'Scale', readOnly: true, tooltip: 'Camera scale is not part of the view transform.' },
+        ],
+      },
+    ],
+  });
+
+  inspectorRegistry.register<CameraPresetEditorSettings>({
+    id: 'CameraPresetEditorSettings',
+    title: 'Camera Preset Editor',
+    icon: 'Monitor',
+    sections: [
+      {
+        id: 'viewport',
+        label: 'Editor Viewport',
+        fields: [
+          {
+            path: 'viewportProfileId',
+            type: 'asset',
+            label: 'Viewport Profile',
+            assetTypes: ['VIEWPORT_PROFILE'],
+            defaultLabel: 'Default Viewport',
+            tooltip: 'Editor-only viewport behavior. It does not change the runtime Camera lens or Transform.',
+          },
+        ],
+      },
+    ],
+  });
+
+  inspectorRegistry.register<ViewportProfileSettings>({
+    id: 'ViewportProfileSettings',
+    title: 'Viewport Profile',
+    icon: 'Monitor',
+    sections: [
+      {
+        id: 'navigation',
+        label: 'Navigation',
+        fields: [
+          { path: 'navigation.orbit', type: 'boolean', label: 'Orbit' },
+          { path: 'navigation.pan', type: 'boolean', label: 'Pan' },
+          { path: 'navigation.zoom', type: 'boolean', label: 'Zoom' },
+          { path: 'navigation.focus', type: 'boolean', label: 'Focus' },
+        ],
+      },
+      {
+        id: 'overlays',
+        label: 'Viewport Overlays',
+        fields: [
+          { path: 'overlays.grid', type: 'boolean', label: 'Grid' },
+          { path: 'overlays.helpers', type: 'boolean', label: 'Helpers' },
+          { path: 'overlays.gizmos', type: 'boolean', label: 'Gizmos' },
+        ],
+      },
+    ],
+  });
 
   inspectorRegistry.register<CameraSettings>({
     id: 'CameraSettings',
@@ -160,6 +215,15 @@ export const registerCoreInspectorSchemas = () => {
     id: 'CameraComponent',
     title: 'Camera',
     icon: 'Camera',
+    extends: [
+      {
+        schemaId: 'CameraSettings',
+        placement: 'after',
+        // Preset-backed cameras inherit the fields for visibility, but the serialized
+        // preset remains the source of truth until the user switches back to Local.
+        enabledWhen: ({ value }) => value.configSource !== 'PRESET',
+      },
+    ],
     sections: [
       {
         id: 'configuration',
@@ -197,7 +261,6 @@ export const registerCoreInspectorSchemas = () => {
           },
         ],
       },
-      ...buildCameraComponentSettingSections(),
     ],
   });
 

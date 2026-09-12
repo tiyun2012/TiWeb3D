@@ -2,7 +2,7 @@
 import type { EngineAPI } from './EngineAPI';
 import { eventBus } from '@/engine/EventBus';
 import { engineInstance } from '@/engine/engine';
-import type { CameraSettings, SimulationMode, MeshComponentMode, ToolType } from '@/types';
+import type { CameraSettings, ComponentType, SimulationMode, MeshComponentMode, ToolType } from '@/types';
 import { Mat4Utils, Vec3Utils } from '@/engine/math';
 
 export function createEngineAPI(engine: any = engineInstance): EngineAPI {
@@ -112,6 +112,17 @@ export function createEngineAPI(engine: any = engineInstance): EngineAPI {
           engine.clearCameraDriverOverrides?.(id);
         },
       },
+      components: {
+        add(id: string, type: ComponentType) {
+          engine.ecs?.addComponent(id, type);
+          engine.notifyUI?.();
+        },
+        remove(id: string, type: ComponentType) {
+          const removed = engine.ecs?.removeComponent(id, type) ?? false;
+          if (removed) engine.notifyUI?.();
+          return removed;
+        },
+      },
     },
 
     subscribe(event: string, cb: (payload: any) => void) {
@@ -150,6 +161,10 @@ export function createEngineAPI(engine: any = engineInstance): EngineAPI {
 
     getResolvedCamera(id: string) {
       return engine.getResolvedCamera?.(id) ?? null;
+    },
+
+    hasComponentCapability(id: string, capability: string) {
+      return engine.ecs?.hasCapability?.(id, capability) ?? false;
     },
   };
 }

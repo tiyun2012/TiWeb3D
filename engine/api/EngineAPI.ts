@@ -1,4 +1,4 @@
-import type { CameraSettings, MeshComponentMode, ResolvedCameraState, SimulationMode, ToolType } from '@/types';
+import type { CameraSettings, ComponentType, MeshComponentMode, ResolvedCameraState, SimulationMode, ToolType } from '@/types';
 
 export type EngineAPI = {
   // Commands: stable surface that UI should call
@@ -30,6 +30,12 @@ export type EngineAPI = {
       setCinematicOverride(id: string, override: Partial<CameraSettings> | null): void;
       clearDriverOverrides(id: string): void;
     };
+    components: {
+      /** Adds the component plus any registered required/base components. */
+      add(id: string, type: ComponentType): void;
+      /** Removes only when no installed component depends on it. */
+      remove(id: string, type: ComponentType): boolean;
+    };
   };
 
   // Events: subscribe to engine/editor events
@@ -41,4 +47,5 @@ export type EngineAPI = {
   getWorldPosition(id: string): { x: number; y: number; z: number } | null;
   getTool(): ToolType;
   getResolvedCamera(id: string): ResolvedCameraState | null;
+  hasComponentCapability(id: string, capability: string): boolean;
 };

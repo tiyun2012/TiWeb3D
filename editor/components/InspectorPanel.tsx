@@ -16,6 +16,7 @@ import { DraggableNumber, Vector3Input } from './ui/InputControls';
 import { AutoInspector } from './inspector/AutoInspector';
 import { PostProcessProfileInspector } from './inspector/PostProcessProfileInspector';
 import { CameraPresetAsset, PostProcessProfileAsset } from '@/types';
+import { componentDefinitionRegistry } from '@/engine/components/ComponentDefinitionRegistry';
 
 interface InspectorPanelProps {
   object: Entity | Asset | GraphNode | null;
@@ -260,10 +261,12 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({ object: initialO
   };
 
   const removeComponent = (compType: string) => {
-      if (activeType !== 'ENTITY' || !activeObject) return;
+      if (activeType !== 'ENTITY' || !activeObject || !componentDefinitionRegistry.has(compType)) return;
+      const entityId = (activeObject as Entity).id;
+      const check = componentDefinitionRegistry.canRemove(compType, engineInstance.ecs.getComponentTypes(entityId));
+      if (!check.allowed) return;
       engineInstance.pushUndoState();
-      engineInstance.ecs.removeComponent((activeObject as Entity).id, compType as ComponentType);
-      engineInstance.notifyUI();
+      if (engineInstance.ecs.removeComponent(entityId, compType)) engineInstance.notifyUI();
   };
 
   if (!activeObject) {
@@ -282,7 +285,10 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({ object: initialO
   );
 
   if (activeType === 'ENTITY') {
-      const modules = moduleManager.getAllModules();
+      // Only registered ECS component modules belong in the Add Component menu.
+      // Runtime-only modules/systems (for example AnimationSystem) are not entity components.
+      const modules = moduleManager.getAllModules().filter(m => componentDefinitionRegistry.has(m.id));
+      const presentComponentTypes = engineInstance.ecs.getComponentTypes(entity!.id);
       const availableModules = modules.filter(m => !entity!.components[m.id]);
 
       return (
@@ -316,7 +322,12 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({ object: initialO
                           title={mod.name ?? mod.id} 
                           icon={mod.icon ?? 'Box'} 
                           component={comp} 
-                          onRemove={mod.id === 'Transform' ? undefined : () => removeComponent(mod.id)}
+                          onRemove={
+                            componentDefinitionRegistry.has(mod.id) &&
+                            componentDefinitionRegistry.canRemove(mod.id, presentComponentTypes).allowed
+                              ? () => removeComponent(mod.id)
+                              : undefined
+                          }
                       >
                           <mod.InspectorComponent 
                               entity={entity!}

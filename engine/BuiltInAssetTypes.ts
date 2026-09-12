@@ -50,6 +50,20 @@ export function registerBuiltInAssetTypes() {
   });
 
   assetTypeRegistry.register({
+    type: 'VIEWPORT_PROFILE',
+    label: 'Viewport Profile',
+    icon: 'Monitor',
+    colorClass: 'text-indigo-300',
+    description: 'Reusable editor viewport navigation and overlay behavior.',
+    contentVisibility: 'PUBLIC',
+    creatable: true,
+    createCategory: 'Rendering',
+    createOrder: 5,
+    defaultName: 'New Viewport Profile',
+    create: ({ name, path }) => assetManager.createViewportProfile(name, path),
+  });
+
+  assetTypeRegistry.register({
     type: 'CAMERA_PRESET',
     label: 'Camera Preset',
     icon: 'Camera',

@@ -34,6 +34,7 @@ export type AssetType =
     | 'RIG'
     | 'SCENE'
     | 'CAMERA_PRESET'
+    | 'VIEWPORT_PROFILE'
     | 'POST_PROCESS_PROFILE'
     | 'PHYSICS_MATERIAL';
 
@@ -105,6 +106,11 @@ export interface Asset {
     path?: string;
     isProtected?: boolean;
     data?: any;
+    /** Editor-only metadata. Runtime systems must not depend on these values. */
+    editor?: {
+        viewportProfileId?: string;
+        [key: string]: any;
+    };
     [key: string]: any;
 }
 
@@ -336,6 +342,34 @@ export interface ResolvedCameraState {
     baseSource: 'LOCAL' | 'PRESET' | 'LOCAL_FALLBACK';
     overrideSource: 'NONE' | 'RUNTIME' | 'CINEMATIC';
     presetId?: string;
+}
+
+
+export interface ViewportNavigationSettings {
+    orbit: boolean;
+    pan: boolean;
+    zoom: boolean;
+    focus: boolean;
+}
+
+export interface ViewportOverlaySettings {
+    grid: boolean;
+    helpers: boolean;
+    gizmos: boolean;
+}
+
+/**
+ * Editor viewport behavior only. It deliberately does not own a camera pose or lens.
+ * A viewport binds this profile to whichever camera source it is currently using.
+ */
+export interface ViewportProfileSettings {
+    navigation: ViewportNavigationSettings;
+    overlays: ViewportOverlaySettings;
+}
+
+export interface ViewportProfileAsset extends Asset {
+    type: 'VIEWPORT_PROFILE';
+    data: ViewportProfileSettings;
 }
 
 export type PostProcessStage = 'PRE_GLOBAL' | 'GLOBAL' | 'POST_GLOBAL' | 'OVERLAY';

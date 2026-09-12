@@ -1,5 +1,5 @@
 
-import { StaticMeshAsset, SkeletalMeshAsset, SkeletonAsset, MaterialAsset, PhysicsMaterialAsset, ScriptAsset, RigAsset, TextureAsset, SceneAsset, GraphNode, GraphConnection, Asset, LogicalMesh, FolderAsset, BoneData, CameraPresetAsset, PostProcessProfileAsset } from '@/types';
+import { StaticMeshAsset, SkeletalMeshAsset, SkeletonAsset, MaterialAsset, PhysicsMaterialAsset, ScriptAsset, RigAsset, TextureAsset, SceneAsset, GraphNode, GraphConnection, Asset, LogicalMesh, FolderAsset, BoneData, CameraPresetAsset, PostProcessProfileAsset, ViewportProfileAsset } from '@/types';
 import { MaterialTemplate, MATERIAL_TEMPLATES } from './MaterialTemplates';
 import { MESH_TYPES } from './constants';
 import { ProceduralGeneration } from './ProceduralGeneration';
@@ -8,6 +8,7 @@ import { MeshTopologyUtils } from './MeshTopologyUtils';
 import * as THREE from 'three';
 import { eventBus } from './EventBus';
 import { createDefaultCameraSettings } from './camera/CameraSettings';
+import { createDefaultViewportProfileSettings } from './viewport/ViewportProfileSettings';
 
 export interface RigTemplate {
     name: string;
@@ -390,6 +391,17 @@ class AssetManagerService {
         const asset: CameraPresetAsset = {
             id, name, type: 'CAMERA_PRESET', path,
             data: createDefaultCameraSettings(),
+        };
+        this.registerAsset(asset);
+        eventBus.emit('ASSET_CREATED', { id: asset.id, type: asset.type });
+        return asset;
+    }
+
+    createViewportProfile(name: string, path: string = '/Content/ViewportProfiles'): ViewportProfileAsset {
+        const id = crypto.randomUUID();
+        const asset: ViewportProfileAsset = {
+            id, name, type: 'VIEWPORT_PROFILE', path,
+            data: createDefaultViewportProfileSettings(),
         };
         this.registerAsset(asset);
         eventBus.emit('ASSET_CREATED', { id: asset.id, type: asset.type });

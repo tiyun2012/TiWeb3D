@@ -6,6 +6,7 @@ import { StaticMeshEditor } from './components/StaticMeshEditor';
 import { SkeletalMeshEditor } from './components/SkeletalMeshEditor';
 import { SkeletonEditor } from './components/SkeletonEditor';
 import { CameraPresetEditor } from './components/CameraPresetEditor';
+import { ViewportProfileEditor } from './components/ViewportProfileEditor';
 
 let registered = false;
 
@@ -94,6 +95,18 @@ export const registerBuiltInAssetEditors = () => {
       icon: 'Bone',
       content: <SkeletonEditor assetId={asset.id} />,
       ...getFullAssetEditorLayout(),
+    }),
+  });
+
+
+  assetEditorRegistry.register({
+    type: 'VIEWPORT_PROFILE',
+    createWindow: asset => ({
+      id: `editor_${asset.id}`,
+      title: asset.name,
+      icon: 'Monitor',
+      content: <ViewportProfileEditor assetId={asset.id} />,
+      ...centeredWindow(520, 600),
     }),
   });
 

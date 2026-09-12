@@ -2,7 +2,7 @@
 import React, { useRef, useEffect, useState, useLayoutEffect, useContext, useCallback } from 'react';
 import { useViewportSize } from '@/editor/hooks/useViewportSize';
 import { createPortal } from 'react-dom';
-import { ToolType } from '@/types';
+import { ComponentType, ToolType } from '@/types';
 import { SceneGraph } from '@/engine/SceneGraph';
 import { engineInstance } from '@/engine/engine';
 import { assetManager } from '@/engine/AssetManager';
@@ -20,12 +20,21 @@ import {
     CameraDragMode,
     CameraState,
     cloneCamera,
+    dragOrthographicZoomCamera,
     dragZoomCamera,
     getCameraEye,
+    getCameraUp,
     orbitCamera,
     panCamera,
+    wheelOrthographicZoomCamera,
     wheelZoomCamera,
 } from '@/editor/viewports/viewportCamera';
+import {
+    cameraStatesApproximatelyEqual,
+    readSceneCameraViewportState,
+    writeSceneCameraViewportState,
+} from '@/editor/viewports/SceneCameraViewportBinding';
+import { resolveSceneCameraViewportProfile, resolveViewportProfile } from '@/editor/viewports/ViewportProfileResolver';
 
 const MARQUEE_DRAG_THRESHOLD_PX = 4;
 
@@ -62,8 +71,145 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         setIsViewMenuOpen(false); 
     };
 
+    // A viewport always navigates one camera pose. Normally that is the editor
+    // camera; View Through binds the exact same controller to a Scene Camera's
+    // Transform while its lens comes from CameraResolver.
+    const [camera, setCamera] = useState<CameraState>({ theta: 0.5, phi: 1.2, radius: 10, target: { x: 0, y: 0, z: 0 } });
+    const cameraRef = useRef(camera);
+    // Pointer devices can generate camera samples faster than React can render the
+    // full Scene viewport. Keep the latest pose synchronously in cameraRef, but
+    // publish React state at most once per animation frame so stale samples cannot
+    // build a visible post-gesture tail.
+    const cameraPublishRafRef = useRef<number | null>(null);
+    const pendingCameraPublishRef = useRef<CameraState | null>(null);
+    const [viewCameraEntityId, setViewCameraEntityId] = useState<string | null>(null);
+    const viewCameraEntityIdRef = useRef<string | null>(null);
+    const editorCameraBeforeBindingRef = useRef<CameraState | null>(null);
+    // While viewport navigation owns a bound Scene Camera, ignore UI notifications
+    // that would otherwise round-trip Transform -> CameraState back into the same drag.
+    const boundCameraNavigationActiveRef = useRef(false);
+    const boundCameraUiCommitTimerRef = useRef<number | null>(null);
+
+    useEffect(() => { viewCameraEntityIdRef.current = viewCameraEntityId; }, [viewCameraEntityId]);
+    useEffect(() => () => {
+        if (boundCameraUiCommitTimerRef.current !== null) {
+            window.clearTimeout(boundCameraUiCommitTimerRef.current);
+            boundCameraUiCommitTimerRef.current = null;
+        }
+        if (cameraPublishRafRef.current !== null) {
+            window.cancelAnimationFrame(cameraPublishRafRef.current);
+            cameraPublishRafRef.current = null;
+        }
+    }, []);
+
+    // Viewport behavior is independent from the camera source. Binding a Scene Camera
+    // swaps pose/lens ownership, while grid/helpers/navigation remain viewport features.
+    const activeViewportProfile = viewCameraEntityId
+        ? resolveSceneCameraViewportProfile(engineInstance, viewCameraEntityId)
+        : resolveViewportProfile();
+    const gridBeforeCameraBindingRef = useRef<boolean | null>(null);
+
+    const publishCameraState = useCallback((next: CameraState, immediate = false) => {
+        pendingCameraPublishRef.current = next;
+
+        if (immediate) {
+            if (cameraPublishRafRef.current !== null) {
+                window.cancelAnimationFrame(cameraPublishRafRef.current);
+                cameraPublishRafRef.current = null;
+            }
+            pendingCameraPublishRef.current = null;
+            setCamera(next);
+            return;
+        }
+
+        if (cameraPublishRafRef.current !== null) return;
+        cameraPublishRafRef.current = window.requestAnimationFrame(() => {
+            cameraPublishRafRef.current = null;
+            const latest = pendingCameraPublishRef.current;
+            pendingCameraPublishRef.current = null;
+            if (latest) setCamera(latest);
+        });
+    }, []);
+
+    // Navigation owns a local viewport pose while a gesture is active. Do not
+    // round-trip every mouse sample through the Scene Camera Transform: the viewport
+    // already renders from this CameraState, and repeatedly dirtying the SceneGraph
+    // makes bound-camera navigation unnecessarily expensive. React publication is
+    // also coalesced to one sample per animation frame to avoid pointer-event backlog.
+    const updateViewportCamera = useCallback((updater: CameraState | ((previous: CameraState) => CameraState)) => {
+        const previous = cameraRef.current;
+        const next = typeof updater === 'function' ? updater(previous) : updater;
+        cameraRef.current = next;
+        publishCameraState(next);
+    }, [publishCameraState]);
+
+    const commitBoundCameraViewportState = useCallback((notify = true) => {
+        const boundCameraId = viewCameraEntityIdRef.current;
+        if (!boundCameraId) {
+            boundCameraNavigationActiveRef.current = false;
+            return false;
+        }
+
+        // Flush exactly the final viewport pose and discard any queued intermediate
+        // React camera publish before committing the Scene Transform.
+        publishCameraState(cameraRef.current, true);
+
+        // Keep the self-resync guard active through notifyUI(). notifyUI is
+        // synchronous, so the SceneView subscription must see this commit as its own
+        // transaction rather than as an external Transform edit.
+        boundCameraNavigationActiveRef.current = true;
+        const committed = writeSceneCameraViewportState(engineInstance, boundCameraId, cameraRef.current);
+        if (committed && notify) engineInstance.notifyUI();
+        boundCameraNavigationActiveRef.current = false;
+        return committed;
+    }, [publishCameraState]);
+
+    const enterSceneCameraView = useCallback((entityId: string) => {
+        // Finish any pending navigation transaction on the previously bound camera
+        // before changing sources. This prevents a debounced wheel edit from being
+        // silently lost when switching directly between cameras.
+        if (viewCameraEntityIdRef.current && boundCameraNavigationActiveRef.current) {
+            if (boundCameraUiCommitTimerRef.current !== null) {
+                window.clearTimeout(boundCameraUiCommitTimerRef.current);
+                boundCameraUiCommitTimerRef.current = null;
+            }
+            commitBoundCameraViewportState();
+        }
+
+        const next = readSceneCameraViewportState(engineInstance, entityId, cameraRef.current.radius);
+        if (!next) return;
+        if (!viewCameraEntityIdRef.current) {
+            editorCameraBeforeBindingRef.current = cloneCamera(cameraRef.current);
+        }
+        viewCameraEntityIdRef.current = entityId;
+        setViewCameraEntityId(entityId);
+        cameraRef.current = next;
+        publishCameraState(next, true);
+    }, [commitBoundCameraViewportState, publishCameraState]);
+
+    const exitSceneCameraView = useCallback(() => {
+        if (viewCameraEntityIdRef.current && boundCameraNavigationActiveRef.current) {
+            if (boundCameraUiCommitTimerRef.current !== null) {
+                window.clearTimeout(boundCameraUiCommitTimerRef.current);
+                boundCameraUiCommitTimerRef.current = null;
+            }
+            commitBoundCameraViewportState();
+        }
+
+        viewCameraEntityIdRef.current = null;
+        setViewCameraEntityId(null);
+        const previousEditorCamera = editorCameraBeforeBindingRef.current;
+        if (previousEditorCamera) {
+            const restored = cloneCamera(previousEditorCamera);
+            cameraRef.current = restored;
+            publishCameraState(restored, true);
+        }
+        editorCameraBeforeBindingRef.current = null;
+    }, [commitBoundCameraViewportState, publishCameraState]);
+
     // Camera Focus Logic (Needed by Pie Menu Hook)
     const handleFocus = useCallback(() => {
+        if (!activeViewportProfile.navigation.focus) return;
         if (selectedIds.length > 0) {
             const bounds = AABBUtils.create();
             let valid = false;
@@ -87,12 +233,14 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
                 const center = AABBUtils.center(bounds, Vec3Utils.create());
                 const size = AABBUtils.size(bounds, Vec3Utils.create());
                 const maxDim = Math.max(size.x, Math.max(size.y, size.z));
-                setCamera(prev => ({ ...prev, target: center, radius: Math.max(maxDim * 1.5, 2.0) }));
+                updateViewportCamera(prev => ({ ...prev, target: center, radius: Math.max(maxDim * 1.5, 2.0) }));
+                if (viewCameraEntityIdRef.current) commitBoundCameraViewportState();
             }
         } else {
-            setCamera(prev => ({ ...prev, target: {x:0, y:0, z:0}, radius: 10 }));
+            updateViewportCamera(prev => ({ ...prev, target: {x:0, y:0, z:0}, radius: 10 }));
+            if (viewCameraEntityIdRef.current) commitBoundCameraViewportState();
         }
-    }, [selectedIds, sceneGraph]);
+    }, [selectedIds, sceneGraph, updateViewportCamera, commitBoundCameraViewportState, activeViewportProfile.navigation.focus]);
 
     // Use Pie Menu Hook
     const { 
@@ -134,8 +282,70 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const viewMenuRef = useRef<HTMLDivElement>(null);
 
-    const [camera, setCamera] = useState<CameraState>({ theta: 0.5, phi: 1.2, radius: 10, target: { x: 0, y: 0, z: 0 } });
-    
+    const selectedCameraId = selectedIds.find(id => engineInstance.ecs.hasComponent(id, ComponentType.CAMERA)) ?? null;
+    const resolvedViewCamera = viewCameraEntityId ? engineInstance.getResolvedCamera(viewCameraEntityId) : null;
+    const viewCameraLens = resolvedViewCamera?.settings ?? null;
+
+    useEffect(() => {
+        const gizmoSystem = engineInstance.gizmoSystem;
+        gizmoSystem.setViewportEnabled(activeViewportProfile.overlays.gizmos);
+        // Invariant: a bound camera never renders/picks its own transform helper in its own view.
+        gizmoSystem.setSuppressedEntityIds(viewCameraEntityId ? [viewCameraEntityId] : []);
+
+        return () => {
+            gizmoSystem.setViewportEnabled(true);
+            gizmoSystem.setSuppressedEntityIds([]);
+        };
+    }, [viewCameraEntityId, activeViewportProfile.overlays.gizmos]);
+
+    useEffect(() => {
+        if (viewCameraEntityId) {
+            if (gridBeforeCameraBindingRef.current === null) {
+                gridBeforeCameraBindingRef.current = engineInstance.renderer.showGrid;
+            }
+            engineInstance.renderer.showGrid = activeViewportProfile.overlays.grid;
+            engineInstance.notifyUI();
+            return;
+        }
+
+        if (gridBeforeCameraBindingRef.current !== null) {
+            engineInstance.renderer.showGrid = gridBeforeCameraBindingRef.current;
+            gridBeforeCameraBindingRef.current = null;
+            engineInstance.notifyUI();
+        }
+    }, [viewCameraEntityId, activeViewportProfile.overlays.grid]);
+
+    useEffect(() => () => {
+        if (gridBeforeCameraBindingRef.current !== null) {
+            engineInstance.renderer.showGrid = gridBeforeCameraBindingRef.current;
+            gridBeforeCameraBindingRef.current = null;
+        }
+    }, []);
+
+    // Inspector/gizmo edits to the bound Camera Transform should immediately
+    // update the viewport. Navigation writes the Transform synchronously, so the
+    // notification received on mouse-up resolves back to the same pose.
+    useEffect(() => {
+        if (!viewCameraEntityId) return;
+        return engineInstance.subscribe(() => {
+            if (boundCameraNavigationActiveRef.current) return;
+            const next = readSceneCameraViewportState(
+                engineInstance,
+                viewCameraEntityId,
+                cameraRef.current.radius,
+            );
+            if (!next) {
+                exitSceneCameraView();
+                return;
+            }
+            next.orthoScale = cameraRef.current.orthoScale ?? 1;
+            if (!cameraStatesApproximatelyEqual(next, cameraRef.current)) {
+                cameraRef.current = next;
+                publishCameraState(next, true);
+            }
+        });
+    }, [viewCameraEntityId, exitSceneCameraView, publishCameraState]);
+
     const [dragState, setDragState] = useState<{
         isDragging: boolean;
         startX: number;
@@ -195,15 +405,40 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         
         const aspect = width / height;
         const proj = Mat4Utils.create();
-        Mat4Utils.perspective(45 * Math.PI / 180, aspect, 0.1, 1000.0, proj);
+        if (viewCameraLens?.projection === 'ORTHOGRAPHIC') {
+            const halfHeight = Math.max(0.0005, viewCameraLens.orthoSize * 0.5 * (camera.orthoScale ?? 1));
+            const halfWidth = halfHeight * aspect;
+            Mat4Utils.orthographic(
+                -halfWidth, halfWidth, -halfHeight, halfHeight,
+                Math.max(0.0001, viewCameraLens.near),
+                Math.max(viewCameraLens.near + 0.0001, viewCameraLens.far),
+                proj,
+            );
+        } else {
+            const fov = viewCameraLens?.fov ?? 45;
+            const near = Math.max(0.0001, viewCameraLens?.near ?? 0.1);
+            const far = Math.max(near + 0.0001, viewCameraLens?.far ?? 1000);
+            Mat4Utils.perspective(fov * Math.PI / 180, aspect, near, far, proj);
+        }
         const view = Mat4Utils.create();
-        Mat4Utils.lookAt(eye, camera.target, {x:0,y:1,z:0}, view);
+        Mat4Utils.lookAt(eye, camera.target, getCameraUp(camera), view);
         const vp = Mat4Utils.create();
         Mat4Utils.multiply(proj, view, vp);
         
         engineInstance.updateCamera(vp, eye, width, height);
         engineInstance.gizmoSystem.setTool(tool);
-    }, [camera, tool, viewportSize.cssWidth, viewportSize.cssHeight]);
+    }, [
+        camera,
+        tool,
+        viewportSize.cssWidth,
+        viewportSize.cssHeight,
+        viewCameraEntityId,
+        viewCameraLens?.projection,
+        viewCameraLens?.fov,
+        viewCameraLens?.orthoSize,
+        viewCameraLens?.near,
+        viewCameraLens?.far,
+    ]);
 
     // Debug Draw for Soft Selection Brush
     useEffect(() => {
@@ -345,12 +580,27 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         }
 
         if (e.altKey && (e.button !== 0 || !isAdjustingBrush)) {
-            e.preventDefault();
             let mode: CameraDragMode = 'ORBIT';
             if (e.button === 1) mode = 'PAN';
             if (e.button === 2) mode = 'ZOOM';
-            
-            setDragState({ isDragging: true, startX: e.clientX, startY: e.clientY, mode, startCamera: cloneCamera(camera) });
+            const allowed = mode === 'ORBIT'
+                ? activeViewportProfile.navigation.orbit
+                : mode === 'PAN'
+                    ? activeViewportProfile.navigation.pan
+                    : activeViewportProfile.navigation.zoom;
+            if (allowed) {
+                e.preventDefault();
+                if (viewCameraEntityIdRef.current) {
+                    // A mouse drag supersedes a pending wheel transaction. Its final
+                    // mouse-up commit includes the current local viewport pose.
+                    if (boundCameraUiCommitTimerRef.current !== null) {
+                        window.clearTimeout(boundCameraUiCommitTimerRef.current);
+                        boundCameraUiCommitTimerRef.current = null;
+                    }
+                    boundCameraNavigationActiveRef.current = true;
+                }
+                setDragState({ isDragging: true, startX: e.clientX, startY: e.clientY, mode, startCamera: cloneCamera(cameraRef.current) });
+            }
         }
     };
 
@@ -394,11 +644,15 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
             const dx = e.clientX - dragState.startX;
             const dy = e.clientY - dragState.startY;
              if (dragState.mode === 'ORBIT') {
-                setCamera(orbitCamera(dragState.startCamera, dx, dy, { minPhi: 0.1, maxPhi: Math.PI - 0.1 }));
+                updateViewportCamera(orbitCamera(dragState.startCamera, dx, dy, { minPhi: 0.1, maxPhi: Math.PI - 0.1 }));
             } else if (dragState.mode === 'ZOOM') {
-                setCamera(dragZoomCamera(dragState.startCamera, dx, dy, { minRadius: 1 }));
+                if (viewCameraLens?.projection === 'ORTHOGRAPHIC') {
+                    updateViewportCamera(dragOrthographicZoomCamera(dragState.startCamera, dx, dy));
+                } else {
+                    updateViewportCamera(dragZoomCamera(dragState.startCamera, dx, dy, { minRadius: 1 }));
+                }
             } else if (dragState.mode === 'PAN') {
-                setCamera(panCamera(dragState.startCamera, dx, dy));
+                updateViewportCamera(panCamera(dragState.startCamera, dx, dy));
             }
         }
 
@@ -486,12 +740,26 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
             pendingObjectPressRef.current = null;
         }
 
+        if (viewCameraEntityIdRef.current && dragState?.isDragging) {
+            // One Transform write + one UI notification for the whole gesture. The
+            // notification occurs while the navigation guard is still active, so this
+            // viewport cannot consume its own commit and start a resync tail.
+            commitBoundCameraViewportState();
+        } else {
+            if (dragState?.isDragging) publishCameraState(cameraRef.current, true);
+            boundCameraNavigationActiveRef.current = false;
+        }
         setDragState(null);
     };
 
     const handleWindowBlur = () => {
         engineInstance.isInputDown = false;
         pendingObjectPressRef.current = null;
+        if (viewCameraEntityIdRef.current && boundCameraNavigationActiveRef.current) {
+            commitBoundCameraViewportState();
+        } else {
+            boundCameraNavigationActiveRef.current = false;
+        }
         setDragState(null);
         commitSelectionBoxState(null);
     };
@@ -505,7 +773,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
             window.removeEventListener('mouseup', handleGlobalMouseUp);
             window.removeEventListener('blur', handleWindowBlur);
         };
-    }, [dragState, selectionBox, meshComponentMode, isAdjustingBrush, selectedIds, onSelect]);
+    }, [dragState, selectionBox, meshComponentMode, isAdjustingBrush, selectedIds, onSelect, commitBoundCameraViewportState, publishCameraState]);
 
     const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; };
     const handleDrop = (e: React.DragEvent) => {
@@ -558,7 +826,25 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
                 onMouseDown: handleMouseDown,
                 onDragOver: handleDragOver,
                 onDrop: handleDrop,
-                onWheel: (e) => setCamera(cameraState => wheelZoomCamera(cameraState, e.deltaY, { minRadius: 2, sensitivity: 0.01 })),
+                onWheel: (e) => {
+                    if (!activeViewportProfile.navigation.zoom) return;
+                    const boundCameraId = viewCameraEntityIdRef.current;
+                    if (boundCameraId) boundCameraNavigationActiveRef.current = true;
+                    if (viewCameraLens?.projection === 'ORTHOGRAPHIC') {
+                        updateViewportCamera(cameraState => wheelOrthographicZoomCamera(cameraState, e.deltaY));
+                    } else {
+                        updateViewportCamera(cameraState => wheelZoomCamera(cameraState, e.deltaY, { minRadius: 2, sensitivity: 0.01 }));
+                    }
+                    if (boundCameraId) {
+                        if (boundCameraUiCommitTimerRef.current !== null) {
+                            window.clearTimeout(boundCameraUiCommitTimerRef.current);
+                        }
+                        boundCameraUiCommitTimerRef.current = window.setTimeout(() => {
+                            boundCameraUiCommitTimerRef.current = null;
+                            commitBoundCameraViewportState();
+                        }, 90);
+                    }
+                },
                 onContextMenu: (e) => e.preventDefault(),
             }}
             viewportChildren={
@@ -577,10 +863,32 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
             toolbarLeft={
                 <>
                     <ViewportToolbarGroup>
-                        <ViewportIconButton label="Toggle Grid" onClick={() => engineInstance.toggleGrid()}>
+                        <ViewportIconButton label="Toggle Grid" active={engineInstance.renderer.showGrid} onClick={() => engineInstance.toggleGrid()}>
                             <Icon name="Grid" size={14} />
                         </ViewportIconButton>
                     </ViewportToolbarGroup>
+
+                    {(viewCameraEntityId || selectedCameraId) && (
+                        <ViewportToolbarGroup>
+                            {viewCameraEntityId && (
+                                <ViewportIconButton
+                                    label="Exit Scene Camera View"
+                                    active
+                                    onClick={exitSceneCameraView}
+                                >
+                                    <Icon name="EyeOff" size={14} />
+                                </ViewportIconButton>
+                            )}
+                            {selectedCameraId && selectedCameraId !== viewCameraEntityId && (
+                                <ViewportIconButton
+                                    label="View Through Selected Camera"
+                                    onClick={() => enterSceneCameraView(selectedCameraId)}
+                                >
+                                    <Icon name="Camera" size={14} />
+                                </ViewportIconButton>
+                            )}
+                        </ViewportToolbarGroup>
+                    )}
 
                     <div className="relative" ref={viewMenuRef}>
                         <button
@@ -627,7 +935,11 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
             }
             hudBottomRight={
                 <ViewportHud className="items-end">
-                    <span>Cam: {camera.target.x.toFixed(1)}, {camera.target.y.toFixed(1)}, {camera.target.z.toFixed(1)}</span>
+                    <span>
+                        {viewCameraEntityId
+                            ? `Cam: ${engineInstance.ecs.createProxy(viewCameraEntityId, sceneGraph)?.name ?? 'Scene Camera'} • Through`
+                            : `Cam: ${camera.target.x.toFixed(1)}, ${camera.target.y.toFixed(1)}, ${camera.target.z.toFixed(1)}`}
+                    </span>
                     {softSelectionEnabled && meshComponentMode !== 'OBJECT' && (
                         <span className="text-accent">
                             Soft Sel ({softSelectionMode === 'FIXED' ? 'Fixed' : 'Dynamic'}): {softSelectionRadius.toFixed(1)}m

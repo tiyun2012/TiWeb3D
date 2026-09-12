@@ -4,7 +4,7 @@ import { AssetViewportEngine } from '@/editor/viewports/AssetViewportEngine';
 import { GizmoSystem } from '@/engine/GizmoSystem';
 import { GizmoRenderer } from '@/engine/renderers/GizmoRenderer';
 import { Mat4Utils } from '@/engine/math';
-import { AssetType, CameraSettings, ToolType } from '@/types';
+import { AssetType, CameraSettings, ToolType, ViewportNavigationSettings, ViewportProfileSettings } from '@/types';
 import {
   ASSET_MESH_SURFACE_FS,
   ASSET_MESH_SURFACE_VS,
@@ -23,10 +23,13 @@ import {
   CameraDragMode,
   CameraState,
   cloneCamera,
+  dragOrthographicZoomCamera,
   dragZoomCamera,
   getCameraEye,
+  getCameraUp,
   orbitCamera,
   panCamera,
+  wheelOrthographicZoomCamera,
   wheelZoomCamera,
 } from '@/editor/viewports/viewportCamera';
 import {
@@ -124,13 +127,21 @@ export interface AssetViewport3DProps {
   camera?: CameraState;
   onCameraChange?: (camera: CameraState) => void;
   defaultCamera?: CameraState;
-  /** Optional lens/projection override. View transform still comes from the editor orbit camera. */
+  /**
+   * Optional lens/projection source. The viewport camera pose remains independently
+   * navigable, which lets a host look through a Camera/Preset while reusing the
+   * exact same orbit/pan/zoom controls as every other 3D viewport.
+   */
   projectionSettings?: Pick<CameraSettings, 'projection' | 'fov' | 'orthoSize' | 'near' | 'far'>;
-  /** Disable orbit/pan/zoom when the host wants a locked camera preview. */
+  /** Hosts may explicitly lock all navigation. */
   navigationEnabled?: boolean;
+  /** Reusable editor viewport behavior. Hosts may still override individual navigation/grid values. */
+  viewportProfile?: ViewportProfileSettings;
+  /** Optional per-gesture override layered on top of the Viewport Profile. */
+  navigationPolicy?: Partial<ViewportNavigationSettings>;
   /** Optional direct-to-canvas clear color in display space. */
   backgroundColor?: readonly [number, number, number, number];
-  fitCamera?: { radius: number; target: { x: number; y: number; z: number } } | null;
+  fitCamera?: { radius: number; target: { x: number; y: number; z: number }; orthoScale?: number } | null;
   showGrid?: boolean;
   onToggleGrid?: () => void;
   stats?: Array<{ label: string; value: string | number; color?: string }>;
@@ -164,9 +175,11 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
   defaultCamera = { theta: 0.6, phi: 1.2, radius: 3.5, target: { x: 0, y: 0.5, z: 0 } },
   projectionSettings,
   navigationEnabled = true,
+  viewportProfile,
+  navigationPolicy,
   backgroundColor,
   fitCamera,
-  showGrid = true,
+  showGrid,
   onToggleGrid,
   stats = [],
   selectionBadge,
@@ -190,6 +203,16 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const profileNavigation = viewportProfile?.navigation;
+  const navigation = {
+    orbit: navigationEnabled && (navigationPolicy?.orbit ?? profileNavigation?.orbit ?? true),
+    pan: navigationEnabled && (navigationPolicy?.pan ?? profileNavigation?.pan ?? true),
+    zoom: navigationEnabled && (navigationPolicy?.zoom ?? profileNavigation?.zoom ?? true),
+    focus: navigationEnabled && (navigationPolicy?.focus ?? profileNavigation?.focus ?? true),
+  };
+  const effectiveShowGrid = showGrid ?? viewportProfile?.overlays.grid ?? true;
+  const gizmosEnabled = viewportProfile?.overlays.gizmos ?? true;
+
   const viewportSize = useViewportSize(containerRef, { dprCap: 2 });
   const viewportSizeRef = useRef(viewportSize);
   useEffect(() => {
@@ -246,10 +269,15 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
     dragStateRef.current = dragState;
   }, [dragState]);
 
-  const showGridRef = useRef(showGrid);
+  const showGridRef = useRef(effectiveShowGrid);
   useEffect(() => {
-    showGridRef.current = showGrid;
-  }, [showGrid]);
+    showGridRef.current = effectiveShowGrid;
+  }, [effectiveShowGrid]);
+
+  const gizmosEnabledRef = useRef(gizmosEnabled);
+  useEffect(() => {
+    gizmosEnabledRef.current = gizmosEnabled;
+  }, [gizmosEnabled]);
 
   const onRenderRef = useRef(onRender);
   useEffect(() => {
@@ -294,10 +322,15 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
         if (onToggleGrid) onToggleGrid();
       }
 
-      if (navigationEnabled && (e.key === 'f' || e.key === 'F') && assetViewportAllows(assetType, 'view.focus')) {
+      if (navigation.focus && (e.key === 'f' || e.key === 'F') && assetViewportAllows(assetType, 'view.focus')) {
         e.preventDefault();
         if (fitCamera) {
-          updateCamera(p => ({ ...p, radius: fitCamera.radius, target: { ...fitCamera.target } }));
+          updateCamera(p => ({
+            ...p,
+            radius: fitCamera.radius,
+            target: { ...fitCamera.target },
+            orthoScale: fitCamera.orthoScale ?? p.orthoScale,
+          }));
         } else {
           updateCamera(p => ({ ...p, radius: defaultCamera.radius, target: { ...defaultCamera.target } }));
         }
@@ -309,7 +342,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [assetType, allowedTools, setTool, onToggleGrid, fitCamera, defaultCamera, onCustomKeyDown, navigationEnabled]);
+  }, [assetType, allowedTools, setTool, onToggleGrid, fitCamera, defaultCamera, onCustomKeyDown, navigation.focus]);
 
   // Main WebGL Loop
   useEffect(() => {
@@ -418,7 +451,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
       const aspect = canvas.width / canvas.height;
       const lens = projectionSettingsRef.current;
       if (lens?.projection === 'ORTHOGRAPHIC') {
-        const halfHeight = Math.max(0.0005, lens.orthoSize * 0.5);
+        const halfHeight = Math.max(0.0005, lens.orthoSize * 0.5 * (cam.orthoScale ?? 1));
         const halfWidth = halfHeight * aspect;
         Mat4Utils.orthographic(
           -halfWidth,
@@ -435,7 +468,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
         const far = Math.max(near + 0.0001, lens?.far ?? 1000);
         Mat4Utils.perspective((fov * Math.PI) / 180, aspect, near, far, proj);
       }
-      Mat4Utils.lookAt(eye, cam.target, { x: 0, y: 1, z: 0 }, view);
+      Mat4Utils.lookAt(eye, cam.target, getCameraUp(cam), view);
       Mat4Utils.multiply(proj, view, vp);
 
       // Sync viewport to local engine
@@ -520,25 +553,29 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
     const width = rect.width;
     const height = rect.height;
 
-    // Camera controls with Alt
-    if (navigationEnabled && e.altKey) {
-      e.preventDefault();
+    // Camera controls with Alt. The viewport profile decides which gestures are enabled;
+    // the camera source (editor / preset / Scene Camera) never owns these controls.
+    if (e.altKey) {
       let mode: 'ORBIT' | 'PAN' | 'ZOOM' = 'ORBIT';
       if (e.button === 1) mode = 'PAN';
       if (e.button === 2) mode = 'ZOOM';
-      setDragState({
-        isDragging: true,
-        startX: e.clientX,
-        startY: e.clientY,
-        mode,
-        startCamera: cloneCamera(cameraRef.current),
-      });
-      return;
+      const modeAllowed = mode === 'ORBIT' ? navigation.orbit : mode === 'PAN' ? navigation.pan : navigation.zoom;
+      if (modeAllowed) {
+        e.preventDefault();
+        setDragState({
+          isDragging: true,
+          startX: e.clientX,
+          startY: e.clientY,
+          mode,
+          startCamera: cloneCamera(cameraRef.current),
+        });
+        return;
+      }
     }
 
     // Try gizmo interaction first if gizmoSystem is provided
     const gs = gizmoSystemRef.current;
-    if (gs && e.button === 0) {
+    if (gizmosEnabledRef.current && gs && e.button === 0) {
       gs.update(0, mx, my, width, height, true, false);
       if (gs.activeAxis) {
         return;
@@ -566,7 +603,11 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
       if (ds.mode === 'ORBIT') {
         updateCamera(orbitCamera(ds.startCamera, dx, dy));
       } else if (ds.mode === 'ZOOM') {
-        updateCamera(dragZoomCamera(ds.startCamera, dx, dy, { minRadius: 0.2 }));
+        if (projectionSettingsRef.current?.projection === 'ORTHOGRAPHIC') {
+          updateCamera(dragOrthographicZoomCamera(ds.startCamera, dx, dy));
+        } else {
+          updateCamera(dragZoomCamera(ds.startCamera, dx, dy, { minRadius: 0.2 }));
+        }
       } else if (ds.mode === 'PAN') {
         updateCamera(panCamera(ds.startCamera, dx, dy));
       }
@@ -574,7 +615,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
     }
 
     const gs = gizmoSystemRef.current;
-    if (gs) {
+    if (gizmosEnabledRef.current && gs) {
       gs.update(0, mx, my, width, height, false, false);
     }
 
@@ -597,7 +638,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
     setDragState(null);
 
     const gs = gizmoSystemRef.current;
-    if (gs) {
+    if (gizmosEnabledRef.current && gs) {
       gs.update(0, mx, my, width, height, false, true);
     }
 
@@ -616,8 +657,12 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
   }, [onMouseMove, onMouseUp]);
 
   const handleWheel = (e: React.WheelEvent) => {
-    if (navigationEnabled) {
-      updateCamera(p => wheelZoomCamera(p, e.deltaY, { minRadius: 0.2, sensitivity: 0.005 }));
+    if (navigation.zoom) {
+      if (projectionSettingsRef.current?.projection === 'ORTHOGRAPHIC') {
+        updateCamera(p => wheelOrthographicZoomCamera(p, e.deltaY));
+      } else {
+        updateCamera(p => wheelZoomCamera(p, e.deltaY, { minRadius: 0.2, sensitivity: 0.005 }));
+      }
     }
     if (onWheel) onWheel(e);
   };
@@ -634,11 +679,21 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
   };
 
   const handleFocus = () => {
-    if (!navigationEnabled) return;
+    if (!navigation.focus) return;
     if (fitCamera) {
-      updateCamera(p => ({ ...p, radius: fitCamera.radius, target: { ...fitCamera.target } }));
+      updateCamera(p => ({
+        ...p,
+        radius: fitCamera.radius,
+        target: { ...fitCamera.target },
+        orthoScale: fitCamera.orthoScale ?? p.orthoScale,
+      }));
     } else {
-      updateCamera(p => ({ ...p, radius: defaultCamera.radius, target: { ...defaultCamera.target } }));
+      updateCamera(p => ({
+        ...p,
+        radius: defaultCamera.radius,
+        target: { ...defaultCamera.target },
+        orthoScale: defaultCamera.orthoScale ?? p.orthoScale,
+      }));
     }
   };
 
@@ -714,7 +769,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
               {assetViewportAllows(assetType, 'view.grid') && (
                 <ViewportIconButton
                   label="Toggle Grid (G)"
-                  active={showGrid}
+                  active={effectiveShowGrid}
                   onClick={() => onToggleGrid?.()}
                 >
                   <Icon name="Grid" size={14} />

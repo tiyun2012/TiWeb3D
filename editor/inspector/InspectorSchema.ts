@@ -47,9 +47,25 @@ export interface InspectorSectionSchema<T = any> {
   fields: InspectorFieldSchema<T>[];
 }
 
+export interface InspectorSchemaExtension<T = any> {
+  /** Base schema whose sections/fields are inherited by this schema. */
+  schemaId: string;
+  /** Where inherited sections appear relative to this schema's local sections. */
+  placement?: 'before' | 'after';
+  /** Optional gate applied to every inherited field without modifying the base schema. */
+  enabledWhen?: (ctx: InspectorContext<T>) => boolean;
+  /** Optional visibility gate applied to every inherited field. */
+  visibleWhen?: (ctx: InspectorContext<T>) => boolean;
+}
+
 export interface InspectorSchema<T = any> {
   id: string;
   title: string;
   icon?: string;
+  /**
+   * Schema inheritance is for data/UI contracts (for example CameraComponent extends CameraSettings).
+   * Runtime entity inheritance remains ECS composition through ComponentDefinitionRegistry.requires.
+   */
+  extends?: Array<string | InspectorSchemaExtension<T>>;
   sections: InspectorSectionSchema<T>[];
 }
