@@ -17,9 +17,10 @@ interface HierarchyPanelProps {
 
 const getEntityIcon = (entity: Entity) => {
     if (entity.components[ComponentType.LIGHT]) return 'Sun';
+    if (entity.components[ComponentType.CAMERA]) return 'Camera';
     if (entity.components[ComponentType.VIRTUAL_PIVOT]) return 'Bone';
     if (entity.components[ComponentType.TRANSFORM] && Object.keys(entity.components).length === 1) return 'Circle'; 
-    if (entity.name.includes('Camera')) return 'Video';
+    if (entity.name.includes('Camera')) return 'Camera';
     return 'Box';
 };
 

@@ -105,7 +105,7 @@ export const PreferencesModal: React.FC<Props> = ({ onClose }) => {
                     </div>
                     <Slider 
                         label="Vertex Scale Factor" 
-                        value={uiConfig.vertexSize} 
+                        value={uiConfig.vertexSize ?? 1.0} 
                         onChange={(v) => updateUiConfig('vertexSize', v)} 
                         min={0.1} max={3.0} step={0.1} 
                     />

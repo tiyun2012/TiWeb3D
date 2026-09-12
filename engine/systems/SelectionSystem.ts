@@ -5,6 +5,175 @@ import { assetManager } from '../AssetManager';
 import { StaticMeshAsset, MeshComponentMode, IEngine } from '@/types';
 import { MeshTopologyUtils, MeshPickingResult } from '../MeshTopologyUtils';
 import { consoleService } from '../Console';
+import { meshEdgeKey } from '../MeshEdgeGeometry';
+
+
+type ScreenPoint = { x: number; y: number };
+
+type ScreenRect = {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+};
+
+const SCREEN_OVERLAP_EPSILON = 1e-5;
+
+const pointInScreenRect = (point: ScreenPoint, rect: ScreenRect): boolean =>
+    point.x >= rect.left - SCREEN_OVERLAP_EPSILON &&
+    point.x <= rect.right + SCREEN_OVERLAP_EPSILON &&
+    point.y >= rect.top - SCREEN_OVERLAP_EPSILON &&
+    point.y <= rect.bottom + SCREEN_OVERLAP_EPSILON;
+
+const orient2D = (a: ScreenPoint, b: ScreenPoint, c: ScreenPoint): number =>
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+
+const pointInTriangle2D = (point: ScreenPoint, a: ScreenPoint, b: ScreenPoint, c: ScreenPoint): boolean => {
+    const ab = orient2D(a, b, point);
+    const bc = orient2D(b, c, point);
+    const ca = orient2D(c, a, point);
+    const hasNegative = ab < -SCREEN_OVERLAP_EPSILON || bc < -SCREEN_OVERLAP_EPSILON || ca < -SCREEN_OVERLAP_EPSILON;
+    const hasPositive = ab > SCREEN_OVERLAP_EPSILON || bc > SCREEN_OVERLAP_EPSILON || ca > SCREEN_OVERLAP_EPSILON;
+    return !(hasNegative && hasPositive);
+};
+
+const pointOnSegment2D = (point: ScreenPoint, a: ScreenPoint, b: ScreenPoint): boolean =>
+    Math.abs(orient2D(a, b, point)) <= SCREEN_OVERLAP_EPSILON &&
+    point.x >= Math.min(a.x, b.x) - SCREEN_OVERLAP_EPSILON &&
+    point.x <= Math.max(a.x, b.x) + SCREEN_OVERLAP_EPSILON &&
+    point.y >= Math.min(a.y, b.y) - SCREEN_OVERLAP_EPSILON &&
+    point.y <= Math.max(a.y, b.y) + SCREEN_OVERLAP_EPSILON;
+
+const segmentsIntersect2D = (a: ScreenPoint, b: ScreenPoint, c: ScreenPoint, d: ScreenPoint): boolean => {
+    const o1 = orient2D(a, b, c);
+    const o2 = orient2D(a, b, d);
+    const o3 = orient2D(c, d, a);
+    const o4 = orient2D(c, d, b);
+
+    if (((o1 > SCREEN_OVERLAP_EPSILON && o2 < -SCREEN_OVERLAP_EPSILON) ||
+         (o1 < -SCREEN_OVERLAP_EPSILON && o2 > SCREEN_OVERLAP_EPSILON)) &&
+        ((o3 > SCREEN_OVERLAP_EPSILON && o4 < -SCREEN_OVERLAP_EPSILON) ||
+         (o3 < -SCREEN_OVERLAP_EPSILON && o4 > SCREEN_OVERLAP_EPSILON))) {
+        return true;
+    }
+
+    return (Math.abs(o1) <= SCREEN_OVERLAP_EPSILON && pointOnSegment2D(c, a, b)) ||
+        (Math.abs(o2) <= SCREEN_OVERLAP_EPSILON && pointOnSegment2D(d, a, b)) ||
+        (Math.abs(o3) <= SCREEN_OVERLAP_EPSILON && pointOnSegment2D(a, c, d)) ||
+        (Math.abs(o4) <= SCREEN_OVERLAP_EPSILON && pointOnSegment2D(b, c, d));
+};
+
+const triangleOverlapsScreenRect = (
+    a: ScreenPoint,
+    b: ScreenPoint,
+    c: ScreenPoint,
+    rect: ScreenRect,
+): boolean => {
+    const triMinX = Math.min(a.x, b.x, c.x);
+    const triMaxX = Math.max(a.x, b.x, c.x);
+    const triMinY = Math.min(a.y, b.y, c.y);
+    const triMaxY = Math.max(a.y, b.y, c.y);
+    if (triMaxX < rect.left || triMinX > rect.right || triMaxY < rect.top || triMinY > rect.bottom) return false;
+
+    if (pointInScreenRect(a, rect) || pointInScreenRect(b, rect) || pointInScreenRect(c, rect)) return true;
+
+    const corners: ScreenPoint[] = [
+        { x: rect.left, y: rect.top },
+        { x: rect.right, y: rect.top },
+        { x: rect.right, y: rect.bottom },
+        { x: rect.left, y: rect.bottom },
+    ];
+    if (corners.some((corner) => pointInTriangle2D(corner, a, b, c))) return true;
+
+    const triangleEdges: Array<[ScreenPoint, ScreenPoint]> = [[a, b], [b, c], [c, a]];
+    const rectEdges: Array<[ScreenPoint, ScreenPoint]> = [
+        [corners[0], corners[1]],
+        [corners[1], corners[2]],
+        [corners[2], corners[3]],
+        [corners[3], corners[0]],
+    ];
+    return triangleEdges.some(([edgeStart, edgeEnd]) =>
+        rectEdges.some(([rectStart, rectEnd]) => segmentsIntersect2D(edgeStart, edgeEnd, rectStart, rectEnd)),
+    );
+};
+
+/**
+ * Refines a projected-AABB marquee candidate against the actual projected mesh.
+ * Returns null only when the asset has no triangle data that can be used for a
+ * precise test; callers may then deliberately keep the coarse AABB fallback.
+ */
+const meshOverlapsScreenRect = (
+    asset: StaticMeshAsset,
+    worldMatrix: Float32Array,
+    viewProj: Float32Array,
+    viewportWidth: number,
+    viewportHeight: number,
+    rect: ScreenRect,
+): boolean | null => {
+    const vertices = asset.geometry.vertices;
+    if (!vertices || vertices.length < 9) return null;
+
+    const vertexCount = Math.floor(vertices.length / 3);
+    const projected = new Array<ScreenPoint | null | undefined>(vertexCount);
+
+    const projectVertex = (index: number): ScreenPoint | null => {
+        if (!Number.isInteger(index) || index < 0 || index >= vertexCount) return null;
+        const cached = projected[index];
+        if (cached !== undefined) return cached;
+
+        const local = {
+            x: vertices[index * 3],
+            y: vertices[index * 3 + 1],
+            z: vertices[index * 3 + 2],
+        };
+        const world = Vec3Utils.transformMat4(local, worldMatrix, { x: 0, y: 0, z: 0 });
+        const clipW = viewProj[3] * world.x + viewProj[7] * world.y + viewProj[11] * world.z + viewProj[15];
+        if (clipW <= 0.001) {
+            projected[index] = null;
+            return null;
+        }
+
+        const ndc = Vec3Utils.transformMat4(world, viewProj, { x: 0, y: 0, z: 0 });
+        const point = {
+            x: (ndc.x * 0.5 + 0.5) * viewportWidth,
+            y: (1.0 - (ndc.y * 0.5 + 0.5)) * viewportHeight,
+        };
+        projected[index] = point;
+        return point;
+    };
+
+    let triangleDataCount = 0;
+    const testTriangle = (ia: number, ib: number, ic: number): boolean => {
+        const validIndex = (index: number) => Number.isInteger(index) && index >= 0 && index < vertexCount;
+        if (!validIndex(ia) || !validIndex(ib) || !validIndex(ic)) return false;
+        triangleDataCount++;
+        const a = projectVertex(ia);
+        const b = projectVertex(ib);
+        const c = projectVertex(ic);
+        if (!a || !b || !c) return false;
+        return triangleOverlapsScreenRect(a, b, c, rect);
+    };
+
+    const faces = asset.topology?.faces ?? [];
+    if (faces.length > 0) {
+        for (const face of faces) {
+            if (!face || face.length < 3) continue;
+            const first = face[0];
+            for (let i = 1; i < face.length - 1; i++) {
+                if (testTriangle(first, face[i], face[i + 1])) return true;
+            }
+        }
+    } else {
+        const indices = asset.geometry.indices;
+        if (indices && indices.length >= 3) {
+            for (let i = 0; i + 2 < indices.length; i += 3) {
+                if (testTriangle(indices[i], indices[i + 1], indices[i + 2])) return true;
+            }
+        }
+    }
+
+    return triangleDataCount > 0 ? false : null;
+};
 
 export class SelectionSystem {
     engine: IEngine;
@@ -68,7 +237,7 @@ export class SelectionSystem {
             const hasMesh = !!(mask & COMPONENT_MASKS.MESH);
             
             // Only check non-mesh components if they are visible/selectable types
-            if (!hasMesh && !((mask & COMPONENT_MASKS.LIGHT) || (mask & COMPONENT_MASKS.PARTICLE_SYSTEM) || (mask & COMPONENT_MASKS.VIRTUAL_PIVOT))) continue;
+            if (!hasMesh && !((mask & COMPONENT_MASKS.LIGHT) || (mask & COMPONENT_MASKS.PARTICLE_SYSTEM) || (mask & COMPONENT_MASKS.VIRTUAL_PIVOT) || (mask & COMPONENT_MASKS.CAMERA))) continue;
 
             const id = this.engine.ecs.store.ids[i];
             const wmOffset = i * 16;
@@ -90,16 +259,28 @@ export class SelectionSystem {
                         Vec3Utils.normalize(localRay.direction, localRay.direction);
                         
                         const aabbT = RayUtils.intersectAABB(localRay, asset.geometry.aabb);
-                        
+
                         if (aabbT !== null) {
-                            if (aabbT < closestDist) {
-                                if (asset.topology && asset.topology.faces.length > 0) {
-                                    const res = MeshTopologyUtils.raycastMesh(asset.topology, asset.geometry.vertices, localRay);
-                                    if (res) {
-                                        const worldHit = Vec3Utils.transformMat4(res.worldPos, worldMat, {x:0,y:0,z:0});
-                                        t = Vec3Utils.distance(ray.origin, worldHit);
-                                    }
+                            // IMPORTANT: localRay was transformed and re-normalized, so aabbT is in
+                            // local-space distance units. Never compare it with closestDist, which is
+                            // measured in world-space units. That incorrectly rejected scaled meshes.
+                            if (asset.topology && asset.topology.faces.length > 0) {
+                                const res = MeshTopologyUtils.raycastMesh(asset.topology, asset.geometry.vertices, localRay);
+                                if (res) {
+                                    const worldHit = Vec3Utils.transformMat4(res.worldPos, worldMat, {x:0,y:0,z:0});
+                                    t = Vec3Utils.distance(ray.origin, worldHit);
                                 }
+                            } else {
+                                // Assets without logical topology still need to be selectable. Use the
+                                // broad-phase AABB hit as a deliberate fallback instead of making them
+                                // impossible to click.
+                                const localHit = Vec3Utils.add(
+                                    localRay.origin,
+                                    Vec3Utils.scale(localRay.direction, aabbT, {x:0,y:0,z:0}),
+                                    {x:0,y:0,z:0},
+                                );
+                                const worldHit = Vec3Utils.transformMat4(localHit, worldMat, {x:0,y:0,z:0});
+                                t = Vec3Utils.distance(ray.origin, worldHit);
                             }
                         }
                     }
@@ -147,11 +328,36 @@ export class SelectionSystem {
         return closestId;
     }
 
-    selectEntitiesInRect(x: number, y: number, w: number, h: number): string[] {
+    selectEntitiesInRect(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+        viewportWidth: number = this.engine.currentWidth,
+        viewportHeight: number = this.engine.currentHeight,
+    ): string[] {
         if (!this.engine.currentViewProj) return [];
         const ids: string[] = [];
-        
-        const selLeft = x; const selRight = x + w; const selTop = y; const selBottom = y + h;
+
+        const width = Math.max(1, viewportWidth);
+        const height = Math.max(1, viewportHeight);
+        const rawLeft = Math.min(x, x + w);
+        const rawRight = Math.max(x, x + w);
+        const rawTop = Math.min(y, y + h);
+        const rawBottom = Math.max(y, y + h);
+        const selLeft = Math.max(0, Math.min(width, rawLeft));
+        const selRight = Math.max(0, Math.min(width, rawRight));
+        const selTop = Math.max(0, Math.min(height, rawTop));
+        const selBottom = Math.max(0, Math.min(height, rawBottom));
+
+        if (selRight < selLeft || selBottom < selTop) return [];
+
+        const selectionRect: ScreenRect = {
+            left: selLeft,
+            right: selRight,
+            top: selTop,
+            bottom: selBottom,
+        };
 
         for (let i = 0; i < this.engine.ecs.count; i++) {
             if (!this.engine.ecs.store.isActive[i]) continue;
@@ -166,14 +372,15 @@ export class SelectionSystem {
             let screenMinX = Infinity, screenMinY = Infinity;
             let screenMaxX = -Infinity, screenMaxY = -Infinity;
             let pointsToCheck: {x:number, y:number, z:number}[] = [];
+            let meshAsset: StaticMeshAsset | null = null;
 
             if (hasMesh) {
                 const meshIntId = this.engine.ecs.store.meshType[i];
                 const uuid = assetManager.meshIntToUuid.get(meshIntId);
-                const asset = uuid ? assetManager.getAsset(uuid) as StaticMeshAsset : null;
+                meshAsset = uuid ? assetManager.getAsset(uuid) as StaticMeshAsset : null;
                 
-                if (asset && asset.geometry.aabb) {
-                    const { min, max } = asset.geometry.aabb;
+                if (meshAsset && meshAsset.geometry.aabb) {
+                    const { min, max } = meshAsset.geometry.aabb;
                     const localCorners = [
                         {x: min.x, y: min.y, z: min.z}, {x: max.x, y: min.y, z: min.z},
                         {x: min.x, y: max.y, z: min.z}, {x: max.x, y: max.y, z: min.z},
@@ -196,8 +403,8 @@ export class SelectionSystem {
                 if (wVal <= 0.001) continue; 
 
                 const clip = Vec3Utils.transformMat4(p, m, {x:0, y:0, z:0});
-                const sx = (clip.x * 0.5 + 0.5) * this.engine.currentWidth;
-                const sy = (1.0 - (clip.y * 0.5 + 0.5)) * this.engine.currentHeight;
+                const sx = (clip.x * 0.5 + 0.5) * width;
+                const sy = (1.0 - (clip.y * 0.5 + 0.5)) * height;
 
                 screenMinX = Math.min(screenMinX, sx); screenMinY = Math.min(screenMinY, sy);
                 screenMaxX = Math.max(screenMaxX, sx); screenMaxY = Math.max(screenMaxY, sy);
@@ -207,7 +414,26 @@ export class SelectionSystem {
             if (visiblePoints === 0) continue;
 
             const overlaps = !(screenMaxX < selLeft || screenMinX > selRight || screenMaxY < selTop || screenMinY > selBottom);
-            if (overlaps) ids.push(id);
+            if (!overlaps) continue;
+
+            if (hasMesh && meshAsset) {
+                // The projected AABB is only a broad phase. Its 3D corners do not lie on
+                // curved/concave mesh silhouettes, so perspective projection can make the
+                // screen bounds noticeably larger than the visible object (for example a
+                // sphere can be selected while the marquee still has a visible air gap).
+                // Refine candidates against projected mesh triangles before accepting them.
+                const preciseOverlap = meshOverlapsScreenRect(
+                    meshAsset,
+                    worldMatrix,
+                    m,
+                    width,
+                    height,
+                    selectionRect,
+                );
+                if (preciseOverlap === false) continue;
+            }
+
+            ids.push(id);
         }
         return ids;
     }
@@ -232,7 +458,7 @@ export class SelectionSystem {
         if (!Mat4Utils.invert(worldMat, invWorld)) return null;
 
         const invVP = new Float32Array(16);
-        Mat4Utils.invert(this.engine.currentViewProj, invVP);
+        if (!Mat4Utils.invert(this.engine.currentViewProj, invVP)) return null;
 
         const rayWorld = RayUtils.create();
         RayUtils.fromScreen(mx, my, width, height, invVP, rayWorld);
@@ -268,17 +494,32 @@ export class SelectionSystem {
         const pick = this.pickMeshComponent(entityId, mx, my, w, h);
         
         if (pick) {
-            const vPos = {
+            const worldMat = this.engine.sceneGraph.getWorldMatrix(entityId);
+            if (!worldMat) {
+                this.hoveredVertex = null;
+                return;
+            }
+
+            const localVertex = {
                 x: asset.geometry.vertices[pick.vertexId*3],
                 y: asset.geometry.vertices[pick.vertexId*3+1],
                 z: asset.geometry.vertices[pick.vertexId*3+2]
             };
-            
-            const dist = Vec3Utils.distance(pick.worldPos, vPos); 
-            
-            if (dist < 0.2) { 
-                this.hoveredVertex = { entityId, index: pick.vertexId };
-                return;
+            const worldVertex = Vec3Utils.transformMat4(localVertex, worldMat, {x:0, y:0, z:0});
+            const viewProj = this.engine.currentViewProj;
+            const clipW = viewProj[3]*worldVertex.x + viewProj[7]*worldVertex.y + viewProj[11]*worldVertex.z + viewProj[15];
+
+            if (clipW > 0.001) {
+                const projected = Vec3Utils.transformMat4(worldVertex, viewProj, {x:0, y:0, z:0});
+                const screenX = (projected.x * 0.5 + 0.5) * w;
+                const screenY = (1.0 - (projected.y * 0.5 + 0.5)) * h;
+                const pixelDistance = Math.hypot(screenX - mx, screenY - my);
+
+                // Screen-space threshold stays stable across camera distance and object scale.
+                if (pixelDistance <= 12) {
+                    this.hoveredVertex = { entityId, index: pick.vertexId };
+                    return;
+                }
             }
         }
         
@@ -301,13 +542,24 @@ export class SelectionSystem {
         const pick = this.pickMeshComponent(entityId, mx, my, width, height);
         if (!pick) return;
 
-        const scale = Math.max(this.engine.ecs.store.scaleX[idx], this.engine.ecs.store.scaleY[idx]);
-        const localRadius = (this.engine.softSelectionRadius * 0.5) / scale; 
+        const invWorld = Mat4Utils.create();
+        if (!Mat4Utils.invert(worldMat, invWorld)) return;
+        const localCenter = Vec3Utils.transformMat4(pick.worldPos, invWorld, {x:0, y:0, z:0});
 
+        const scale = Math.max(
+            Math.abs(this.engine.ecs.store.scaleX[idx]),
+            Math.abs(this.engine.ecs.store.scaleY[idx]),
+            Math.abs(this.engine.ecs.store.scaleZ[idx]),
+            1e-6,
+        );
+        const localRadius = (this.engine.softSelectionRadius * 0.5) / scale;
+
+        // MeshTopologyUtils operates on local-space vertices/BVH, so both the center
+        // and radius supplied here must be local-space values.
         const vertices = MeshTopologyUtils.getVerticesInWorldSphere(
-            asset.topology, 
-            asset.geometry.vertices, 
-            pick.worldPos, 
+            asset.topology,
+            asset.geometry.vertices,
+            localCenter,
             localRadius
         );
 
@@ -346,7 +598,7 @@ export class SelectionSystem {
             }
 
             loop.forEach(e => {
-                const key = e.sort((a,b)=>a-b).join('-');
+                const key = meshEdgeKey(e[0], e[1]);
                 this.subSelection.edgeIds.add(key);
             });
         } 
@@ -360,7 +612,7 @@ export class SelectionSystem {
             // Better to assume user clicked last two.
             const v1 = verts[verts.length - 2];
             const v2 = verts[verts.length - 1];
-            const key = [v1, v2].sort((a,b)=>a-b).join('-');
+            const key = meshEdgeKey(v1, v2);
             
             if (topo.graph && topo.graph.edgeKeyToHalfEdge.has(key)) {
                 const loop = MeshTopologyUtils.getVertexLoop(topo, v1, v2);

@@ -8,7 +8,7 @@ import { AnimationSystem } from './systems/AnimationSystem';
 import { SelectionSystem } from './systems/SelectionSystem';
 import { WebGLRenderer, PostProcessConfig } from './renderers/WebGLRenderer';
 import { DebugRenderer } from './renderers/DebugRenderer';
-import { TimelineState, ComponentType, MeshComponentMode, SimulationMode, PerformanceMetrics, Vector3, SoftSelectionFalloff, UIConfiguration, GridConfiguration, SnapSettings, StaticMeshAsset, SkeletalMeshAsset, SkeletonAsset, SceneAsset } from '@/types';
+import { TimelineState, ComponentType, MeshComponentMode, SimulationMode, PerformanceMetrics, Vector3, SoftSelectionFalloff, UIConfiguration, GridConfiguration, SnapSettings, StaticMeshAsset, SkeletalMeshAsset, SkeletonAsset, SceneAsset, CameraComponentData, PostProcessProfileAsset } from '@/types';
 import { assetManager } from './AssetManager';
 import { consoleService } from './Console';
 import { GizmoSystem } from './GizmoSystem';
@@ -21,6 +21,7 @@ import { DEFAULT_UI_CONFIG, DEFAULT_GRID_CONFIG, DEFAULT_SNAP_CONFIG } from '@/e
 import { eventBus } from './EventBus';
 import { MESH_TYPES, COMPONENT_MASKS } from './constants';
 import { MeshTopologyUtils } from './MeshTopologyUtils';
+import { resolvePostProcessProfile } from './postprocess/PostProcessProfile';
 import { compileShader } from './ShaderCompiler'; 
 import * as THREE from 'three'; 
 
@@ -251,7 +252,7 @@ export class Engine {
         if (asset && asset.type === 'SKELETAL_MESH') {
              const skelAsset = asset as SkeletalMeshAsset;
              const skelId = skelAsset.skeletonAssetId || uuid;
-             skeletonTool.setActive(skelId, entityId);
+             skeletonTool.setActive(skelId ?? null, entityId);
         } else {
              skeletonTool.setActive(null, null);
         }
@@ -261,8 +262,15 @@ export class Engine {
         return this.selectionSystem.selectEntityAt(mx, my, w, h);
     }
     
-    selectEntitiesInRect(x: number, y: number, w: number, h: number) {
-        return this.selectionSystem.selectEntitiesInRect(x, y, w, h);
+    selectEntitiesInRect(
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+        viewportWidth: number = this.currentWidth,
+        viewportHeight: number = this.currentHeight,
+    ) {
+        return this.selectionSystem.selectEntitiesInRect(x, y, w, h, viewportWidth, viewportHeight);
     }
 
     highlightVertexAt(mx: number, my: number, w: number, h: number) {
@@ -564,6 +572,31 @@ export class Engine {
         return id;
     }
 
+    createCameraFromPreset(assetId: string, pos: {x:number, y:number, z:number}) {
+        const asset = assetManager.getAsset(assetId);
+        if (!asset || asset.type !== 'CAMERA_PRESET') return null;
+
+        this.pushUndoState();
+        const id = this.ecs.createEntity(asset.name);
+        this.ecs.addComponent(id, ComponentType.CAMERA);
+        this.sceneGraph.registerEntity(id);
+
+        const entity = this.ecs.createProxy(id, this.sceneGraph);
+        if (entity?.components?.[ComponentType.TRANSFORM]) {
+            entity.components[ComponentType.TRANSFORM].position = pos;
+        }
+        const camera = entity?.components?.[ComponentType.CAMERA];
+        if (camera) {
+            camera.presetId = asset.id;
+            Object.assign(camera, asset.data);
+        }
+
+        this.syncTransforms(true);
+        this.notifyUI();
+        consoleService.info(`Created camera from preset: ${asset.name}`);
+        return id;
+    }
+
     deleteEntity(id: string, sceneGraph: SceneGraph) {
         this.pushUndoState();
         
@@ -679,6 +712,20 @@ export class Engine {
         // Copy Mesh props
         store.meshType[newIdx] = store.meshType[idx];
         store.materialIndex[newIdx] = store.materialIndex[idx];
+        // Copy Camera props
+        store.cameraProjection[newIdx] = store.cameraProjection[idx];
+        store.cameraFov[newIdx] = store.cameraFov[idx];
+        store.cameraOrthoSize[newIdx] = store.cameraOrthoSize[idx];
+        store.cameraNear[newIdx] = store.cameraNear[idx];
+        store.cameraFar[newIdx] = store.cameraFar[idx];
+        store.cameraClearMode[newIdx] = store.cameraClearMode[idx];
+        store.cameraClearR[newIdx] = store.cameraClearR[idx];
+        store.cameraClearG[newIdx] = store.cameraClearG[idx];
+        store.cameraClearB[newIdx] = store.cameraClearB[idx];
+        store.cameraRenderLayerMask[newIdx] = store.cameraRenderLayerMask[idx];
+        store.cameraPostProcessEnabled[newIdx] = store.cameraPostProcessEnabled[idx];
+        store.cameraPostProcessProfileId[newIdx] = store.cameraPostProcessProfileId[idx];
+        store.cameraPresetId[newIdx] = store.cameraPresetId[idx];
         
         this.sceneGraph.registerEntity(newId);
         this.notifyUI();
@@ -721,6 +768,24 @@ export class Engine {
             this.currentSceneAssetId = asset.id;
             consoleService.success(`Created & Saved: ${asset.name}`);
         }
+    }
+
+    getResolvedPostProcessProfile(cameraEntityId?: string, viewportProfileId?: string): PostProcessProfileAsset | null {
+        let camera: CameraComponentData | null = null;
+        if (cameraEntityId) {
+            const entity = this.ecs.createProxy(cameraEntityId, this.sceneGraph);
+            camera = (entity?.components?.[ComponentType.CAMERA] as CameraComponentData | undefined) ?? null;
+        }
+
+        const sceneAsset = this.currentSceneAssetId
+            ? assetManager.getAsset(this.currentSceneAssetId) as SceneAsset | undefined
+            : undefined;
+
+        return resolvePostProcessProfile({
+            viewportProfileId,
+            camera,
+            sceneProfileId: sceneAsset?.type === 'SCENE' ? sceneAsset.data.postProcessProfileId : '',
+        });
     }
 
     getPostProcessConfig() {

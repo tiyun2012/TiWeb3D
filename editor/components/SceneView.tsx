@@ -2,34 +2,45 @@
 import React, { useRef, useEffect, useState, useLayoutEffect, useContext, useCallback } from 'react';
 import { useViewportSize } from '@/editor/hooks/useViewportSize';
 import { createPortal } from 'react-dom';
-import { Entity, ToolType, MeshComponentMode } from '@/types';
+import { ToolType } from '@/types';
 import { SceneGraph } from '@/engine/SceneGraph';
 import { engineInstance } from '@/engine/engine';
+import { assetManager } from '@/engine/AssetManager';
 import { Mat4Utils, Vec3Utils, RayUtils, AABBUtils } from '@/engine/math';
-import { VIEW_MODES, COMPONENT_MASKS } from '@/engine/constants';
+import { VIEW_MODES } from '@/engine/constants';
+import { meshEdgeKey } from '@/engine/MeshEdgeGeometry';
 import { Icon } from './Icon';
 import { PieMenu } from './PieMenu';
 import { EditorContext } from '@/editor/state/EditorContext';
-import { MeshTopologyUtils } from '@/engine/MeshTopologyUtils';
-import { assetManager } from '@/engine/AssetManager';
-import { StaticMeshAsset } from '@/types';
 import { consoleService } from '@/engine/Console';
 import { useBrushInteraction } from '@/editor/hooks/useBrushInteraction';
 import { usePieMenuInteraction } from '@/editor/hooks/usePieMenuInteraction';
+import { ViewportHud, ViewportIconButton, ViewportTemplate, ViewportToolbarGroup } from './viewport/ViewportTemplate';
+import {
+    CameraDragMode,
+    CameraState,
+    cloneCamera,
+    dragZoomCamera,
+    getCameraEye,
+    orbitCamera,
+    panCamera,
+    wheelZoomCamera,
+} from '@/editor/viewports/viewportCamera';
+
+const MARQUEE_DRAG_THRESHOLD_PX = 4;
 
 interface SceneViewProps {
-  entities: Entity[];
   sceneGraph: SceneGraph;
   selectedIds: string[];
   onSelect: (ids: string[]) => void;
   tool: ToolType;
 }
 
-export const SceneView: React.FC<SceneViewProps> = ({ entities, sceneGraph, onSelect, selectedIds, tool }) => {
+export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, selectedIds, tool }) => {
     const { 
         meshComponentMode, setMeshComponentMode, 
-        softSelectionEnabled, setSoftSelectionEnabled,
-        softSelectionRadius, setSoftSelectionRadius,
+        softSelectionEnabled,
+        softSelectionRadius,
         softSelectionMode, 
         softSelectionFalloff,
         softSelectionHeatmapVisible,
@@ -123,23 +134,37 @@ export const SceneView: React.FC<SceneViewProps> = ({ entities, sceneGraph, onSe
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const viewMenuRef = useRef<HTMLDivElement>(null);
 
-    const [camera, setCamera] = useState({ theta: 0.5, phi: 1.2, radius: 10, target: { x: 0, y: 0, z: 0 } });
+    const [camera, setCamera] = useState<CameraState>({ theta: 0.5, phi: 1.2, radius: 10, target: { x: 0, y: 0, z: 0 } });
     
     const [dragState, setDragState] = useState<{
         isDragging: boolean;
         startX: number;
         startY: number;
-        mode: 'ORBIT' | 'PAN' | 'ZOOM';
+        mode: CameraDragMode;
         startCamera: typeof camera;
     } | null>(null);
 
-    const [selectionBox, setSelectionBox] = useState<{
+    type SelectionBoxState = {
         startX: number;
         startY: number;
         currentX: number;
         currentY: number;
         isSelecting: boolean;
+    };
+
+    const [selectionBox, setSelectionBox] = useState<SelectionBoxState | null>(null);
+    const selectionBoxRef = useRef<SelectionBoxState | null>(null);
+    const pendingObjectPressRef = useRef<{
+        startX: number;
+        startY: number;
+        hitId: string | null;
+        shiftKey: boolean;
     } | null>(null);
+
+    const commitSelectionBoxState = (next: SelectionBoxState | null) => {
+        selectionBoxRef.current = next;
+        setSelectionBox(next);
+    };
 
     useLayoutEffect(() => {
         if (canvasRef.current && !engineInstance.renderer.gl) {
@@ -163,9 +188,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ entities, sceneGraph, onSe
 
     // Sync Camera Data to Engine on Change
     useEffect(() => {
-        const eyeX = camera.target.x + camera.radius * Math.sin(camera.phi) * Math.cos(camera.theta);
-        const eyeY = camera.target.y + camera.radius * Math.cos(camera.phi);
-        const eyeZ = camera.target.z + camera.radius * Math.sin(camera.phi) * Math.sin(camera.theta);
+        const eye = getCameraEye(camera);
         
         const width = viewportSize.cssWidth || 1;
         const height = viewportSize.cssHeight || 1;
@@ -174,11 +197,11 @@ export const SceneView: React.FC<SceneViewProps> = ({ entities, sceneGraph, onSe
         const proj = Mat4Utils.create();
         Mat4Utils.perspective(45 * Math.PI / 180, aspect, 0.1, 1000.0, proj);
         const view = Mat4Utils.create();
-        Mat4Utils.lookAt({x:eyeX, y:eyeY, z:eyeZ}, camera.target, {x:0,y:1,z:0}, view);
+        Mat4Utils.lookAt(eye, camera.target, {x:0,y:1,z:0}, view);
         const vp = Mat4Utils.create();
         Mat4Utils.multiply(proj, view, vp);
         
-        engineInstance.updateCamera(vp, {x:eyeX, y:eyeY, z:eyeZ}, width, height);
+        engineInstance.updateCamera(vp, eye, width, height);
         engineInstance.gizmoSystem.setTool(tool);
     }, [camera, tool, viewportSize.cssWidth, viewportSize.cssHeight]);
 
@@ -277,7 +300,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ entities, sceneGraph, onSe
                         if (engineInstance.selectionSystem.subSelection.vertexIds.has(id)) engineInstance.selectionSystem.subSelection.vertexIds.delete(id);
                         else engineInstance.selectionSystem.subSelection.vertexIds.add(id);
                     } else if (meshComponentMode === 'EDGE') {
-                        const id = result.edgeId.sort((a,b)=>a-b).join('-');
+                        const id = meshEdgeKey(result.edgeId[0], result.edgeId[1]);
                         if (engineInstance.selectionSystem.subSelection.edgeIds.has(id)) engineInstance.selectionSystem.subSelection.edgeIds.delete(id);
                         else engineInstance.selectionSystem.subSelection.edgeIds.add(id);
                     } else if (meshComponentMode === 'FACE') {
@@ -294,7 +317,21 @@ export const SceneView: React.FC<SceneViewProps> = ({ entities, sceneGraph, onSe
 
             if (!componentHit) {
                 const hitId = engineInstance.selectionSystem.selectEntityAt(mx, my, rect.width, rect.height);
-                if (hitId) {
+
+                if (meshComponentMode === 'OBJECT') {
+                    // Do not commit object picking on mouse-down. A ray hit may be a mesh,
+                    // light, joint, or bone helper, and committing here makes that projected
+                    // geometry a dead zone where a marquee can never begin. Keep the hit as
+                    // a pending click and promote the gesture to box selection once it moves.
+                    pendingObjectPressRef.current = {
+                        startX: mx,
+                        startY: my,
+                        hitId,
+                        shiftKey: e.shiftKey,
+                    };
+                } else if (hitId) {
+                    // Preserve component-mode behavior: a click that misses the active
+                    // component but lands on another object changes the object selection.
                     if (e.shiftKey) {
                         const newSel = selectedIds.includes(hitId) ? selectedIds.filter(id => id !== hitId) : [...selectedIds, hitId];
                         onSelect(newSel);
@@ -302,46 +339,18 @@ export const SceneView: React.FC<SceneViewProps> = ({ entities, sceneGraph, onSe
                         onSelect([hitId]);
                     }
                 } else {
-                    setSelectionBox({ startX: mx, startY: my, currentX: mx, currentY: my, isSelecting: true });
+                    commitSelectionBoxState({ startX: mx, startY: my, currentX: mx, currentY: my, isSelecting: true });
                 }
             }
         }
 
-        if (e.altKey && e.button !== 0 || (e.altKey && e.button === 0 && !isAdjustingBrush)) {
+        if (e.altKey && (e.button !== 0 || !isAdjustingBrush)) {
             e.preventDefault();
-            let mode: 'ORBIT' | 'PAN' | 'ZOOM' = 'ORBIT';
-            if (e.button === 1 || (e.altKey && e.button === 1)) mode = 'PAN';
-            if (e.button === 2 || (e.altKey && e.button === 2)) mode = 'ZOOM';
+            let mode: CameraDragMode = 'ORBIT';
+            if (e.button === 1) mode = 'PAN';
+            if (e.button === 2) mode = 'ZOOM';
             
-            setDragState({ isDragging: true, startX: e.clientX, startY: e.clientY, mode, startCamera: { ...camera } });
-        }
-    };
-
-    const handleMouseUp = (e: React.MouseEvent) => {
-        if (selectionBox?.isSelecting) {
-            const x = Math.min(selectionBox.startX, selectionBox.currentX);
-            const y = Math.min(selectionBox.startY, selectionBox.currentY);
-            const w = Math.abs(selectionBox.currentX - selectionBox.startX);
-            const h = Math.abs(selectionBox.currentY - selectionBox.startY);
-            
-            if (w > 3 || h > 3) {
-                const hitIds = engineInstance.selectionSystem.selectEntitiesInRect(x, y, w, h);
-                if (e.shiftKey) {
-                    const nextSelection = new Set(selectedIds);
-                    hitIds.forEach(id => {
-                        if (nextSelection.has(id)) nextSelection.delete(id);
-                        else nextSelection.add(id);
-                    });
-                    onSelect(Array.from(nextSelection));
-                } else {
-                    onSelect(hitIds);
-                }
-            } else {
-                if (!e.shiftKey && e.button === 0) {
-                    onSelect([]);
-                }
-            }
-            setSelectionBox(null);
+            setDragState({ isDragging: true, startX: e.clientX, startY: e.clientY, mode, startCamera: cloneCamera(camera) });
         }
     };
 
@@ -353,8 +362,26 @@ export const SceneView: React.FC<SceneViewProps> = ({ entities, sceneGraph, onSe
 
         if (isAdjustingBrush) return; // Handled by hook
 
-        if (engineInstance.isInputDown && !dragState && !selectionBox && meshComponentMode === 'VERTEX') {
+        if (engineInstance.isInputDown && !dragState && !selectionBoxRef.current && meshComponentMode === 'VERTEX') {
             engineInstance.selectionSystem.selectVerticesInBrush(mx, my, rect.width, rect.height, !e.ctrlKey); 
+        }
+
+        const pendingObjectPress = pendingObjectPressRef.current;
+        if (pendingObjectPress && !dragState && !selectionBoxRef.current && meshComponentMode === 'OBJECT') {
+            const dx = mx - pendingObjectPress.startX;
+            const dy = my - pendingObjectPress.startY;
+            if ((dx * dx) + (dy * dy) >= MARQUEE_DRAG_THRESHOLD_PX * MARQUEE_DRAG_THRESHOLD_PX) {
+                const selectionX = Math.max(0, Math.min(rect.width, mx));
+                const selectionY = Math.max(0, Math.min(rect.height, my));
+                pendingObjectPressRef.current = null;
+                commitSelectionBoxState({
+                    startX: pendingObjectPress.startX,
+                    startY: pendingObjectPress.startY,
+                    currentX: selectionX,
+                    currentY: selectionY,
+                    isSelecting: true,
+                });
+            }
         }
 
         engineInstance.gizmoSystem.update(0, mx, my, rect.width, rect.height, false, false);
@@ -367,49 +394,118 @@ export const SceneView: React.FC<SceneViewProps> = ({ entities, sceneGraph, onSe
             const dx = e.clientX - dragState.startX;
             const dy = e.clientY - dragState.startY;
              if (dragState.mode === 'ORBIT') {
-                setCamera(prev => ({
-                    ...prev,
-                    theta: dragState.startCamera.theta + dx * 0.01,
-                    phi: Math.max(0.1, Math.min(Math.PI - 0.1, dragState.startCamera.phi - dy * 0.01))
-                }));
+                setCamera(orbitCamera(dragState.startCamera, dx, dy, { minPhi: 0.1, maxPhi: Math.PI - 0.1 }));
             } else if (dragState.mode === 'ZOOM') {
-                setCamera(prev => ({ ...prev, radius: Math.max(1, dragState.startCamera.radius - (dx - dy) * 0.05) }));
+                setCamera(dragZoomCamera(dragState.startCamera, dx, dy, { minRadius: 1 }));
             } else if (dragState.mode === 'PAN') {
-                const panSpeed = dragState.startCamera.radius * 0.001;
-                const eyeX = dragState.startCamera.radius * Math.sin(dragState.startCamera.phi) * Math.cos(dragState.startCamera.theta);
-                const eyeY = dragState.startCamera.radius * Math.cos(dragState.startCamera.phi);
-                const eyeZ = dragState.startCamera.radius * Math.sin(dragState.startCamera.phi) * Math.sin(dragState.startCamera.theta);
-                const forward = Vec3Utils.normalize(Vec3Utils.scale({x:eyeX,y:eyeY,z:eyeZ}, -1, {x:0,y:0,z:0}), {x:0,y:0,z:0});
-                const right = Vec3Utils.normalize(Vec3Utils.cross(forward, {x:0,y:1,z:0}, {x:0,y:0,z:0}), {x:0,y:0,z:0});
-                const camUp = Vec3Utils.normalize(Vec3Utils.cross(right, forward, {x:0,y:0,z:0}), {x:0,y:0,z:0});
-                const moveX = Vec3Utils.scale(right, -dx * panSpeed, {x:0,y:0,z:0});
-                const moveY = Vec3Utils.scale(camUp, dy * panSpeed, {x:0,y:0,z:0});
-                setCamera(prev => ({ ...prev, target: Vec3Utils.add(dragState.startCamera.target, Vec3Utils.add(moveX, moveY, {x:0,y:0,z:0}), {x:0,y:0,z:0}) }));
+                setCamera(panCamera(dragState.startCamera, dx, dy));
             }
         }
 
-        if (selectionBox?.isSelecting) {
-            setSelectionBox(prev => prev ? ({...prev, currentX: mx, currentY: my}) : null);
+        const activeSelectionBox = selectionBoxRef.current;
+        if (activeSelectionBox?.isSelecting) {
+            // Keep marquee coordinates in viewport CSS pixels even when the pointer
+            // leaves through an edge/corner. The global mouseup handler will still
+            // commit the selection, so edge releases cannot leave selection stuck.
+            const selectionX = Math.max(0, Math.min(rect.width, mx));
+            const selectionY = Math.max(0, Math.min(rect.height, my));
+            commitSelectionBoxState({
+                ...activeSelectionBox,
+                currentX: selectionX,
+                currentY: selectionY,
+            });
         }
     };
 
     const handleGlobalMouseUp = (e: MouseEvent) => {
         engineInstance.isInputDown = false;
+
         if (containerRef.current) {
             const rect = containerRef.current.getBoundingClientRect();
-            engineInstance.gizmoSystem.update(0, e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height, false, true);
+            const mx = e.clientX - rect.left;
+            const my = e.clientY - rect.top;
+            const selectionX = Math.max(0, Math.min(rect.width, mx));
+            const selectionY = Math.max(0, Math.min(rect.height, my));
+
+            engineInstance.gizmoSystem.update(0, mx, my, rect.width, rect.height, false, true);
+
+            // Finalize marquee selection globally rather than on the viewport div.
+            // Releasing just outside a viewport corner/edge otherwise never delivered
+            // the local mouseup and left rectangle selection looking disabled/stuck.
+            const activeSelectionBox = selectionBoxRef.current;
+            if (activeSelectionBox?.isSelecting) {
+                const x = Math.min(activeSelectionBox.startX, selectionX);
+                const y = Math.min(activeSelectionBox.startY, selectionY);
+                const w = Math.abs(selectionX - activeSelectionBox.startX);
+                const h = Math.abs(selectionY - activeSelectionBox.startY);
+
+                if (w > 3 || h > 3) {
+                    const hitIds = engineInstance.selectionSystem.selectEntitiesInRect(
+                        x,
+                        y,
+                        w,
+                        h,
+                        rect.width,
+                        rect.height,
+                    );
+                    if (e.shiftKey) {
+                        const nextSelection = new Set(selectedIds);
+                        hitIds.forEach(id => {
+                            if (nextSelection.has(id)) nextSelection.delete(id);
+                            else nextSelection.add(id);
+                        });
+                        onSelect(Array.from(nextSelection));
+                    } else {
+                        onSelect(hitIds);
+                    }
+                } else if (!e.shiftKey && e.button === 0) {
+                    onSelect([]);
+                }
+
+                commitSelectionBoxState(null);
+            } else {
+                // No drag threshold was crossed: this was a true click. Apply the raycast
+                // hit captured on mouse-down now, after we know it was not a marquee.
+                const pendingObjectPress = pendingObjectPressRef.current;
+                if (pendingObjectPress && e.button === 0) {
+                    if (pendingObjectPress.hitId) {
+                        if (pendingObjectPress.shiftKey) {
+                            const newSelection = selectedIds.includes(pendingObjectPress.hitId)
+                                ? selectedIds.filter(id => id !== pendingObjectPress.hitId)
+                                : [...selectedIds, pendingObjectPress.hitId];
+                            onSelect(newSelection);
+                        } else {
+                            onSelect([pendingObjectPress.hitId]);
+                        }
+                    } else if (!pendingObjectPress.shiftKey) {
+                        onSelect([]);
+                    }
+                }
+            }
+
+            pendingObjectPressRef.current = null;
         }
+
         setDragState(null);
+    };
+
+    const handleWindowBlur = () => {
+        engineInstance.isInputDown = false;
+        pendingObjectPressRef.current = null;
+        setDragState(null);
+        commitSelectionBoxState(null);
     };
 
     useEffect(() => {
         window.addEventListener('mousemove', handleGlobalMouseMove);
         window.addEventListener('mouseup', handleGlobalMouseUp);
+        window.addEventListener('blur', handleWindowBlur);
         return () => {
             window.removeEventListener('mousemove', handleGlobalMouseMove);
             window.removeEventListener('mouseup', handleGlobalMouseUp);
+            window.removeEventListener('blur', handleWindowBlur);
         };
-    }, [dragState, selectionBox, meshComponentMode, isAdjustingBrush]);
+    }, [dragState, selectionBox, meshComponentMode, isAdjustingBrush, selectedIds, onSelect]);
 
     const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; };
     const handleDrop = (e: React.DragEvent) => {
@@ -432,7 +528,10 @@ export const SceneView: React.FC<SceneViewProps> = ({ entities, sceneGraph, onSe
                 } else {
                     pos = Vec3Utils.add(ray.origin, Vec3Utils.scale(ray.direction, 10, {x:0,y:0,z:0}), {x:0,y:0,z:0});
                 }
-                const id = engineInstance.createEntityFromAsset(assetId, pos);
+                const droppedAsset = assetManager.getAsset(assetId);
+                const id = droppedAsset?.type === 'CAMERA_PRESET'
+                    ? engineInstance.createCameraFromPreset(assetId, pos)
+                    : engineInstance.createEntityFromAsset(assetId, pos);
                 if (id) {
                     onSelect([id]);
                 } else {
@@ -442,81 +541,126 @@ export const SceneView: React.FC<SceneViewProps> = ({ entities, sceneGraph, onSe
         }
     };
 
+    const activeViewMode = VIEW_MODES.find(mode => mode.id === renderMode) || VIEW_MODES[0];
+
     return (
-        <div ref={containerRef} 
-             className={`w-full h-full bg-[#151515] relative overflow-hidden select-none group/scene ${isAdjustingBrush ? 'cursor-ew-resize' : (dragState ? (dragState.mode === 'PAN' ? 'cursor-move' : 'cursor-grabbing') : 'cursor-default')}`} 
-             onMouseDown={handleMouseDown} 
-             onMouseUp={handleMouseUp} 
-             onDragOver={handleDragOver}
-             onDrop={handleDrop}
-             onWheel={(e) => setCamera(p => ({ ...p, radius: Math.max(2, p.radius + e.deltaY * 0.01) }))} 
-             onContextMenu={(e) => e.preventDefault()}
-        >
-            <canvas ref={canvasRef} className="block w-full h-full outline-none" />
-            
-            {selectionBox && selectionBox.isSelecting && (
-                <div className="absolute border border-blue-500 bg-blue-500/20 pointer-events-none z-30" 
-                     style={{ 
-                         left: Math.min(selectionBox.startX, selectionBox.currentX), 
-                         top: Math.min(selectionBox.startY, selectionBox.currentY), 
-                         width: Math.abs(selectionBox.currentX - selectionBox.startX), 
-                         height: Math.abs(selectionBox.currentY - selectionBox.startY) 
-                     }} 
-                />
-            )}
-            
-            <div className="absolute top-3 left-3 flex gap-2 z-20">
-                <div className="bg-black/40 backdrop-blur border border-white/5 rounded-md flex p-1 text-text-secondary">
-                     <button className="p-1 hover:text-white rounded hover:bg-white/10" onClick={() => engineInstance.toggleGrid()} title="Toggle Grid"><Icon name="Grid" size={14} /></button>
-                </div>
-                
-                <div className="relative" ref={viewMenuRef}>
-                    <div className="bg-black/40 backdrop-blur border border-white/5 rounded-md flex items-center px-2 py-1 text-[10px] text-text-secondary min-w-[100px] justify-between cursor-pointer hover:bg-white/5 group" onClick={() => setIsViewMenuOpen(!isViewMenuOpen)}>
-                        <div className="flex items-center gap-2">
-                            <Icon name={(VIEW_MODES.find(m => m.id === renderMode) || VIEW_MODES[0]).icon as any} size={12} className="text-accent" />
-                            <span className="font-semibold text-white/90">{(VIEW_MODES.find(m => m.id === renderMode) || VIEW_MODES[0]).label}</span>
-                        </div>
-                        <Icon name="ChevronDown" size={10} className={`text-text-secondary transition-transform ${isViewMenuOpen ? 'rotate-180' : ''}`} />
+        <ViewportTemplate
+            containerRef={containerRef}
+            canvasRef={canvasRef}
+            className={
+                isAdjustingBrush
+                    ? 'cursor-ew-resize'
+                    : dragState
+                        ? dragState.mode === 'PAN' ? 'cursor-move' : 'cursor-grabbing'
+                        : 'cursor-default'
+            }
+            containerProps={{
+                onMouseDown: handleMouseDown,
+                onDragOver: handleDragOver,
+                onDrop: handleDrop,
+                onWheel: (e) => setCamera(cameraState => wheelZoomCamera(cameraState, e.deltaY, { minRadius: 2, sensitivity: 0.01 })),
+                onContextMenu: (e) => e.preventDefault(),
+            }}
+            viewportChildren={
+                selectionBox?.isSelecting ? (
+                    <div
+                        className="absolute border border-blue-500 bg-blue-500/20 pointer-events-none z-30"
+                        style={{
+                            left: Math.min(selectionBox.startX, selectionBox.currentX),
+                            top: Math.min(selectionBox.startY, selectionBox.currentY),
+                            width: Math.abs(selectionBox.currentX - selectionBox.startX),
+                            height: Math.abs(selectionBox.currentY - selectionBox.startY),
+                        }}
+                    />
+                ) : null
+            }
+            toolbarLeft={
+                <>
+                    <ViewportToolbarGroup>
+                        <ViewportIconButton label="Toggle Grid" onClick={() => engineInstance.toggleGrid()}>
+                            <Icon name="Grid" size={14} />
+                        </ViewportIconButton>
+                    </ViewportToolbarGroup>
+
+                    <div className="relative" ref={viewMenuRef}>
+                        <button
+                            type="button"
+                            className="bg-black/40 backdrop-blur border border-white/5 rounded-md flex items-center px-2 py-1 text-[10px] text-text-secondary min-w-[100px] justify-between cursor-pointer hover:bg-white/5 group"
+                            onClick={() => setIsViewMenuOpen(open => !open)}
+                            title="Viewport shading mode"
+                            aria-label="Viewport shading mode"
+                            aria-expanded={isViewMenuOpen}
+                        >
+                            <div className="flex items-center gap-2">
+                                <Icon name={activeViewMode.icon as any} size={12} className="text-accent" />
+                                <span className="font-semibold text-white/90">{activeViewMode.label}</span>
+                            </div>
+                            <Icon
+                                name="ChevronDown"
+                                size={10}
+                                className={`text-text-secondary transition-transform ${isViewMenuOpen ? 'rotate-180' : ''}`}
+                            />
+                        </button>
+
+                        {isViewMenuOpen && (
+                            <div className="absolute top-full left-0 mt-1 w-32 bg-[#252525] border border-white/10 rounded-md shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-100 z-50">
+                                {VIEW_MODES.map(mode => (
+                                    <button
+                                        type="button"
+                                        key={mode.id}
+                                        onClick={() => handleModeSelect(mode.id as number)}
+                                        className={`w-full flex items-center gap-2 px-3 py-1.5 text-[10px] hover:bg-accent hover:text-white transition-colors text-left ${
+                                            mode.id === renderMode ? 'bg-white/5 text-white font-bold' : 'text-text-secondary'
+                                        }`}
+                                        title={`Use ${mode.label} shading`}
+                                        aria-label={`Use ${mode.label} shading`}
+                                    >
+                                        <Icon name={mode.icon as any} size={12} />
+                                        <span>{mode.label}</span>
+                                        {mode.id === renderMode && <Icon name="Check" size={10} className="ml-auto" />}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
                     </div>
-                    {isViewMenuOpen && (
-                        <div className="absolute top-full left-0 mt-1 w-32 bg-[#252525] border border-white/10 rounded-md shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-100 z-50">
-                            {VIEW_MODES.map((mode) => (
-                                <button key={mode.id} onClick={() => handleModeSelect(mode.id as number)} className={`w-full flex items-center gap-2 px-3 py-1.5 text-[10px] hover:bg-accent hover:text-white transition-colors text-left ${mode.id === renderMode ? 'bg-white/5 text-white font-bold' : 'text-text-secondary'}`}>
-                                    <Icon name={mode.icon as any} size={12} />
-                                    <span>{mode.label}</span>
-                                    {mode.id === renderMode && <Icon name="Check" size={10} className="ml-auto" />}
-                                </button>
-                            ))}
+                </>
+            }
+            hudBottomRight={
+                <ViewportHud className="items-end">
+                    <span>Cam: {camera.target.x.toFixed(1)}, {camera.target.y.toFixed(1)}, {camera.target.z.toFixed(1)}</span>
+                    {softSelectionEnabled && meshComponentMode !== 'OBJECT' && (
+                        <span className="text-accent">
+                            Soft Sel ({softSelectionMode === 'FIXED' ? 'Fixed' : 'Dynamic'}): {softSelectionRadius.toFixed(1)}m
+                        </span>
+                    )}
+                </ViewportHud>
+            }
+            overlayChildren={
+                <>
+                    {isAdjustingBrush && (
+                        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white font-bold text-2xl drop-shadow-md z-50 pointer-events-none">
+                            Radius: {softSelectionRadius.toFixed(2)}
                         </div>
                     )}
-                </div>
-            </div>
-            
-            <div className="absolute bottom-2 right-2 text-[10px] text-text-secondary bg-black/40 px-2 py-0.5 rounded backdrop-blur border border-white/5 z-20 flex flex-col items-end">
-                <span>Cam: {camera.target.x.toFixed(1)}, {camera.target.y.toFixed(1)}, {camera.target.z.toFixed(1)}</span>
-                {softSelectionEnabled && meshComponentMode !== 'OBJECT' && (
-                    <span className="text-accent">Soft Sel ({softSelectionMode === 'FIXED' ? 'Fixed' : 'Dynamic'}): {softSelectionRadius.toFixed(1)}m</span>
-                )}
-            </div>
 
-            {isAdjustingBrush && (
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white font-bold text-2xl drop-shadow-md z-50 pointer-events-none">
-                    Radius: {softSelectionRadius.toFixed(2)}
-                </div>
-            )}
-
-            {pieMenuState && createPortal(
-                <PieMenu 
-                    x={pieMenuState.x} 
-                    y={pieMenuState.y}
-                    entityId={pieMenuState.entityId}
-                    currentMode={meshComponentMode}
-                    onSelectMode={(m) => { setMeshComponentMode(m); closePieMenu(); }}
-                    onAction={handlePieAction}
-                    onClose={closePieMenu}
-                />, 
-                document.body
-            )}
-        </div>
+                    {pieMenuState && createPortal(
+                        <PieMenu
+                            x={pieMenuState.x}
+                            y={pieMenuState.y}
+                            entityId={pieMenuState.entityId}
+                            currentMode={meshComponentMode}
+                            onSelectMode={(mode) => {
+                                setMeshComponentMode(mode);
+                                closePieMenu();
+                            }}
+                            onAction={handlePieAction}
+                            onClose={closePieMenu}
+                        />,
+                        document.body,
+                    )}
+                </>
+            }
+        />
     );
+
 };

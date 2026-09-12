@@ -2,8 +2,7 @@
 import { engineInstance } from '../engine';
 import { assetManager } from '../AssetManager';
 import { SkeletonAsset, SkeletalMeshAsset } from '@/types';
-import { Vec3 } from '../math';
-import { DebugRenderer } from '../renderers/DebugRenderer';
+import { DebugRenderer, getMatrixUnitAxes, getSkeletonJointRadius, SkeletonVisualAxes, transformLocalDirectionByAxes } from '../renderers/DebugRenderer';
 import * as THREE from 'three';
 
 export interface SkeletonToolOptions {
@@ -46,6 +45,22 @@ const DEFAULT_OPTIONS: SkeletonToolOptions = {
 
 export class SkeletonTool {
     private options: SkeletonToolOptions = { ...DEFAULT_OPTIONS };
+    // Visual rest directions are intentionally cached separately from bindPose. SkeletonEditor
+    // writes bindPose during live translation; using it directly would rotate/twist the bone base
+    // as the child moves. The cache is rebuilt only when the asset bone count changes.
+    private visualRestDirections = new Map<string, Array<[number, number, number]>>();
+
+    private getVisualRestDirections(assetId: string, bones: any[]): Array<[number, number, number]> {
+        const cached = this.visualRestDirections.get(assetId);
+        if (cached && cached.length === bones.length) return cached;
+        const next = bones.map((bone) => [
+            bone.bindPose?.[12] ?? 0,
+            bone.bindPose?.[13] ?? 1,
+            bone.bindPose?.[14] ?? 0,
+        ] as [number, number, number]);
+        this.visualRestDirections.set(assetId, next);
+        return next;
+    }
 
     setActive(assetId: string | null, entityId: string | null) {
         // No-op
@@ -114,6 +129,7 @@ export class SkeletonTool {
         });
 
         const bones = skeleton.bones;
+        const visualRestDirections = this.getVisualRestDirections(assetId, bones);
         const liveBoneIds = engineInstance.skeletonMap.get(entityId);
 
         for (let i = 0; i < bones.length; i++) {
@@ -193,11 +209,16 @@ export class SkeletonTool {
                 ? engineInstance.selectionSystem.selectedIndices.has(boneEcsIdx)
                 : false;
 
-            // Joint radius calculation identical to SkeletonEditor
-            const baseRadius = isSelected ? 0.08 : isRoot ? 0.06 : 0.045;
+            // Joint radius calculation identical to SkeletonEditor. Bone width uses the
+            // normal structural radius so selection highlighting never changes bone thickness.
             const radiusScale = this.options.jointRadius / 10;
             const rootScaleFactor = isRoot ? this.options.rootScale : 1.0;
-            const radius = baseRadius * radiusScale * rootScaleFactor;
+            const radius = getSkeletonJointRadius(
+                isRoot,
+                this.options.jointRadius,
+                this.options.rootScale,
+                isSelected ? 'selected' : 'normal'
+            );
 
             let color = isSelected
                 ? { r: 0.98, g: 0.65, b: 0.12 }
@@ -222,13 +243,16 @@ export class SkeletonTool {
                 debug.drawAxis(pos, rx, ry, rz, axisScale);
             }
 
-            // 3. Draw 3D Octahedron Bone Connection
+            // 3. Draw surface-anchored bone: live direction with parent-local no-twist roll
             if (this.options.drawBones) {
                 let pPos = { x: 0, y: 0, z: 0 };
+                let parentAxes: SkeletonVisualAxes = { x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1] };
+                let parentIsRoot = false;
                 let shouldDraw = false;
                 let isParentSelected = false;
 
-                // Dynamic SceneGraph parent check
+                // Prefer the live SceneGraph parent so edited/reparented rigs render from the
+                // actual hierarchy. The cross-section frame comes from that parent's local axes.
                 if (liveBoneId) {
                     const sgParentId = engineInstance.sceneGraph.getParentId(liveBoneId);
                     if (sgParentId) {
@@ -239,7 +263,12 @@ export class SkeletonTool {
                                 const pWm = engineInstance.sceneGraph.getWorldMatrix(sgParentId);
                                 if (pWm) {
                                     pPos = { x: pWm[12], y: pWm[13], z: pWm[14] };
+                                    parentAxes = getMatrixUnitAxes(pWm);
                                     shouldDraw = true;
+                                    const liveParentBoneIndex = liveBoneIds?.indexOf(sgParentId) ?? -1;
+                                    if (liveParentBoneIndex >= 0) {
+                                        parentIsRoot = bones[liveParentBoneIndex]?.parentIndex === -1;
+                                    }
                                     if (engineInstance.selectionSystem?.selectedIndices?.has(parentIdx)) {
                                         isParentSelected = true;
                                     }
@@ -249,13 +278,15 @@ export class SkeletonTool {
                     }
                 }
 
-                // Fallback to asset default parent hierarchy
+                // Fallback to the asset hierarchy if there is no live scene parent.
                 if (!shouldDraw && !isRoot && typeof p === 'number' && p >= 0 && p < bones.length) {
+                    parentIsRoot = bones[p]?.parentIndex === -1;
                     if (liveBoneIds && liveBoneIds[p]) {
                         const pLiveId = liveBoneIds[p];
                         const pWm = engineInstance.sceneGraph.getWorldMatrix(pLiveId);
                         if (pWm) {
                             pPos = { x: pWm[12], y: pWm[13], z: pWm[14] };
+                            parentAxes = getMatrixUnitAxes(pWm);
                             shouldDraw = true;
                             const pIdx = engineInstance.ecs?.idToIndex?.get(pLiveId);
                             if (pIdx !== undefined && engineInstance.selectionSystem?.selectedIndices?.has(pIdx)) {
@@ -268,16 +299,46 @@ export class SkeletonTool {
                         const parent = bones[p];
                         if (parent?.bindPose) {
                             pPos = transform(parent.bindPose[12], parent.bindPose[13], parent.bindPose[14]);
+                            parentAxes = {
+                                x: (() => { const v = rotate(parent.bindPose[0], parent.bindPose[1], parent.bindPose[2]); const l = Math.hypot(v.x, v.y, v.z) || 1; return [v.x/l, v.y/l, v.z/l] as [number, number, number]; })(),
+                                y: (() => { const v = rotate(parent.bindPose[4], parent.bindPose[5], parent.bindPose[6]); const l = Math.hypot(v.x, v.y, v.z) || 1; return [v.x/l, v.y/l, v.z/l] as [number, number, number]; })(),
+                                z: (() => { const v = rotate(parent.bindPose[8], parent.bindPose[9], parent.bindPose[10]); const l = Math.hypot(v.x, v.y, v.z) || 1; return [v.x/l, v.y/l, v.z/l] as [number, number, number]; })(),
+                            };
                             shouldDraw = true;
                         }
                     }
                 }
-                
+
                 if (shouldDraw) {
                     const boneColor = isParentSelected
-                        ? { r: 0.98, g: 0.65, b: 0.12 } // Vibrant golden amber highlight matching selected joint
+                        ? { r: 0.98, g: 0.65, b: 0.12 }
                         : this.options.boneColor;
-                    debug.drawBoneOctahedron(pPos, pos, boneColor);
+                    const liveDirection = { x: pos.x - pPos.x, y: pos.y - pPos.y, z: pos.z - pPos.z };
+                    const restDirection = transformLocalDirectionByAxes(
+                        visualRestDirections[i],
+                        parentAxes,
+                        liveDirection
+                    );
+                    const parentRadius = getSkeletonJointRadius(
+                        parentIsRoot,
+                        this.options.jointRadius,
+                        this.options.rootScale,
+                        'normal'
+                    );
+                    const childRadius = getSkeletonJointRadius(
+                        isRoot,
+                        this.options.jointRadius,
+                        this.options.rootScale,
+                        'normal'
+                    );
+                    debug.drawBoneOctahedron(pPos, pos, boneColor, {
+                        parentRadius,
+                        childRadius,
+                        parentXAxis: parentAxes.x,
+                        parentYAxis: parentAxes.y,
+                        parentZAxis: parentAxes.z,
+                        restDirection,
+                    });
                 }
             }
         }

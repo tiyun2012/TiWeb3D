@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { SkeletonAsset } from '@/types';
+import { BoneData, SkeletonAsset } from '@/types';
 import { assetManager } from '@/engine/AssetManager';
 import { Icon } from './Icon';
 import { HierarchyTreeItem } from './HierarchyTreeItem';
@@ -11,6 +11,8 @@ interface SkeletonHierarchyProps {
     onUpdate: () => void;
     selectedBoneIndex?: number | null;
     onSelectBone?: (index: number | null) => void;
+    editable?: boolean;
+    onSkeletonChange?: (bones: BoneData[], options?: { structural?: boolean }) => void;
 }
 
 interface BoneNodeProps {
@@ -28,6 +30,7 @@ interface BoneNodeProps {
     onRenameChange: (value: string) => void;
     onRenameSubmit: () => void;
     onRenameCancel: () => void;
+    editable: boolean;
 }
 
 const BoneNode: React.FC<BoneNodeProps> = ({
@@ -44,7 +47,8 @@ const BoneNode: React.FC<BoneNodeProps> = ({
     onStartRename,
     onRenameChange,
     onRenameSubmit,
-    onRenameCancel
+    onRenameCancel,
+    editable
 }) => {
     const bones = asset.skeleton?.bones || [];
     const bone = bones[boneIndex];
@@ -77,13 +81,14 @@ const BoneNode: React.FC<BoneNodeProps> = ({
             iconColor={isSelected ? 'text-accent' : 'text-emerald-400'}
             isSelected={isSelected}
             onSelect={handleSelect}
-            onContextMenu={(e) => onContextMenu(e, boneIndex)}
+            onContextMenu={editable ? (e) => onContextMenu(e, boneIndex) : undefined}
             isRenaming={isRenaming}
             renameValue={renameValue}
             onRenameChange={onRenameChange}
             onRenameSubmit={onRenameSubmit}
             onRenameCancel={onRenameCancel}
-            onStartRename={() => onStartRename(String(boneIndex), bone.name)}
+            onStartRename={editable ? () => onStartRename(String(boneIndex), bone.name) : undefined}
+            canRename={editable}
         >
             {children.map(({ i }: any) => (
                 <BoneNodeMemo
@@ -102,6 +107,7 @@ const BoneNode: React.FC<BoneNodeProps> = ({
                     onRenameChange={onRenameChange}
                     onRenameSubmit={onRenameSubmit}
                     onRenameCancel={onRenameCancel}
+                    editable={editable}
                 />
             ))}
         </HierarchyTreeItem>
@@ -110,7 +116,7 @@ const BoneNode: React.FC<BoneNodeProps> = ({
 
 const BoneNodeMemo = React.memo(BoneNode);
 
-export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onUpdate, selectedBoneIndex: externalSelectedBoneIndex, onSelectBone }) => {
+export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onUpdate, selectedBoneIndex: externalSelectedBoneIndex, onSelectBone, editable = true, onSkeletonChange }) => {
     const [internalSelected, setInternalSelected] = useState<number | null>(null);
     const selectedBoneIndex = externalSelectedBoneIndex !== undefined ? externalSelectedBoneIndex : internalSelected;
     
@@ -118,6 +124,16 @@ export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onU
         if (onSelectBone) onSelectBone(idx);
         else setInternalSelected(idx);
     };
+
+    const commitSkeletonChange = useCallback((bones: BoneData[], structural = false) => {
+        if (!editable) return;
+        if (onSkeletonChange) {
+            onSkeletonChange(bones, { structural });
+        } else {
+            assetManager.updateAsset(asset.id, { skeleton: { ...asset.skeleton, bones } });
+        }
+        onUpdate();
+    }, [editable, onSkeletonChange, asset, onUpdate]);
 
     const [expanded, setExpanded] = useState<Set<number>>(new Set([0]));
     const [contextMenu, setContextMenu] = useState<{ x: number, y: number, boneIndex: number | null } | null>(null);
@@ -132,20 +148,21 @@ export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onU
     } = useInlineRename();
 
     const handleRenameSubmit = useCallback(() => {
+        if (!editable) return;
         submitRename((id, newName) => {
             const bIdx = parseInt(id, 10);
             const bones = asset.skeleton?.bones;
             if (bones && bones[bIdx]) {
                 bones[bIdx].name = newName;
-                assetManager.updateAsset(asset.id, { skeleton: { ...asset.skeleton, bones } });
-                onUpdate();
+                commitSkeletonChange(bones, false);
             }
         });
-    }, [submitRename, asset, onUpdate]);
+    }, [editable, submitRename, asset, commitSkeletonChange]);
 
     const handleStartRename = useCallback((id: string, name: string) => {
+        if (!editable) return;
         startRename(id, name);
-    }, [startRename]);
+    }, [editable, startRename]);
 
     const toggleExpand = (idx: number) => {
         const next = new Set(expanded);
@@ -155,6 +172,7 @@ export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onU
     };
 
     const handleAddJoint = (parentIndex: number) => {
+        if (!editable) return;
         const bones = asset.skeleton?.bones;
         if (!bones) return;
 
@@ -171,7 +189,7 @@ export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onU
         }
 
         const newIndex = bones.length;
-        const newBone = {
+        const newBone: BoneData = {
             name: `Joint_${newIndex}`,
             parentIndex,
             bindPose: new Float32Array(identityMatrix),
@@ -182,21 +200,21 @@ export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onU
                 0, parentIndex >= 0 ? -1.0 : 0, 0, 1
             ]),
             visual: {
-                color: [0, 1, 0],
+                color: { x: 0, y: 1, z: 0 },
                 size: 1.0
             }
         };
 
         bones.push(newBone);
-        assetManager.updateAsset(asset.id, { skeleton: { ...asset.skeleton, bones } });
+        commitSkeletonChange(bones, true);
         if (parentIndex >= 0) {
             setExpanded(prev => new Set(prev).add(parentIndex));
         }
         setSelectedBoneIndex(newIndex);
-        onUpdate();
     };
 
     const handleDeleteJoint = (boneIndex: number) => {
+        if (!editable) return;
         const bones = asset.skeleton?.bones;
         if (!bones || bones.length <= 1) return;
 
@@ -211,13 +229,12 @@ export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onU
             }
         });
 
-        assetManager.updateAsset(asset.id, { skeleton: { ...asset.skeleton, bones: newBones } });
+        commitSkeletonChange(newBones, true);
         if (selectedBoneIndex === boneIndex) {
             setSelectedBoneIndex(null);
         } else if (selectedBoneIndex !== null && selectedBoneIndex > boneIndex) {
             setSelectedBoneIndex(selectedBoneIndex - 1);
         }
-        onUpdate();
     };
 
     const rootBones = (asset.skeleton?.bones || [])
@@ -225,6 +242,7 @@ export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onU
         .filter(({ b }: any) => b.parentIndex === -1);
 
     const handleNodeContextMenu = (e: React.MouseEvent, boneIndex: number) => {
+        if (!editable) return;
         e.preventDefault();
         e.stopPropagation();
         setSelectedBoneIndex(boneIndex);
@@ -232,6 +250,7 @@ export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onU
     };
 
     const handleContainerContextMenu = (e: React.MouseEvent) => {
+        if (!editable) return;
         e.preventDefault();
         setContextMenu({ x: e.clientX, y: e.clientY, boneIndex: null });
     };
@@ -239,7 +258,7 @@ export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onU
     // Keyboard shortcuts: F2 to rename selected joint
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.key === 'F2' && selectedBoneIndex !== null && selectedBoneIndex !== undefined) {
+            if (editable && e.key === 'F2' && selectedBoneIndex !== null && selectedBoneIndex !== undefined) {
                 const bone = asset.skeleton?.bones?.[selectedBoneIndex];
                 if (bone) {
                     e.preventDefault();
@@ -249,7 +268,7 @@ export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onU
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedBoneIndex, asset, startRename]);
+    }, [editable, selectedBoneIndex, asset, startRename]);
 
     useEffect(() => {
         const hideMenu = () => setContextMenu(null);
@@ -298,11 +317,12 @@ export const SkeletonHierarchy: React.FC<SkeletonHierarchyProps> = ({ asset, onU
                         onRenameChange={setRenameValue}
                         onRenameSubmit={handleRenameSubmit}
                         onRenameCancel={cancelRename}
+                        editable={editable}
                     />
                 ))}
             </div>
 
-            {contextMenu && createPortal(
+            {editable && contextMenu && createPortal(
                 <div 
                     className="skeleton-context-menu fixed z-[99999] bg-[#1a1a1a] border border-white/10 shadow-2xl rounded py-1 min-w-[140px] text-xs text-text-primary backdrop-blur-md"
                     style={{ 

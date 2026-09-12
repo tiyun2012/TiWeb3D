@@ -9,7 +9,15 @@ export type GizmoAxis = 'X' | 'Y' | 'Z' | 'XY' | 'XZ' | 'YZ' | 'VIEW' | null;
 export interface IGizmoEngineContext {
     ecs: any;
     sceneGraph: any;
-    selectionSystem: any;
+    selectionSystem: {
+        selectedIndices: Set<number>;
+        subSelection: {
+            vertexIds: Set<number>;
+            edgeIds: Set<string>;
+            faceIds: Set<number>;
+        };
+        getSelectionAsVertices: () => Set<number>;
+    };
     meshComponentMode: any;
     currentCameraPos: Vector3;
     currentViewProj: Float32Array | null;
@@ -80,10 +88,20 @@ export class GizmoSystem {
 
             const idx = Array.from(selected)[0];
             entityId = this.engine.ecs.store.ids[idx];
+            if (!entityId) {
+                this.hoverAxis = null;
+                this.activeAxis = null;
+                return;
+            }
             worldPos = this.getSelectedComponentCentroid(entityId);
         } else if (selected.size === 1) {
             const idx = Array.from(selected)[0];
             entityId = this.engine.ecs.store.ids[idx];
+            if (!entityId) {
+                this.hoverAxis = null;
+                this.activeAxis = null;
+                return;
+            }
             worldPos = this.engine.sceneGraph.getWorldPosition(entityId);
         } else {
             this.hoverAxis = null;
@@ -183,8 +201,8 @@ export class GizmoSystem {
                 this.engine.currentViewProj, 
                 pos, 
                 this.gizmoScale, 
-                this.hoverAxis as string, 
-                this.activeAxis as string
+                this.hoverAxis, 
+                this.activeAxis
             );
         }
     }

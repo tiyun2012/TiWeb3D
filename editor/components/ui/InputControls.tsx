@@ -6,12 +6,6 @@ export const DraggableNumber: React.FC<{
   const [localStr, setLocalStr] = React.useState<string>('');
   const [isFocused, setIsFocused] = React.useState<boolean>(false);
 
-  React.useEffect(() => {
-    if (!isFocused) {
-      setLocalStr(value === undefined || isNaN(value) ? '0.000' : Number(value).toFixed(3));
-    }
-  }, [value, isFocused]);
-
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (disabled) return;
     const str = e.target.value;
@@ -41,7 +35,10 @@ export const DraggableNumber: React.FC<{
         className={`flex-1 bg-transparent text-xs p-1 outline-none text-white min-w-0 text-right pr-2 ${disabled ? 'cursor-not-allowed' : ''}`} 
         value={isFocused ? localStr : (value === undefined || isNaN(value) ? '0.000' : Number(value).toFixed(3))} 
         onChange={handleChange}
-        onFocus={() => setIsFocused(true)}
+        onFocus={() => {
+          setLocalStr(value === undefined || isNaN(value) ? '0.000' : Number(value).toFixed(3));
+          setIsFocused(true);
+        }}
         onBlur={handleBlur}
         step={step}
         disabled={disabled}

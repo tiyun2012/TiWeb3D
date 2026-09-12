@@ -24,6 +24,8 @@ type GizmoRendererFacade = {
  * touching the main scene engine instance.
  */
 export class AssetViewportEngine implements IEngine {
+    isPlaying = false;
+
     // --- Core engine-like state (enough for SelectionSystem + GizmoSystem) ---
     ecs = new SoAEntitySystem();
     sceneGraph = new SceneGraph();
@@ -150,6 +152,7 @@ export class AssetViewportEngine implements IEngine {
         if (idx == null) return;
 
         const meshUuid = assetManager.getMeshUUID(this.ecs.store.meshType[idx]);
+        if (!meshUuid) return;
         const asset = assetManager.getAsset(meshUuid) as StaticMeshAsset;
         if (!asset?.geometry?.vertices) return;
 
@@ -166,6 +169,7 @@ export class AssetViewportEngine implements IEngine {
         if (idx == null) return;
 
         const meshUuid = assetManager.getMeshUUID(this.ecs.store.meshType[idx]);
+        if (!meshUuid) return;
         const asset = assetManager.getAsset(meshUuid) as StaticMeshAsset;
         if (!asset?.geometry?.vertices) return;
 
@@ -192,6 +196,7 @@ export class AssetViewportEngine implements IEngine {
         const idx = this.ecs.idToIndex.get(this.activeDeformationEntity);
         if (idx == null) return;
         const meshUuid = assetManager.getMeshUUID(this.ecs.store.meshType[idx]);
+        if (!meshUuid) return;
         this.onGeometryFinalized?.(meshUuid);
     }
 

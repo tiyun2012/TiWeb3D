@@ -80,7 +80,6 @@ const SceneWrapper = () => {
   if (!ctx) return null;
   return (
     <SceneView 
-      entities={ctx.entities}
       sceneGraph={ctx.sceneGraph}
       selectedIds={ctx.selectedIds}
       onSelect={(ids) => {

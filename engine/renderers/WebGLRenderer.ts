@@ -9,6 +9,12 @@ import { MeshRenderSystem } from '../systems/MeshRenderSystem';
 import { effectRegistry } from '../EffectRegistry';
 import { ParticleSystem } from '../systems/ParticleSystem';
 import { GizmoRenderer, GizmoHoverAxis } from './GizmoRenderer';
+import {
+    DEFAULT_MESH_PREVIEW_LIGHT,
+    DISPLAY_TRANSFER_GLSL,
+    VIEWPORT_BACKGROUND_LINEAR_COLOR,
+    VIEWPORT_WEBGL_CONTEXT_ATTRIBUTES,
+} from './MeshSurfaceContract';
 
 export interface PostProcessConfig {
     enabled: boolean;
@@ -91,6 +97,8 @@ uniform float u_toneMapping;
 
 out vec4 outColor;
 
+${DISPLAY_TRANSFER_GLSL}
+
 vec3 aces(vec3 x) {
   const float a = 2.51; const float b = 0.03; const float c = 2.43; const float d = 0.59; const float e = 0.14;
   return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
@@ -102,10 +110,10 @@ void main() {
     vec3 baseColor = texture(u_scene, v_uv).rgb;
     float effectId = floor(mod(texture(u_data, v_uv).r * 255.0 + 0.5, 255.0));
     
-    // Apply Per-Object Effect (Pass 1)
-    baseColor = processCustomEffects(baseColor, effectId, v_uv, u_time, u_scene);
-
     if (u_enabled > 0.5) {
+        // Per-object effects are part of the post-process contract. Turning
+        // post-processing off must produce the raw shared mesh surface + display transfer.
+        baseColor = processCustomEffects(baseColor, effectId, v_uv, u_time, u_scene);
         if (u_aberrationStrength > 0.0) {
             float r = texture(u_scene, v_uv + vec2(u_aberrationStrength, 0.0)).r;
             float b = texture(u_scene, v_uv - vec2(u_aberrationStrength, 0.0)).b;
@@ -118,7 +126,7 @@ void main() {
         if (u_toneMapping > 0.5) baseColor = aces(baseColor);
     }
     
-    baseColor = pow(baseColor, vec3(1.0 / 2.2));
+    baseColor = linearToDisplay(baseColor);
 
     vec4 exclSample = texture(u_excluded, v_uv);
     if (exclSample.a > 0.0) {
@@ -127,10 +135,12 @@ void main() {
         
         vec3 straightColor = exclColor / exclSample.a;
         
-        // Apply Per-Object Effect (Pass 2 - Overlay)
-        straightColor = processCustomEffects(straightColor, exclEffectId, v_uv, u_time, u_excluded);
+        if (u_enabled > 0.5) {
+            // Overlay/excluded object effects follow the same global PP toggle.
+            straightColor = processCustomEffects(straightColor, exclEffectId, v_uv, u_time, u_excluded);
+        }
         
-        vec3 gammaOverlay = pow(straightColor, vec3(1.0 / 2.2));
+        vec3 gammaOverlay = linearToDisplay(straightColor);
         baseColor = baseColor * (1.0 - exclSample.a) + gammaOverlay * exclSample.a;
     }
 
@@ -177,13 +187,13 @@ export class WebGLRenderer {
     }
 
     init(canvas: HTMLCanvasElement) {
-        this.gl = canvas.getContext('webgl2', { alpha: false, antialias: false, powerPreference: "high-performance" });
+        this.gl = canvas.getContext('webgl2', { ...VIEWPORT_WEBGL_CONTEXT_ATTRIBUTES });
         if (!this.gl) return;
         const gl = this.gl;
         gl.getExtension("EXT_color_buffer_float");
         gl.enable(gl.DEPTH_TEST);
         gl.disable(gl.CULL_FACE); 
-        gl.clearColor(0.1, 0.1, 0.1, 1.0);
+        gl.clearColor(...VIEWPORT_BACKGROUND_LINEAR_COLOR);
         
         this.meshSystem.init(gl);
         this.initPostProcess(gl);
@@ -297,7 +307,7 @@ export class WebGLRenderer {
         }
 
         // Prepare light data
-        let lightDir = [0.5, -1.0, 0.5], lightColor = [1, 1, 1], lightIntensity = 1.0;
+        let lightDir = [...DEFAULT_MESH_PREVIEW_LIGHT.direction], lightColor = [...DEFAULT_MESH_PREVIEW_LIGHT.color], lightIntensity = DEFAULT_MESH_PREVIEW_LIGHT.intensity;
         for (let i = 0; i < count; i++) {
             if (store.isActive[i] && (store.componentMask[i] & COMPONENT_MASKS.LIGHT)) {
                 const base = i * 16;
@@ -316,7 +326,7 @@ export class WebGLRenderer {
         // Render Particles into the Opaque pass so they interact with PP correctly
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.fboIncluded);
         gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
-        gl.clearColor(0.1, 0.1, 0.1, 1.0); 
+        gl.clearColor(...VIEWPORT_BACKGROUND_LINEAR_COLOR); 
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); 
         
         this.meshSystem.render(store, selectedIndices, vp, cam, time, lightDir, lightColor, lightIntensity, this.renderMode, 'OPAQUE', softSelData);

@@ -158,18 +158,21 @@ export class GizmoRenderer {
     renderGizmos(vp: Float32Array, pos: { x: number; y: number; z: number }, scale: number, hoverAxis: GizmoHoverAxis, activeAxis: GizmoHoverAxis) {
         if (!this.gl || !this.program || !this.vao || !this.offsets) return;
         const gl = this.gl;
+        const program = this.program;
+        const vao = this.vao;
+        const offsets = this.offsets;
 
-        gl.useProgram(this.program);
+        gl.useProgram(program);
         gl.disable(gl.DEPTH_TEST);
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-        gl.uniformMatrix4fv(gl.getUniformLocation(this.program, 'u_vp'), false, vp);
-        const uModel = gl.getUniformLocation(this.program, 'u_model');
-        const uColor = gl.getUniformLocation(this.program, 'u_color');
-        const uAlpha = gl.getUniformLocation(this.program, 'u_alpha');
+        gl.uniformMatrix4fv(gl.getUniformLocation(program, 'u_vp'), false, vp);
+        const uModel = gl.getUniformLocation(program, 'u_model');
+        const uColor = gl.getUniformLocation(program, 'u_color');
+        const uAlpha = gl.getUniformLocation(program, 'u_alpha');
 
-        gl.bindVertexArray(this.vao);
+        gl.bindVertexArray(vao);
 
         const drawPart = (axis: 'X' | 'Y' | 'Z' | 'VIEW', type: 'arrow' | 'plane' | 'sphere', color: number[]) => {
             const axisName = axis === 'VIEW' ? 'VIEW' : axis;
@@ -199,8 +202,8 @@ export class GizmoRenderer {
                 gl.uniformMatrix4fv(uModel, false, mArrow);
                 gl.uniform3fv(uColor, (isActive || isHover) ? [1, 1, 1] : color);
                 gl.uniform1f(uAlpha, 1.0);
-                gl.drawArrays(gl.TRIANGLES, this.offsets.cylinder, this.offsets.cylinderCount);
-                gl.drawArrays(gl.TRIANGLES, this.offsets.cone, this.offsets.coneCount);
+                gl.drawArrays(gl.TRIANGLES, offsets.cylinder, offsets.cylinderCount);
+                gl.drawArrays(gl.TRIANGLES, offsets.cone, offsets.coneCount);
                 return;
             }
 
@@ -208,7 +211,7 @@ export class GizmoRenderer {
                 gl.uniformMatrix4fv(uModel, false, mIdentity);
                 gl.uniform3fv(uColor, (isActive || isHover) ? [1, 1, 1] : [0.28, 0.63, 0.70]);
                 gl.uniform1f(uAlpha, 1.0);
-                gl.drawArrays(gl.TRIANGLES, this.offsets.sphere, this.offsets.sphereCount);
+                gl.drawArrays(gl.TRIANGLES, offsets.sphere, offsets.sphereCount);
                 return;
             }
 
@@ -235,12 +238,12 @@ export class GizmoRenderer {
 
             gl.uniform3fv(uColor, color);
             gl.uniform1f(uAlpha, (isActive || isHover) ? 0.5 : 0.3);
-            gl.drawArrays(gl.TRIANGLES, this.offsets.quad, this.offsets.quadCount);
+            gl.drawArrays(gl.TRIANGLES, offsets.quad, offsets.quadCount);
 
             if (isActive || isHover) {
                 gl.uniform3fv(uColor, [1, 1, 1]);
                 gl.uniform1f(uAlpha, 1.0);
-                gl.drawArrays(gl.LINE_LOOP, this.offsets.quadBorder, this.offsets.quadBorderCount);
+                gl.drawArrays(gl.LINE_LOOP, offsets.quadBorder, offsets.quadBorderCount);
             }
         };
 

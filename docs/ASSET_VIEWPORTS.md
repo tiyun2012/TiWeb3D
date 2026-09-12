@@ -100,8 +100,9 @@ When building a new 3D asset editor (e.g., Material Preview, Animation Clip Play
 
 ## Implemented Reference Editors
 
-- **`StaticMeshEditor.tsx`**: Inherits `AssetViewport3D` to render 3D geometry, wireframe overlays, vertex/edge/face component picking, PieMenu, and shading mode cycles.
-- **`SkeletonEditor.tsx`**: Inherits `AssetViewport3D` to render hierarchical bone octahedrons, wireframe sphere joints, bone selection, and skeleton hierarchy synchronization, with an integrated Inspector sidebar powered by `JointInspector`, `SkeletonAssetInspector`, and `SkeletonDisplayOptions`. Scene entities spawned from skeleton assets maintain exact 1:1 transform parity with the editor via `bone.bindPose` initialization and `syncSkeletonEntities`.
+- **`StaticMeshEditor.tsx`**: Composes through `AssetEditorTemplate` and inherits `AssetViewport3D` to render 3D geometry, wireframe overlays, vertex/edge/face component picking, PieMenu, and shading mode cycles. It provides `MeshAssetHierarchy` and `MeshAssetInspector` to complete the shared Hierarchy / Viewport / Inspector frame.
+- **`SkeletalMeshEditor.tsx`**: Entry point for skeletal mesh assets. It switches between the reused Geometry (`StaticMeshEditor`) and Skeleton (`SkeletonEditor`) workspaces instead of duplicating either implementation.
+- **`SkeletonEditor.tsx`**: Composes through `AssetEditorTemplate` and inherits `AssetViewport3D` to render hierarchical bone octahedrons, wireframe sphere joints, bone selection, and skeleton hierarchy synchronization, with an integrated Inspector sidebar powered by `JointInspector`, `SkeletonAssetInspector`, and `SkeletonDisplayOptions`. Scene entities spawned from skeleton assets maintain exact 1:1 transform parity with the editor via `bone.bindPose` initialization and `syncSkeletonEntities`.
 
 ---
 
@@ -170,3 +171,18 @@ assetManager.updateAsset(assetId, partial);
    - **Built-in Gizmo Event Interception**: `AssetViewport3D` evaluates `gizmoSystem.update(..., isDown, isUp)` directly in its mouse lifecycle. When the mouse hovers or drags a gizmo axis, the gizmo consumes the interaction without falling through or causing unwanted deselection.
    - **SoA Dirty Flag Preservation**: Proxy setters (`transformProxy.position`, `rotation`, `scale`) explicitly set `store.transformDirty[index] = 1` and `sceneGraph.setDirty(id)`, ensuring matrix calculations and ECS sync loops update without objects becoming locked or frozen.
 
+
+---
+
+## Viewport Template Layer
+
+`AssetViewport3D` is itself built on the engine-agnostic `ViewportTemplate` (`editor/components/viewport/ViewportTemplate.tsx`). This keeps canvas/chrome composition consistent with the main `SceneView` while preserving separate renderer lifecycles.
+
+Use `ViewportTemplate` directly only for a new viewport host with its own renderer lifecycle. New 3D asset editors must continue to use `AssetViewport3D` and its lifecycle/slot props. Shared orbit, pan, and zoom math is provided by `editor/viewports/viewportCamera.ts`.
+
+See `/docs/VIEWPORT_TEMPLATE.md` for the reusable shell API and design rules.
+
+
+## Full Asset Editor Composition
+
+Full 3D asset editor windows use `AssetEditorTemplate` above `AssetViewport3D`. Asset-specific toolbar commands are `AssetViewportToolbarAction` descriptors and are filtered against `assetViewportCapabilities.ts`; keyboard and context/pie triggers must check the same capability. See `/docs/ASSET_EDITOR_TEMPLATE.md`.

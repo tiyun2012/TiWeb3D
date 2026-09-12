@@ -8,19 +8,13 @@ import { SkeletonDisplayOptions } from './inspector/SkeletonDisplayOptions';
 
 // Tool Specific Options
 const MOVE_OPTIONS = [
-    { label: 'Local', value: 'Local' },
-    { label: 'Parent', value: 'Parent' },
-    { label: 'Virtual Pivot', value: 'VirtualPivot' },
     { label: 'World', value: 'World' },
-    { label: 'Normal', value: 'Normal' },
-    { label: 'Average Component', value: 'Average' }
+    { label: 'Local', value: 'Local' }
 ];
 
 const ROTATE_OPTIONS = [
     { label: 'World', value: 'World' },
-    { label: 'Object', value: 'Object' },
-    { label: 'Gimbal', value: 'Gimbal' },
-    { label: 'Virtual Pivot', value: 'VirtualPivot' }
+    { label: 'Local', value: 'Local' }
 ];
 
 const SCALE_OPTIONS = [
@@ -118,12 +112,6 @@ export const ToolOptionsPanel: React.FC = () => {
                                     />
                                 </div>
                                 
-                                {transformSpace === 'Gimbal' && (
-                                    <div className="mt-2 text-[10px] text-accent opacity-80 flex items-center gap-2 p-1 border border-dashed border-accent/30 rounded">
-                                        <Icon name="CircleDashed" size={10} />
-                                        <span>Gimbal Rings Active</span>
-                                    </div>
-                                )}
                             </div>
                         </div>
                     )}
@@ -274,7 +262,7 @@ export const ToolOptionsPanel: React.FC = () => {
                 {meshComponentMode !== 'OBJECT' && (
                     <div className="space-y-2 pt-2 border-t border-white/5">
                         <div className="flex items-center gap-2 text-[10px] font-bold text-text-secondary uppercase tracking-wider">
-                            <Icon name="Tool" size={12} /> Mesh Tools
+                            <Icon name="Wrench" size={12} /> Mesh Tools
                         </div>
                         <div className="grid grid-cols-2 gap-2">
                             <button className="bg-white/5 hover:bg-white/10 hover:text-white p-2 rounded text-xs text-center border border-white/5 transition-colors flex flex-col items-center gap-1">

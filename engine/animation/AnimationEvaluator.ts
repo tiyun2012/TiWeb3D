@@ -9,6 +9,7 @@ export class AnimationEvaluator {
         const count = times.length;
 
         if (count === 0) return new Float32Array(track.type === 'rotation' ? [0,0,0,1] : [0,0,0]);
+        if (count === 1) return this.getValue(track, 0);
         if (time <= times[0]) return this.getValue(track, 0);
         if (time >= times[count - 1]) return this.getValue(track, count - 1);
 
@@ -18,10 +19,12 @@ export class AnimationEvaluator {
             if (times[mid] <= time) { idx = mid; low = mid + 1; }
             else high = mid - 1;
         }
-        idx = Math.max(0, idx - 1);
+        // `idx` is the greatest keyframe whose time is <= the sample time.
+        // Because the endpoints were handled above, idx always has a valid next key.
+        idx = Math.min(idx, count - 2);
 
         const t1 = times[idx];
-        const t2 = times[idx + 1] || t1;
+        const t2 = times[idx + 1];
         const factor = (time - t1) / (t2 - t1);
         const t = Math.max(0, Math.min(1, isNaN(factor) ? 0 : factor));
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import * as THREE from 'three';
-import { SkeletonAsset, SkeletalMeshAsset } from '@/types';
+import { BoneData, SkeletonAsset, SkeletalMeshAsset } from '@/types';
 import { assetManager } from '@/engine/AssetManager';
 import { AssetViewportEngine } from '@/editor/viewports/AssetViewportEngine';
 import { Icon } from '../Icon';
@@ -16,6 +16,8 @@ export interface JointInspectorProps {
   onFocus?: () => void;
   onAddChild?: () => void;
   onDelete?: () => void;
+  editable?: boolean;
+  onSkeletonChange?: (bones: BoneData[]) => void;
   className?: string;
 }
 
@@ -29,6 +31,8 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
   onFocus,
   onAddChild,
   onDelete,
+  editable = true,
+  onSkeletonChange,
   className = ''
 }) => {
   const bones = asset.skeleton?.bones || [];
@@ -41,7 +45,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
     if (bone) {
       setName(bone.name || `Joint_${jointIndex}`);
     }
-  }, [bone, jointIndex]);
+  }, [bone?.name, jointIndex]);
 
   // Decompose local transform from bone.bindPose
   const localTransform = useMemo(() => {
@@ -91,20 +95,33 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
     );
   }
 
+  const commitSkeletonChange = () => {
+    if (!editable) return;
+    if (onSkeletonChange) {
+      onSkeletonChange(bones);
+    } else {
+      assetManager.updateAsset(asset.id, {
+        skeleton: { ...asset.skeleton, bones }
+      });
+    }
+    onUpdate();
+  };
+
   // Handle renaming
   const handleCommitName = () => {
+    if (!editable) return;
     const trimmed = name.trim();
     if (!trimmed || trimmed === bone.name) return;
 
     bone.name = trimmed;
     const entityId = boneEntities[jointIndex];
     if (engine && entityId) {
-      engine.ecs.setName(entityId, trimmed);
+      const entityIndex = engine.ecs.getEntityIndex(entityId);
+      if (entityIndex !== undefined) {
+        engine.ecs.store.names[entityIndex] = trimmed;
+      }
     }
-    assetManager.updateAsset(asset.id, {
-      skeleton: { ...asset.skeleton, bones }
-    });
-    onUpdate();
+    commitSkeletonChange();
   };
 
   // Handle transform changes
@@ -113,6 +130,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
     newRotDeg: { x: number; y: number; z: number },
     newScale: { x: number; y: number; z: number }
   ) => {
+    if (!editable) return;
     const degToRad = Math.PI / 180;
     const p = new THREE.Vector3(newPos.x, newPos.y, newPos.z);
     const e = new THREE.Euler(
@@ -152,35 +170,29 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
       engine.notifyUI();
     }
 
-    assetManager.updateAsset(asset.id, {
-      skeleton: { ...asset.skeleton, bones }
-    });
-    onUpdate();
+    commitSkeletonChange();
   };
 
   // Handle reparenting
   const handleParentChange = (newParentIdx: number) => {
+    if (!editable) return;
     if (newParentIdx === bone.parentIndex) return;
     bone.parentIndex = newParentIdx;
 
     const childId = boneEntities[jointIndex];
     if (engine && childId) {
-      engine.sceneGraph.detach(childId);
-      if (newParentIdx >= 0 && boneEntities[newParentIdx]) {
-        engine.sceneGraph.attach(childId, boneEntities[newParentIdx]);
-      }
+      const newParentId = newParentIdx >= 0 ? boneEntities[newParentIdx] ?? null : null;
+      engine.sceneGraph.attach(childId, newParentId);
       engine.syncTransforms(false);
       engine.notifyUI();
     }
 
-    assetManager.updateAsset(asset.id, {
-      skeleton: { ...asset.skeleton, bones }
-    });
-    onUpdate();
+    commitSkeletonChange();
   };
 
   // Reset transform
   const handleResetTransform = () => {
+    if (!editable) return;
     applyTransform({ x: 0, y: 0, z: 0 }, { x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 1 });
   };
 
@@ -188,6 +200,12 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
 
   return (
     <div className={`p-3 bg-[#1e1e20] rounded-md border border-white/10 space-y-3 ${className}`}>
+      {!editable && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded border border-white/10 bg-black/20 text-[10px] text-text-secondary">
+          <Icon name="Lock" size={11} />
+          <span>Saved pose — enter Edit Skeleton mode to modify this joint.</span>
+        </div>
+      )}
       {/* Joint Title & Name */}
       <div className="space-y-1.5 pb-2 border-b border-white/5">
         <div className="flex items-center justify-between">
@@ -219,6 +237,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
             type="text"
             className="flex-1 bg-black/30 border border-white/10 focus:border-accent rounded px-2 py-1 text-xs text-text-primary outline-none transition-colors"
             value={name}
+            disabled={!editable}
             onChange={e => setName(e.target.value)}
             onKeyDown={e => {
               e.stopPropagation();
@@ -246,6 +265,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
         <select
           className="w-full bg-black/30 border border-white/10 focus:border-accent text-text-primary text-xs rounded px-2 py-1.5 outline-none cursor-pointer transition-colors"
           value={bone.parentIndex}
+          disabled={!editable}
           onChange={e => handleParentChange(parseInt(e.target.value, 10))}
           title="Select parent joint"
           aria-label="Select parent joint"
@@ -272,8 +292,9 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
           </span>
           <button
             type="button"
-            className="text-[10px] text-text-secondary hover:text-white underline opacity-70 hover:opacity-100 transition-opacity"
+            className={`text-[10px] text-text-secondary underline opacity-70 transition-opacity ${editable ? 'hover:text-white hover:opacity-100' : 'cursor-not-allowed opacity-30'}`}
             onClick={handleResetTransform}
+            disabled={!editable}
             title="Reset joint position, rotation, and scale"
             aria-label="Reset joint position, rotation, and scale"
           >
@@ -297,6 +318,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
               }
               color="text-red-400"
               step={0.05}
+              disabled={!editable}
             />
             <DraggableNumber
               label="Y"
@@ -310,6 +332,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
               }
               color="text-green-400"
               step={0.05}
+              disabled={!editable}
             />
             <DraggableNumber
               label="Z"
@@ -323,6 +346,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
               }
               color="text-blue-400"
               step={0.05}
+              disabled={!editable}
             />
           </div>
         </div>
@@ -343,6 +367,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
               }
               color="text-red-400"
               step={1}
+              disabled={!editable}
             />
             <DraggableNumber
               label="Y"
@@ -356,6 +381,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
               }
               color="text-green-400"
               step={1}
+              disabled={!editable}
             />
             <DraggableNumber
               label="Z"
@@ -369,6 +395,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
               }
               color="text-blue-400"
               step={1}
+              disabled={!editable}
             />
           </div>
         </div>
@@ -389,6 +416,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
               }
               color="text-red-400"
               step={0.05}
+              disabled={!editable}
             />
             <DraggableNumber
               label="Y"
@@ -402,6 +430,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
               }
               color="text-green-400"
               step={0.05}
+              disabled={!editable}
             />
             <DraggableNumber
               label="Z"
@@ -415,6 +444,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
               }
               color="text-blue-400"
               step={0.05}
+              disabled={!editable}
             />
           </div>
         </div>
@@ -422,7 +452,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
 
       {/* Quick Action Buttons */}
       <div className="pt-2 border-t border-white/5 flex items-center gap-1.5">
-        {onAddChild && (
+        {editable && onAddChild && (
           <button
             type="button"
             className="flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 bg-accent/20 hover:bg-accent/30 text-accent border border-accent/40 rounded text-xs transition-colors"
@@ -434,7 +464,7 @@ export const JointInspector: React.FC<JointInspectorProps> = ({
             <span>Add Child</span>
           </button>
         )}
-        {bones.length > 1 && onDelete && (
+        {editable && bones.length > 1 && onDelete && (
           <button
             type="button"
             className="p-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded text-xs transition-colors"

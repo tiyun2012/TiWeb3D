@@ -93,6 +93,7 @@ export class SoAEntitySystem {
         if (mask & COMPONENT_MASKS.SCRIPT) this.notify('COMPONENT_REMOVED', id, ComponentType.SCRIPT);
         if (mask & COMPONENT_MASKS.VIRTUAL_PIVOT) this.notify('COMPONENT_REMOVED', id, ComponentType.VIRTUAL_PIVOT);
         if (mask & COMPONENT_MASKS.PARTICLE_SYSTEM) this.notify('COMPONENT_REMOVED', id, ComponentType.PARTICLE_SYSTEM);
+        if (mask & COMPONENT_MASKS.CAMERA) this.notify('COMPONENT_REMOVED', id, ComponentType.CAMERA);
 
         this.notify('ENTITY_DESTROYED', id);
 
@@ -123,6 +124,19 @@ export class SoAEntitySystem {
         else if (type === ComponentType.VIRTUAL_PIVOT) { 
             mask = COMPONENT_MASKS.VIRTUAL_PIVOT;
             this.store.vpLength[idx] = 1.0; 
+        } else if (type === ComponentType.CAMERA) {
+            mask = COMPONENT_MASKS.CAMERA;
+            this.store.cameraProjection[idx] = 0;
+            this.store.cameraFov[idx] = 60;
+            this.store.cameraOrthoSize[idx] = 10;
+            this.store.cameraNear[idx] = 0.1;
+            this.store.cameraFar[idx] = 1000;
+            this.store.cameraClearMode[idx] = 1;
+            this.store.cameraClearR[idx] = 0.125; this.store.cameraClearG[idx] = 0.145; this.store.cameraClearB[idx] = 0.176;
+            this.store.cameraRenderLayerMask[idx] = 0xffffffff;
+            this.store.cameraPostProcessEnabled[idx] = 1;
+            this.store.cameraPostProcessProfileId[idx] = '';
+            this.store.cameraPresetId[idx] = '';
         } else if (type === ComponentType.PARTICLE_SYSTEM) {
             mask = COMPONENT_MASKS.PARTICLE_SYSTEM;
             // Defaults
@@ -155,6 +169,7 @@ export class SoAEntitySystem {
         else if (type === ComponentType.SCRIPT) mask = COMPONENT_MASKS.SCRIPT;
         else if (type === ComponentType.VIRTUAL_PIVOT) mask = COMPONENT_MASKS.VIRTUAL_PIVOT;
         else if (type === ComponentType.PARTICLE_SYSTEM) mask = COMPONENT_MASKS.PARTICLE_SYSTEM;
+        else if (type === ComponentType.CAMERA) mask = COMPONENT_MASKS.CAMERA;
         
         if ((this.store.componentMask[idx] & mask) !== 0) {
             this.store.componentMask[idx] &= ~mask;
@@ -286,6 +301,46 @@ export class SoAEntitySystem {
             }
         };
 
+        const cameraProxy = {
+            type: ComponentType.CAMERA,
+            get projection() { return store.cameraProjection[index] === 1 ? 'ORTHOGRAPHIC' : 'PERSPECTIVE'; },
+            set projection(v: string) { store.cameraProjection[index] = v === 'ORTHOGRAPHIC' ? 1 : 0; },
+            get fov() { return store.cameraFov[index]; },
+            set fov(v: number) { store.cameraFov[index] = v; },
+            get orthoSize() { return store.cameraOrthoSize[index]; },
+            set orthoSize(v: number) { store.cameraOrthoSize[index] = v; },
+            get near() { return store.cameraNear[index]; },
+            set near(v: number) { store.cameraNear[index] = v; },
+            get far() { return store.cameraFar[index]; },
+            set far(v: number) { store.cameraFar[index] = v; },
+            get clearMode() {
+                const mode = store.cameraClearMode[index];
+                return mode === 0 ? 'COLOR' : mode === 2 ? 'NONE' : 'SKY';
+            },
+            set clearMode(v: string) { store.cameraClearMode[index] = v === 'COLOR' ? 0 : v === 'NONE' ? 2 : 1; },
+            get clearColor() {
+                const r = Math.round(store.cameraClearR[index] * 255);
+                const g = Math.round(store.cameraClearG[index] * 255);
+                const b = Math.round(store.cameraClearB[index] * 255);
+                return '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
+            },
+            set clearColor(v: string) {
+                const hex = /^#[0-9a-f]{6}$/i.test(v) ? v.slice(1) : '20252d';
+                const raw = parseInt(hex, 16);
+                store.cameraClearR[index] = ((raw >> 16) & 255) / 255;
+                store.cameraClearG[index] = ((raw >> 8) & 255) / 255;
+                store.cameraClearB[index] = (raw & 255) / 255;
+            },
+            get renderLayerMask() { return store.cameraRenderLayerMask[index]; },
+            set renderLayerMask(v: number) { store.cameraRenderLayerMask[index] = Math.max(0, Math.floor(v)) >>> 0; },
+            get postProcessEnabled() { return !!store.cameraPostProcessEnabled[index]; },
+            set postProcessEnabled(v: boolean) { store.cameraPostProcessEnabled[index] = v ? 1 : 0; },
+            get postProcessProfileId() { return store.cameraPostProcessProfileId[index] || ''; },
+            set postProcessProfileId(v: string) { store.cameraPostProcessProfileId[index] = v || ''; },
+            get presetId() { return store.cameraPresetId[index] || ''; },
+            set presetId(v: string) { store.cameraPresetId[index] = v || ''; }
+        };
+
         const particleProxy = {
             type: ComponentType.PARTICLE_SYSTEM,
             get maxParticles() { return store.psMaxCount[index]; },
@@ -338,6 +393,7 @@ export class SoAEntitySystem {
                 get [ComponentType.LIGHT]() { return (store.componentMask[index] & COMPONENT_MASKS.LIGHT) ? lightProxy : undefined; },
                 get [ComponentType.SCRIPT]() { return (store.componentMask[index] & COMPONENT_MASKS.SCRIPT) ? { type: ComponentType.SCRIPT } : undefined; },
                 get [ComponentType.PARTICLE_SYSTEM]() { return (store.componentMask[index] & COMPONENT_MASKS.PARTICLE_SYSTEM) ? particleProxy : undefined; },
+                get [ComponentType.CAMERA]() { return (store.componentMask[index] & COMPONENT_MASKS.CAMERA) ? cameraProxy : undefined; },
                 
                 get [ComponentType.VIRTUAL_PIVOT]() { 
                     return (store.componentMask[index] & COMPONENT_MASKS.VIRTUAL_PIVOT) 

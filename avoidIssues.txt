@@ -129,3 +129,152 @@
 - **CLEAN AXES STATE ON EARLY RETURNS:** In `GizmoSystem.update`, always reset `this.hoverAxis = null` and `this.activeAxis = null` on early returns (e.g., when selection is empty or entity is invalid) to prevent ghost active axes from blocking viewport clicks.
 
 
+
+---
+
+### 17. STATIC CODE HEALTH, ANIMATION SAMPLING & ASSET EVENT CONTRACTS
+- **RUN THE REPOSITORY AUDIT:** Use `npm run audit` before typechecking/building. It validates strict TS configuration, local imports, `drafts/` exclusion, import-map safety, and `AssetViewport3D` inheritance without requiring installed npm packages.
+- **CANONICAL GRAPH CONNECTION FIELDS:** New graph code uses `fromNode`, `fromPin`, `toNode`, and `toPin`. Treat `source` / `target` only as optional legacy compatibility fields.
+- **CENTRALIZE ANIMATION TRACK SAMPLING:** `AnimationEvaluator` is the single source of truth for keyframe interval selection and interpolation. Do not duplicate interpolation loops in `AnimationSystem` or editor preview code; duplicated logic previously selected the wrong interval and mishandled the final/single-keyframe cases.
+- **REQUIRE RUNTIME TRACK DATA:** Runtime `AnimationTrack` data requires `name`, `type`, `times`, and `values`. Keep editor-only metadata optional rather than weakening the runtime sampling contract.
+- **MATCH ASSET EVENTS TO CREATED TYPES:** `ASSET_CREATED` payload type must exactly match the asset created. A skeletal mesh emits `SKELETAL_MESH`; never emit `SKELETON` for a mesh asset.
+- **GUARD REVERSE MESH LOOKUPS:** `AssetManager.getMeshUUID(intId)` may return `undefined`. Asset viewport vertex-drag code must return early when reverse lookup fails.
+- **ACCESSIBILITY AUDIT WARNINGS ARE RELEASE WORK:** `npm run audit` reports controls missing either `title` or `aria-label`. Do not suppress these warnings; resolve them before a release because Section 7 treats the convention as blocking.
+
+---
+
+### 18. REUSABLE VIEWPORT TEMPLATE & CAMERA MATH
+- **USE `ViewportTemplate` FOR VIEWPORT SHELLS:** Main renderer-backed viewport hosts must compose their canvas/chrome through `editor/components/viewport/ViewportTemplate.tsx` instead of duplicating absolute toolbar/HUD layout and canvas wrapper styling.
+- **ASSET EDITORS STILL USE `AssetViewport3D`:** `ViewportTemplate` is a lower-level shell, not a replacement for the asset viewport contract. Static mesh, skeleton, material, animation, and similar asset editors must inherit from `AssetViewport3D`.
+- **KEEP RENDER LIFECYCLES OUT OF THE TEMPLATE:** Do not initialize WebGL, own engine singletons, or start render loops inside `ViewportTemplate`. Renderer lifecycle remains in `SceneView`, `AssetViewport3D`, or another explicit host.
+- **REUSE VIEWPORT CHROME PRIMITIVES:** Prefer `ViewportToolbarGroup`, `ViewportIconButton`, and `ViewportHud` over copying the same toolbar/HUD Tailwind classes. `ViewportIconButton` requires a label and supplies both `title` and `aria-label`.
+- **CENTRALIZE CAMERA NAVIGATION MATH:** Use `editor/viewports/viewportCamera.ts` for eye calculation, orbit, pan, drag zoom, and wheel zoom. Configure limits/sensitivity per host rather than copying vector math.
+
+---
+
+### 19. FULL ASSET EDITOR TEMPLATE & ASSET-TYPE ACTION FILTERING
+- **FULL 3D ASSET EDITORS USE `AssetEditorTemplate`:** Static mesh and skeleton workspaces must not hand-build separate left/center/right shells. Use `AssetEditorTemplate` for Hierarchy + Viewport + Inspector and `AssetViewport3D` for the center renderer.
+- **CAPABILITY REGISTRY IS THE SOURCE OF TRUTH:** Add/edit valid commands in `editor/components/asset-editor/assetViewportCapabilities.ts`. Toolbar visibility, keyboard shortcuts, pie/context actions, and hierarchy mode triggers must check the same action id.
+- **PREFER TOOLBAR ACTION DESCRIPTORS:** Normal asset toolbar controls use `AssetViewportToolbarAction` descriptors and are filtered inside `AssetViewport3D`. Reserve raw `toolbarExtra` for exceptional composition that cannot be expressed as an action.
+- **SKELETAL MESH HAS TWO WORKSPACES:** `SKELETAL_MESH` opens `SkeletalMeshEditor`, with Geometry reusing `StaticMeshEditor` and Skeleton reusing `SkeletonEditor`. Never duplicate either renderer to create a separate skeletal-mesh-only implementation.
+- **KEEP PASSIVE STATUS OUT OF ACTIVE TOOL SPACE:** Asset stats/selection badges belong in the viewport HUD. Keep top chrome primarily for actions to avoid collisions at smaller window sizes.
+- **SIDE PANELS MUST BE COLLAPSIBLE:** Hierarchy and Inspector default to visible but are controlled by the shared asset editor header so narrow windows remain usable.
+
+---
+
+### 20. RUNTIME SELECTION API & LOCAL TAILWIND BUILD
+- **USE THE REAL SELECTION API:** `SelectionSystem` exposes `selectedIndices`, the derived `selectedEntities` set, and `isSelected(id)`. Never read `selectionSystem.selectedEntityIds`; that property does not exist and will make calls such as `Array.from(...)` crash at runtime.
+- **KEEP TAILWIND IN THE VITE BUILD:** Tailwind must be compiled locally through `tailwind.config.cjs` + `postcss.config.cjs` and the `@tailwind` directives in `index.css`. Never add `cdn.tailwindcss.com` back to `index.html`; the CDN runtime is not for production builds.
+- **AUDIT THESE CONTRACTS WITHOUT DEPENDENCIES:** `npm run audit` must reject both stale `selectionSystem.selectedEntityIds` usage and Tailwind CDN usage so runtime/config regressions are caught before launching Vite.
+
+---
+
+### 21. BONE VISUAL TYPES & TYPESCRIPT 6 PATH MAPPING
+- **BONE COLORS USE `Vector3`:** `BoneData.visual.color` is the canonical `{ x, y, z }` shape. New joints must not write numeric arrays such as `[0, 1, 0]`; type new bone literals as `BoneData` so mismatches fail at the creation site.
+- **DO NOT RESTORE `baseUrl`:** TypeScript 6 deprecates `compilerOptions.baseUrl`. Keep `paths` entries rooted explicitly (for this repo, `"@/*": ["./*"]`) and let Vite own the matching runtime alias.
+- **AUDIT THE TS6 CONFIG CONTRACT:** `npm run audit` must reject a reintroduced `baseUrl` so editor/compiler upgrades do not revive the deprecation.
+
+---
+
+### 22. STRICT EDITOR API / TOOL OPTION CONTRACTS
+- **RENAME ECS ENTITIES THROUGH SUPPORTED STORAGE/PROXIES:** `SoAEntitySystem` has no `setName(id, name)` method. Resolve the entity index and update `ecs.store.names[index]`, or set the name through a valid entity proxy. Never invent convenience methods at call sites.
+- **REPARENT WITH `SceneGraph.attach`:** `SceneGraph` has no `detach`. `sceneGraph.attach(childId, parentId)` already removes the old parent; pass `null` as the parent to make the child a root.
+- **GUARD OPTIONAL MODULE METADATA:** `EngineModule.name` and `EngineModule.icon` are optional. Inspector UI must fall back to `module.id` and a valid default icon rather than passing `undefined` to required display props.
+- **DEFAULT OPTIONAL UI CONFIG VALUES AT USE SITES:** Persisted `UIConfiguration` fields such as `vertexSize` may be missing. Controls that require concrete values must apply the editor default (`vertexSize ?? 1.0`).
+- **GUARD ASSET PREVIEW ENTITY IDS:** `AssetViewportEngine.entityId` is `string | null` until preview setup completes. Rendering and component-picking code must return/fallback before passing it into APIs that require a string.
+- **ONLY EXPOSE IMPLEMENTED TRANSFORM SPACES:** The current `TransformSpace` contract is `World | Local`. Do not show Gimbal, Parent, VirtualPivot, Object, Normal, or Average options until engine behavior exists for them; UI-only casts create invalid runtime state.
+- **KEEP LUCIDE ICON NAMES TYPE-SAFE:** `Icon.name` is `keyof lucide-react`. Use real exports (for example `Wrench`) instead of invented names such as `Tool`; do not silence this with broad casts.
+- **AUDIT STALE API NAMES:** The dependency-free audit must reject `.ecs.setName(`, `.sceneGraph.detach(`, invalid `name="Tool"`, and unsupported transform-space option values.
+
+
+---
+
+### 23. VIEWPORT MARQUEE SELECTION & BVH PICKING SPACE
+- **FINALIZE MARQUEE ON GLOBAL MOUSE-UP:** Rectangle selection must commit from the window/global mouse-up path, not only from the viewport element. Releasing a drag outside an edge/corner otherwise loses the local mouse-up and leaves selection stuck or apparently disabled.
+- **CLAMP MARQUEE COORDINATES TO LIVE CSS BOUNDS:** Track rectangle coordinates in viewport CSS pixels and clamp global pointer positions to `getBoundingClientRect()` before drawing/finalizing. Pass the live rect width/height into `SelectionSystem.selectEntitiesInRect`; never mix CSS picking coordinates with HiDPI canvas pixel dimensions.
+- **ISOLATE VIEWPORT CHROME INPUT:** Shared toolbar overlays must stop `mousedown` propagation so toolbar presses cannot also trigger canvas selection underneath. Global marquee finalization still allows drags that started on the canvas to end over toolbar chrome.
+- **RECTANGLE SELECTION DOES NOT USE THE RAYCAST BVH:** Marquee selection is screen-space. Use projected AABB only as broad phase, then refine mesh candidates against projected triangles. Debug the raycast BVH only for click/component picking; it is not the source of marquee air-gap false positives.
+- **NEVER ACCEPT PROJECTED MESH AABB AS THE FINAL MARQUEE HIT:** Perspective-projected AABB corners can lie outside a curved/concave silhouette (a sphere is the canonical case), producing selection through visible air gaps. After broad-phase overlap, require projected mesh-triangle/rectangle overlap; use AABB only as a fallback when triangle data is unavailable.
+- **NEVER COMPARE LOCAL AABB `t` WITH WORLD HIT DISTANCE:** Mesh click rays are transformed and normalized into local space before AABB/BVH traversal. Compare candidate distances only after transforming the precise/fallback hit back into world space.
+- **KEEP MESHES SELECTABLE WITHOUT TOPOLOGY:** If a mesh has a geometry AABB but no logical faces/BVH, object-level click picking falls back to the AABB rather than returning no hit.
+- **USE PARALLEL-SAFE AABB SLABS:** `RayUtils.intersectAABB` must explicitly handle near-zero ray directions. Direct slab division can yield `0/0 -> NaN` for axis-aligned rays on box boundaries and cause intermittent BVH misses. When the ray origin is inside an AABB, return entry distance `0` (not the exit distance) so BVH nearest-hit pruning remains valid.
+- **KEEP COMPONENT PICKING IN ONE COORDINATE SPACE:** `pickMeshComponent` returns a world-space hit. Vertex hover should compare in screen space (pixel threshold) or transform the vertex to world first; never compare the world hit directly to local vertex coordinates. Topology/BVH sphere queries use local vertices, so transform brush centers back to local space and use absolute guarded entity scale when deriving a local radius.
+Selection gesture: never commit object/bone raycast selection on left mousedown; cache the hit and only commit on mouseup if movement stayed below the marquee threshold. Otherwise projected geometry becomes a dead zone for rectangle selection.
+
+---
+
+### 24. STABLE PARENT-LOCAL BONE VISUAL GEOMETRY
+- **DO NOT SCALE BONE WIDTH FROM PARENT-CHILD DISTANCE:** Bone length follows the live child, but the four-point waist/cross-section must derive from the parent joint's normal structural radius. Never restore `len * ...` width calculations.
+- **ANCHOR BONE ROLL TO THE PARENT LOCAL FRAME:** Build bone visual orientation from normalized parent joint axes plus a stable local/rest direction. Do not choose arbitrary world-up vectors from the live child direction; that produces roll flips/twisting.
+- **DO NOT USE LIVE-MUTATING `bindPose` AS THE EDITOR REST FRAME:** `SkeletonEditor` writes `bindPose` during gizmo movement. Snapshot local visual rest directions when the preview engine/rebuild starts, then transform those snapshots through the current parent axes during the drag.
+- **SELECTION MUST NOT CHANGE BONE THICKNESS:** Selected/hovered joint spheres may grow for feedback, but attached bone width must use `getSkeletonJointRadius(..., 'normal')`.
+- **REUSE SHARED DEBUG-RENDERER HELPERS:** SkeletonEditor, SkeletonTool, and AnimationSystem must all use `generateBoneOctahedronLines` / `drawBoneOctahedron` with parent radius, parent axes, and stable rest direction. Do not create a second bone shape algorithm.
+- **ONLY SHORT-BONE OFFSET MAY CLAMP:** Extremely short bones may clamp the waist distance so the base does not pass the child. The cross-section radius remains fixed from the parent joint radius.
+- **BONE SURFACE-TO-SURFACE VISUALS:** A skeleton bone must not render from the parent joint center. Use the parent center only as the pivot; place the four-point base outside the parent sphere along the live parent->child direction, clip the tapered tip at the child sphere surface, keep width based only on the parent's normal joint radius, and transport the parent-local rest frame to the live direction with a shortest-arc rotation to avoid arbitrary axial twist. Do not pin the base to the rest direction and do not use world-up to rebuild roll each frame.
+
+React / skeleton editor update-loop guard:
+- Do not emit ASSET_UPDATED for every gizmo mouse-move in SkeletonEditor. Live bind-pose edits belong to the private skeleton edit draft; the global asset update occurs only on explicit Confirm, never on drag mouse-up.
+- DraggableNumber must derive its unfocused display value from props; do not use a passive effect that mirrors value into local state on every transform update.
+
+---
+
+### 25. SKELETON EDIT TRANSACTIONS / CONFIRMED POSE
+- **SAVED POSE IS READ-ONLY:** Outside Skeleton Edit mode, the preview must be rebuilt from the last confirmed AssetManager skeleton. Allow selection/camera/display controls, but never permit transform, rename, reparent, add, or delete writes.
+- **EDIT A PRIVATE DRAFT:** Entering Edit Skeleton deep-clones `BoneData[]` (including bind/inverse-bind matrices and visual data). Inspector, hierarchy, and gizmo edits target that draft; do not mutate the AssetManager skeleton by reference.
+- **CONFIRM IS THE ONLY PERSIST BOUNDARY:** `AssetManager.updateAsset` for a SkeletonEditor edit transaction belongs in explicit Confirm. Gizmo mouse-up only ends the gesture; it does not save.
+- **CANCEL MEANS EXACT RESTORE:** Cancel discards the private draft and rebuilds from the confirmed pose. An unconfirmed editor unmount/workspace switch must likewise leave the saved asset unchanged.
+- **RESET STAYS IN EDIT MODE:** Reset replaces the draft from the confirmed pose but keeps Edit mode active so a user can restart the edit without leaving the workflow.
+- **LOCK ALL MUTATION SURFACES:** In Saved Pose mode filter AssetViewport3D to Select only, disconnect the gizmo system, disable JointInspector mutation controls, and disable SkeletonHierarchy rename/context structural edits. Do not rely on UI hiding alone; mutation handlers must also guard `editable/isEditMode`.
+- **KEEP TOOL FILTERING REUSABLE:** Use `AssetViewport3D.allowedTools` so host-specific modes can restrict both toolbar and keyboard tool activation through one contract.
+
+### 26. SHARED MESH / POLYGON EDGE RENDERING
+- **ONE EDGE ID:** Use `meshEdgeKey(a, b)` from `engine/MeshEdgeGeometry.ts` everywhere. Do not recreate edge ids with local `sort().join('-')` expressions.
+- **TOPOLOGY FACES ARE AUTHORITATIVE:** Wireframe/poly-edge rendering must use logical `topology.faces` when available so triangulation diagonals are not shown as authored polygon edges. Triangle indices are fallback only.
+- **DEDUPLICATE SHARED EDGES:** Use `forEachUniqueMeshEdge` / `buildMeshEdgeIndices`; never draw every face boundary directly because adjacent faces will draw the same edge twice and change brightness.
+- **REUSE `MeshEdgeOverlay` IN ASSET VIEWPORTS:** Static Mesh, Skeleton-associated mesh previews, and future mesh asset editors must not create bespoke edge VAO/IBO code.
+- **WEBGL2 ELEMENT BUFFER STATE:** `ELEMENT_ARRAY_BUFFER` is VAO state. Bind the edge overlay VAO before replacing/updating its IBO or the host mesh VAO can be corrupted.
+- **COMPONENT TOPOLOGY CAGE:** Vertex/Edge/Face edit modes keep a dim edge cage visible independent of the explicit object Wireframe toggle. Edge/Face selection is a second highlighted edge pass.
+- **HIDDEN-LINE WIREFRAME:** Wireframe-only previews must populate mesh depth first and use polygon offset before drawing the shared edge overlay; otherwise back-side edges show through or front edges z-fight.
+- **DO NOT USE `gl.lineWidth` FOR PORTABLE THICK EDGES:** WebGL line width is commonly clamped to 1px. A future thick-edge feature should use screen-space expanded line geometry.
+- **COMPONENT OVERLAYS MUST NOT DEPTH-BLOCK EACH OTHER:** Mesh edge/vertex overlays should depth-test against the shaded mesh with `LEQUAL`, but keep `depthMask(false)` while drawing. A dim topology cage or base point pass must never write the exact surface depth and hide the selected/highlight pass rendered immediately after it.
+- **VERTEX MODE MUST USE THE SHARED POINT OVERLAY:** `StaticMeshEditor` Vertex mode renders base, selected, and hovered vertices through `MeshVertexOverlay` using the host position VBO. Do not add per-editor point buffers/VAOs or omit the point pass while keeping vertex picking enabled.
+
+[Mesh vertex marker sizing]
+- Do not hardcode different gl_PointSize values in Scene and asset-edit viewports.
+- Treat uiConfig.vertexSize as CSS-pixel visual scale, then multiply by the active viewport framebuffer/CSS pixel ratio.
+- Reuse engine/MeshComponentVisualStyle.ts for base/selected/hovered vertex sizes.
+- Vertex markers are screen-space editor UI: camera zoom must not change their pixel size independently.
+- Developer flow reference: see `docs/MESH_COMPONENT_RENDERING_FLOW.md` before changing mesh component visualization, render ordering, depth behavior, or point-size/DPR logic.
+
+---
+
+### 27. SHARED VIEWPORT MESH SURFACE / COLOR MANAGEMENT
+- **ONE STANDARD SURFACE IMPLEMENTATION:** Scene generated Standard materials, Scene fallback mesh rendering, and asset-preview Lit shading must reuse `engine/renderers/MeshSurfaceContract.ts -> STANDARD_SURFACE_GLSL`. Never copy GGX/Fresnel/fake-IBL equations into `AssetViewport3D`, `StaticMeshEditor`, or another preview.
+- **KEEP RENDER MODE IDS SHARED:** `MESH_SURFACE_RENDER_MODE` is the source of truth for `LIT=0`, `NORMALS=1`, `UNLIT=2`. Do not restore the old asset-only `Flat=1 / Normals=2` mapping.
+- **LINEAR SCENE, DIRECT PREVIEW DISPLAY:** Scene mesh shaders output linear color into FBOs and `WebGLRenderer` performs `DISPLAY_TRANSFER_GLSL` during composite. Direct asset-preview mesh/line shaders must perform that same display transfer themselves. Never apply gamma twice and never omit it from a direct preview.
+- **BACKGROUND VALUES LIVE IN DIFFERENT SPACES:** Use `VIEWPORT_BACKGROUND_LINEAR_COLOR` for Scene FBO clears and `VIEWPORT_BACKGROUND_DISPLAY_COLOR` for direct asset canvas clears. The same numeric clear value in both paths is not visually equivalent.
+- **POST PROCESS OFF MUST REALLY BYPASS EFFECTS:** `processCustomEffects`, vignette, aberration, and tone mapping belong inside the global PP-enabled branch. Gamma/display transfer remains active because the Scene FBO is linear.
+- **SHARE WEBGL CONTEXT POLICY:** Scene and `AssetViewport3D` use `VIEWPORT_WEBGL_CONTEXT_ATTRIBUTES`. Do not enable MSAA only in asset viewports while Scene renders through non-multisampled FBOs.
+- **SURFACE != ENVIRONMENT:** A shared BRDF does not imply identical Scene/asset inputs. Scene can use a custom material, entity tint, actual scene light, texture graph, skinning, and effects; mesh assets currently preview the default Standard material with neutral preview light. Add explicit preview-material/environment inputs if exact parity is required—never reintroduce a bespoke asset shader.
+- **DEVELOPER REFERENCE:** Read `docs/SHARED_VIEWPORT_MESH_SHADING.md` before changing mesh Lit/Normals/Unlit shading, gamma/color output, viewport background, or canvas antialias policy.
+
+
+### 25. MESH MATERIAL ASSIGNMENT / VIEWPORT PREVIEW
+- **EMPTY MATERIAL MEANS STANDARD LAMBERT:** The built-in no-material fallback is the shared `LAMBERT_SURFACE_GLSL`, not an implicit project PBR material. Keep neutral modeling/editing behavior when no Material asset is assigned.
+- **MESH ASSET DEFAULT PRECEDENCE:** Effective material order is Scene entity override -> mesh asset `materialId` -> Standard Lambert. Do not copy asset material IDs into every entity merely to get inheritance.
+- **REUSE `MaterialSlotField`:** Scene mesh inspector and mesh asset inspector must use `editor/components/inspector/MaterialSlotField.tsx`; do not rebuild separate Material asset dropdowns.
+- **WEBGL PROGRAMS ARE CONTEXT-LOCAL:** Scene material `WebGLProgram`s cannot be reused by an asset canvas. Reuse the Material graph and compile it with `MaterialPreviewRenderer` in the asset viewport context.
+- **DIRECT PREVIEWS APPLY DISPLAY TRANSFER ONCE:** `ShaderCompiler` preview mode uses `directToDisplay: true` and `singleTarget: true`. Scene material compilation stays linear for the off-screen/composite path.
+- **TEXTURE ARRAY DEFAULT IS WHITE:** Initialize unused texture layers to white in both Scene and material-preview arrays so missing/unloaded texture data does not black out the fallback surface.
+
+CAMERA / INSPECTOR REGISTRY
+- Do not create separate hand-written Scene Camera and Camera Preset field UIs. Both must derive from the registered Camera schema.
+- Do not attach a full PostProcess Profile directly to Mesh assets. Camera/Scene/Viewport own profile selection; objects provide masks/layers for targeted effects.
+- Keep post-process resolution order Viewport -> Camera -> Scene -> None.
+- Do not bypass AutoInspector undo/commit callbacks with hidden mutation inside schema metadata.
+
+ASSET TYPE / CONTENT BROWSER REGISTRY
+- Do not hardcode new asset Create entries or asset factory switches in ProjectPanel.tsx.
+- Register creatable asset types with engine/AssetTypeRegistry.ts (built-ins live in BuiltInAssetTypes.ts).
+- Content Browser subscribes to the registry; runtime/plugin registrations should appear automatically.
+- CAMERA_PRESET is the reusable camera asset; live Scene cameras remain Camera ECS components.

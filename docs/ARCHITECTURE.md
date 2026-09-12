@@ -63,3 +63,45 @@ All asset-level 3D inspection and editing tools (e.g. Static Mesh Editor, Skelet
    - **Unified Template (`HierarchyTreeItem`):** All tree row elements representing structured object types (Scene entities, Skeleton bones, Asset items) use `HierarchyTreeItem.tsx`.
    - **Reusable Renaming Hook (`useInlineRename`):** Manages inline renaming state, keyboard event isolation (preventing hotkey collision during text editing), and standardized commit lifecycles. See `/docs/HIERARCHY_TREE_API.md` for full contract details.
 
+
+## Reusable Viewport Shell (`ViewportTemplate`)
+
+Viewport layout/chrome is now separated from renderer lifecycle. `editor/components/viewport/ViewportTemplate.tsx` is the engine-agnostic canvas shell used by both `SceneView` and `AssetViewport3D`. It owns only placement/composition for the canvas, toolbars, HUDs, and overlays. Renderer setup, render loops, picking, gizmos, and asset/scene behavior stay in the owning viewport host.
+
+Shared orbit/pan/zoom math lives in `editor/viewports/viewportCamera.ts`. New viewport hosts must reuse these camera helpers rather than copy spherical-camera/vector math. New **asset** editors still inherit from `AssetViewport3D`; they should not bypass it and use `ViewportTemplate` directly.
+
+See `/docs/VIEWPORT_TEMPLATE.md` for the component contract and extension pattern.
+
+## Reusable Full Asset Editor Frame (`AssetEditorTemplate`)
+
+Full 3D asset editor windows must compose through `editor/components/asset-editor/AssetEditorTemplate.tsx` so Hierarchy, Viewport, Inspector, asset identity, and panel visibility are structurally consistent. The center renderer remains `AssetViewport3D`.
+
+Asset action availability is centralized in `editor/components/asset-editor/assetViewportCapabilities.ts`. Both visible toolbar descriptors and keyboard triggers must use that allow-list. Do not hide an invalid toolbar command while leaving its hotkey active.
+
+`SKELETAL_MESH` assets route through `SkeletalMeshEditor`, which switches between the existing geometry (`StaticMeshEditor`) and skeleton (`SkeletonEditor`) workspaces instead of forcing one editor to reimplement the other domain.
+
+See `/docs/ASSET_EDITOR_TEMPLATE.md`.
+
+## Stable skeleton bone visuals
+
+Skeleton bone geometry is shared through `engine/renderers/DebugRenderer.ts` and follows a parent-anchored contract: the live child controls only the tip/length, while bone cross-section size comes from the parent's structural joint radius and roll comes from the parent's local frame plus a stable rest direction. `SkeletonEditor` and `SkeletonTool` cache local visual rest directions so live bind-pose updates do not twist the bone base during child translation. See [`SKELETON_BONE_VISUALS.md`](./SKELETON_BONE_VISUALS.md).
+
+## Shared mesh polygon-edge rendering
+
+Mesh edge identity, authored polygon-edge extraction, typed line-index buffers, and common edge colors are centralized in `engine/MeshEdgeGeometry.ts`. Asset viewports render those indices through `editor/viewports/MeshEdgeOverlay.ts`; Vertex component points reuse `editor/viewports/MeshVertexOverlay.ts`; the Scene viewport uses the same unique-edge iterator with `DebugRenderer`. Component overlays depth-test against the mesh but do not write depth, so dim topology passes cannot suppress selected edge/vertex highlights at the same surface depth. See [`MESH_EDGE_RENDERING.md`](./MESH_EDGE_RENDERING.md). For the end-to-end component-mode render flow, depth ordering, Scene-vs-asset backend split, and CSS-pixel/DPR sizing rules, see [`MESH_COMPONENT_RENDERING_FLOW.md`](./MESH_COMPONENT_RENDERING_FLOW.md).
+
+## Shared mesh surface shading across viewports
+
+Scene meshes and 3D asset previews share their surface/render-output contract through `engine/renderers/MeshSurfaceContract.ts`. Generated Standard materials (`ShaderCompiler`), the Scene fallback mesh shader (`MeshRenderSystem`), and direct asset-preview mesh shaders all reuse the same Standard BRDF. Scene off-screen targets stay linear and convert to display space in `WebGLRenderer`; direct asset previews apply that same display transfer in their surface/line shaders. Lit/Normals/Unlit mode IDs and WebGL context/background rules are also shared. Environment inputs such as actual Scene light, custom Scene material, entity tint, and skinning remain host-specific. See [`SHARED_VIEWPORT_MESH_SHADING.md`](./SHARED_VIEWPORT_MESH_SHADING.md).
+
+## Shared mesh material assignment
+
+Mesh assets may define an optional default `materialId`. Scene mesh components may override it; an empty Scene slot inherits the asset default, and an empty asset slot uses the built-in shared **Standard Lambert** fallback. Material selection UI is centralized in `editor/components/inspector/MaterialSlotField.tsx`, while asset-viewport graph materials compile through `engine/renderers/MaterialPreviewRenderer.ts` because WebGL programs cannot cross contexts. See [`MATERIAL_ASSIGNMENT_FLOW.md`](./MATERIAL_ASSIGNMENT_FLOW.md).
+
+## Camera / Inspector Registry
+
+Camera, Scene post-process references, and reusable auto-inspector registration are documented in `docs/CAMERA_INSPECTOR_REGISTRY.md`. New simple component inspectors should prefer `InspectorRegistry` + `AutoInspector`; specialized graph/hierarchy/timeline editors may remain custom.
+
+## Asset Type Registry / Content Browser creation
+
+Content Browser asset creation is registry-driven. Built-in asset definitions are registered at application bootstrap in `engine/BuiltInAssetTypes.ts`; `editor/components/ProjectPanel.tsx` reads `engine/AssetTypeRegistry.ts` rather than maintaining a parallel type/factory list. New creatable asset types must register their label, icon, category, default name, and factory with `assetTypeRegistry`. See `docs/ASSET_TYPE_REGISTRY.md`.

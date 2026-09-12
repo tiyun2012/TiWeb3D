@@ -41,6 +41,21 @@ export class ComponentStorage {
     lightType = new Uint8Array(this.capacity); 
     lightIntensity = new Float32Array(this.capacity);
 
+    // --- Camera ---
+    cameraProjection = new Uint8Array(this.capacity); // 0 perspective, 1 orthographic
+    cameraFov = new Float32Array(this.capacity);
+    cameraOrthoSize = new Float32Array(this.capacity);
+    cameraNear = new Float32Array(this.capacity);
+    cameraFar = new Float32Array(this.capacity);
+    cameraClearMode = new Uint8Array(this.capacity); // 0 color, 1 sky, 2 none
+    cameraClearR = new Float32Array(this.capacity);
+    cameraClearG = new Float32Array(this.capacity);
+    cameraClearB = new Float32Array(this.capacity);
+    cameraRenderLayerMask = new Uint32Array(this.capacity);
+    cameraPostProcessEnabled = new Uint8Array(this.capacity);
+    cameraPostProcessProfileId: string[] = new Array(this.capacity).fill('');
+    cameraPresetId: string[] = new Array(this.capacity).fill('');
+
     // --- Physics ---
     mass = new Float32Array(this.capacity);
     useGravity = new Uint8Array(this.capacity);
@@ -74,7 +89,15 @@ export class ComponentStorage {
         this.scaleX.fill(1);
         this.scaleY.fill(1);
         this.scaleZ.fill(1);
-        this.vpLength.fill(1.0); 
+        this.vpLength.fill(1.0);
+        this.cameraFov.fill(60);
+        this.cameraOrthoSize.fill(10);
+        this.cameraNear.fill(0.1);
+        this.cameraFar.fill(1000);
+        this.cameraClearMode.fill(1);
+        this.cameraClearR.fill(0.125); this.cameraClearG.fill(0.145); this.cameraClearB.fill(0.176);
+        this.cameraRenderLayerMask.fill(0xffffffff);
+        this.cameraPostProcessEnabled.fill(1);
         
         // Initialize world matrices
         for (let i = 0; i < this.capacity; i++) {
@@ -182,6 +205,24 @@ export class ComponentStorage {
         this.lightType = resizeUint8(this.lightType);
         this.lightIntensity = resizeFloat(this.lightIntensity);
 
+        this.cameraProjection = resizeUint8(this.cameraProjection);
+        this.cameraFov = resizeFloat(this.cameraFov);
+        this.cameraOrthoSize = resizeFloat(this.cameraOrthoSize);
+        this.cameraNear = resizeFloat(this.cameraNear);
+        this.cameraFar = resizeFloat(this.cameraFar);
+        this.cameraClearMode = resizeUint8(this.cameraClearMode);
+        this.cameraClearR = resizeFloat(this.cameraClearR); this.cameraClearG = resizeFloat(this.cameraClearG); this.cameraClearB = resizeFloat(this.cameraClearB);
+        this.cameraRenderLayerMask = resizeUint32(this.cameraRenderLayerMask);
+        this.cameraPostProcessEnabled = resizeUint8(this.cameraPostProcessEnabled);
+        const newCameraProfileIds = new Array(newCapacity).fill('');
+        const newCameraPresetIds = new Array(newCapacity).fill('');
+        for (let i = 0; i < this.cameraPostProcessProfileId.length; i++) {
+            newCameraProfileIds[i] = this.cameraPostProcessProfileId[i];
+            newCameraPresetIds[i] = this.cameraPresetId[i];
+        }
+        this.cameraPostProcessProfileId = newCameraProfileIds;
+        this.cameraPresetId = newCameraPresetIds;
+
         this.mass = resizeFloat(this.mass);
         this.useGravity = resizeUint8(this.useGravity);
         this.physicsMaterialIndex = resizeInt32(this.physicsMaterialIndex);
@@ -232,6 +273,17 @@ export class ComponentStorage {
             colorR: new Float32Array(this.colorR), colorG: new Float32Array(this.colorG), colorB: new Float32Array(this.colorB),
             lightType: new Uint8Array(this.lightType),
             lightIntensity: new Float32Array(this.lightIntensity),
+            cameraProjection: new Uint8Array(this.cameraProjection),
+            cameraFov: new Float32Array(this.cameraFov),
+            cameraOrthoSize: new Float32Array(this.cameraOrthoSize),
+            cameraNear: new Float32Array(this.cameraNear),
+            cameraFar: new Float32Array(this.cameraFar),
+            cameraClearMode: new Uint8Array(this.cameraClearMode),
+            cameraClearR: new Float32Array(this.cameraClearR), cameraClearG: new Float32Array(this.cameraClearG), cameraClearB: new Float32Array(this.cameraClearB),
+            cameraRenderLayerMask: new Uint32Array(this.cameraRenderLayerMask),
+            cameraPostProcessEnabled: new Uint8Array(this.cameraPostProcessEnabled),
+            cameraPostProcessProfileId: [...this.cameraPostProcessProfileId],
+            cameraPresetId: [...this.cameraPresetId],
             mass: new Float32Array(this.mass),
             useGravity: new Uint8Array(this.useGravity),
             physicsMaterialIndex: new Int32Array(this.physicsMaterialIndex),
@@ -286,6 +338,19 @@ export class ComponentStorage {
         if (snap.colorB) this.colorB.set(snap.colorB);
         if (snap.lightType) this.lightType.set(snap.lightType);
         if (snap.lightIntensity) this.lightIntensity.set(snap.lightIntensity);
+        if (snap.cameraProjection) this.cameraProjection.set(snap.cameraProjection);
+        if (snap.cameraFov) this.cameraFov.set(snap.cameraFov);
+        if (snap.cameraOrthoSize) this.cameraOrthoSize.set(snap.cameraOrthoSize);
+        if (snap.cameraNear) this.cameraNear.set(snap.cameraNear);
+        if (snap.cameraFar) this.cameraFar.set(snap.cameraFar);
+        if (snap.cameraClearMode) this.cameraClearMode.set(snap.cameraClearMode);
+        if (snap.cameraClearR) this.cameraClearR.set(snap.cameraClearR);
+        if (snap.cameraClearG) this.cameraClearG.set(snap.cameraClearG);
+        if (snap.cameraClearB) this.cameraClearB.set(snap.cameraClearB);
+        if (snap.cameraRenderLayerMask) this.cameraRenderLayerMask.set(snap.cameraRenderLayerMask);
+        if (snap.cameraPostProcessEnabled) this.cameraPostProcessEnabled.set(snap.cameraPostProcessEnabled);
+        if (snap.cameraPostProcessProfileId) this.cameraPostProcessProfileId = [...snap.cameraPostProcessProfileId];
+        if (snap.cameraPresetId) this.cameraPresetId = [...snap.cameraPresetId];
 
         if (snap.mass) this.mass.set(snap.mass);
         if (snap.useGravity) this.useGravity.set(snap.useGravity);

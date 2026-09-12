@@ -2,6 +2,7 @@ import React, { useContext } from 'react';
 import { EngineModule, ComponentType, InspectorProps, TransformSpace, StaticMeshAsset, SkeletalMeshAsset, IGameSystem } from '@/types';
 import { EditorContext } from '@/editor/state/EditorContext';
 import { Select } from '@/editor/components/ui/Select';
+import { MaterialSlotField } from '@/editor/components/inspector/MaterialSlotField';
 import { DraggableNumber, Vector3Input, CheckboxInput, ColorInput, RangeInput, NumberInput, ModulePropertyPanel } from '@/editor/components/ui/InputControls';
 import { ROTATION_ORDERS, LIGHT_TYPES, COMPONENT_MASKS } from '../constants';
 import { assetManager } from '../AssetManager';
@@ -12,6 +13,10 @@ import { PhysicsSystem } from '../systems/PhysicsSystem';
 import { ParticleSystem } from '../systems/ParticleSystem';
 import { AnimationSystem } from '../systems/AnimationSystem';
 import { PaintTextureModule } from './PaintTextureModule';
+import { collectFaceEdgeKeys, forEachUniqueMeshEdge, MESH_EDGE_COLORS } from '../MeshEdgeGeometry';
+import { getMeshVertexPointSizes, getViewportPixelRatio } from '../MeshComponentVisualStyle';
+import { AutoInspector } from '@/editor/components/inspector/AutoInspector';
+import { registerCoreInspectorSchemas } from './CoreInspectorSchemas';
 
 const TransformInspector: React.FC<InspectorProps> = ({ component, onUpdate, onStartUpdate, onCommit }) => {
     const editorCtx = useContext(EditorContext);
@@ -24,7 +29,7 @@ const TransformInspector: React.FC<InspectorProps> = ({ component, onUpdate, onS
                     <div className="text-[9px] uppercase text-text-secondary font-bold tracking-wider ml-1 opacity-70">Rotation</div>
                     <div className="flex gap-2">
                         <div className="flex items-center gap-1 min-w-[70px]">
-                            <Select value={editorCtx?.transformSpace || 'Gimbal'} options={['Gimbal', 'Local', 'World'].map(v => ({ label: v, value: v }))} onChange={(v) => editorCtx?.setTransformSpace(v as TransformSpace)} />
+                            <Select value={editorCtx?.transformSpace || 'World'} options={['World', 'Local'].map(v => ({ label: v, value: v }))} onChange={(v) => editorCtx?.setTransformSpace(v as TransformSpace)} />
                         </div>
                         <div className="flex items-center gap-1 min-w-[50px]">
                             <Select value={component.rotationOrder} options={ROTATION_ORDERS.map(o => ({ label: o, value: o }))} onChange={(v) => { onStartUpdate(); onUpdate('rotationOrder', v); onCommit(); }} />
@@ -52,7 +57,6 @@ export const TransformModule: EngineModule = {
 };
 
 const MeshInspector: React.FC<InspectorProps> = ({ component, onUpdate, onStartUpdate, onCommit }) => {
-    const materials = assetManager.getAssetsByType('MATERIAL');
     const rigs = assetManager.getAssetsByType('RIG');
     const effects = effectRegistry.getOptions(); 
     
@@ -64,12 +68,11 @@ const MeshInspector: React.FC<InspectorProps> = ({ component, onUpdate, onStartU
                    <Select icon="Box" value={component.meshType} options={['Cube', 'Sphere', 'Plane', 'Custom'].map(v => ({ label: v, value: v }))} onChange={(v) => { onStartUpdate(); onUpdate('meshType', v); onCommit(); }} />
                 </div>
              </div>
-             <div className="flex items-center gap-2 py-1">
-                <span className="w-24 text-text-secondary text-[10px]">Material</span>
-                <div className="flex-1">
-                   <Select icon="Palette" value={component.materialId || ""} options={[{ label: 'Default', value: "" }, ...materials.map(m => ({ label: m.name, value: m.id }))]} onChange={(v) => { onStartUpdate(); onUpdate('materialId', v); onCommit(); }} />
-                </div>
-             </div>
+             <MaterialSlotField
+                value={component.materialId || ''}
+                defaultLabel="Asset Default / Standard Lambert"
+                onChange={(v) => { onStartUpdate(); onUpdate('materialId', v); onCommit(); }}
+             />
              <div className="flex items-center gap-2 py-1">
                 <span className="w-24 text-text-secondary text-[10px]">Rig Graph</span>
                 <div className="flex-1">
@@ -111,6 +114,7 @@ export const MeshModule: EngineModule = {
         
         const isObjectMode = engine.meshComponentMode === 'OBJECT';
         const isVertexMode = engine.meshComponentMode === 'VERTEX';
+        const isFaceMode = engine.meshComponentMode === 'FACE';
         
         if (isObjectMode && !engine.uiConfig.selectionEdgeHighlight) return;
 
@@ -121,10 +125,10 @@ export const MeshModule: EngineModule = {
             return { r, g, b };
         };
         
-        const colSel = { r: 1.0, g: 1.0, b: 0.0 }; 
+        const colSel = MESH_EDGE_COLORS.selected;
         const colObjectSelection = hexToRgb(engine.uiConfig.selectionEdgeColor || '#4f80f8');
-        const vertexConfigColor = hexToRgb(engine.uiConfig.vertexColor || '#a855f7'); 
-        const wireframeDim = { r: 0.3, g: 0.3, b: 0.35 }; 
+        const vertexConfigColor = hexToRgb(engine.uiConfig.vertexColor || '#a855f7');
+        const wireframeDim = MESH_EDGE_COLORS.dim;
 
         selectedIndices.forEach((idx: number) => {
             const entityId = ctx.ecs.store.ids[idx];
@@ -139,27 +143,42 @@ export const MeshModule: EngineModule = {
             const verts = asset.geometry.vertices;
             const colors = asset.geometry.colors;
             const topo = asset.topology;
+            const selectedFaceEdges = isFaceMode
+                ? collectFaceEdgeKeys(topo.faces, engine.selectionSystem.subSelection.faceIds)
+                : null;
 
             if (engine.debugRenderer.lineCount < engine.debugRenderer.maxLines) {
-                topo.faces.forEach((face: number[]) => {
-                    for(let k=0; k<face.length; k++) {
-                        const vA = face[k], vB = face[(k+1)%face.length];
-                        const pA = Vec3Utils.transformMat4({ x:verts[vA*3], y:verts[vA*3+1], z:verts[vA*3+2] }, worldMat, {x:0,y:0,z:0});
-                        const pB = Vec3Utils.transformMat4({ x:verts[vB*3], y:verts[vB*3+1], z:verts[vB*3+2] }, worldMat, {x:0,y:0,z:0});
-                        
-                        let color = isObjectMode ? colObjectSelection : (isVertexMode ? wireframeDim : wireframeDim);
-                        
-                        if (!isObjectMode && !isVertexMode) {
-                            const edgeKey = [vA, vB].sort((a,b)=>a-b).join('-');
-                            if (engine.selectionSystem.subSelection.edgeIds.has(edgeKey)) color = colSel; // Updated
-                        }
-                        engine.debugRenderer.drawLine(pA, pB, color);
+                // Use the canonical unique polygon-edge source. Walking every face
+                // directly draws shared edges twice and makes edge brightness differ
+                // from the asset viewport.
+                forEachUniqueMeshEdge(asset.geometry.indices, topo.faces, (vA, vB, edgeKey) => {
+                    const pA = Vec3Utils.transformMat4(
+                        { x:verts[vA*3], y:verts[vA*3+1], z:verts[vA*3+2] },
+                        worldMat,
+                        {x:0,y:0,z:0}
+                    );
+                    const pB = Vec3Utils.transformMat4(
+                        { x:verts[vB*3], y:verts[vB*3+1], z:verts[vB*3+2] },
+                        worldMat,
+                        {x:0,y:0,z:0}
+                    );
+
+                    let color = isObjectMode ? colObjectSelection : wireframeDim;
+                    const edgeSelected = engine.selectionSystem.subSelection.edgeIds.has(edgeKey);
+                    const faceBoundarySelected = selectedFaceEdges?.has(edgeKey) ?? false;
+                    if (!isObjectMode && !isVertexMode && (edgeSelected || faceBoundarySelected)) {
+                        color = colSel;
                     }
+                    engine.debugRenderer.drawLine(pA, pB, color);
                 });
             }
 
             if (isVertexMode) {
-                const baseSize = Math.max(3.0, engine.uiConfig.vertexSize * 3.0);
+                const drawingBufferWidth = engine.renderer.gl?.drawingBufferWidth ?? engine.currentWidth;
+                const pointSizes = getMeshVertexPointSizes(
+                    engine.uiConfig.vertexSize,
+                    getViewportPixelRatio(drawingBufferWidth, engine.currentWidth),
+                );
                 const m0=worldMat[0], m1=worldMat[1], m2=worldMat[2], m12=worldMat[12];
                 const m4=worldMat[4], m5=worldMat[5], m6=worldMat[6], m13=worldMat[13];
                 const m8=worldMat[8], m9=worldMat[9], m10=worldMat[10], m14=worldMat[14];
@@ -173,7 +192,7 @@ export const MeshModule: EngineModule = {
                     const isSelected = engine.selectionSystem.subSelection.vertexIds.has(i); // Updated
                     const isHovered = engine.selectionSystem.hoveredVertex?.entityId === entityId && engine.selectionSystem.hoveredVertex?.index === i; // Updated
                     
-                    let size = baseSize;
+                    let size = pointSizes.base;
                     let border = 0.0;
                     let r = vertexConfigColor.r, g = vertexConfigColor.g, b = vertexConfigColor.b; 
                     
@@ -184,7 +203,7 @@ export const MeshModule: EngineModule = {
 
                     if (isSelected || isHovered) {
                         r = colSel.r; g = colSel.g; b = colSel.b;
-                        size = baseSize * 1.5; 
+                        size = pointSizes.selected; 
                         border = 0.0; 
                     }
 
@@ -195,20 +214,16 @@ export const MeshModule: EngineModule = {
     }
 };
 
-const LightInspector: React.FC<InspectorProps> = ({ component, onUpdate, onStartUpdate, onCommit }) => {
-    return (
-        <ModulePropertyPanel title="Light Source">
-            <div className="flex items-center gap-2 py-1">
-               <span className="w-24 text-text-secondary text-[10px]">Type</span>
-               <div className="flex-1">
-                   <Select value={component.lightType} options={LIGHT_TYPES.map(v => ({ label: v, value: v }))} onChange={(v) => { onStartUpdate(); onUpdate('lightType', v); onCommit(); }} />
-               </div>
-            </div>
-            <ColorInput label="Color" value={component.color} onChange={(v) => { onStartUpdate(); onUpdate('color', v); onCommit(); }} />
-            <RangeInput label="Intensity" value={component.intensity} min={0} max={5} step={0.1} onChange={(v) => { onStartUpdate(); onUpdate('intensity', v); onCommit(); }} />
-        </ModulePropertyPanel>
-    );
-};
+const LightInspector: React.FC<InspectorProps> = ({ component, onUpdate, onStartUpdate, onCommit }) => (
+    <AutoInspector
+        schemaId="Light"
+        value={component}
+        scope="scene"
+        onChange={(path, value) => onUpdate(path, value)}
+        onStartUpdate={onStartUpdate}
+        onCommit={onCommit}
+    />
+);
 
 export const LightModule: EngineModule = {
     id: ComponentType.LIGHT,
@@ -217,9 +232,38 @@ export const LightModule: EngineModule = {
     order: 20,
     InspectorComponent: LightInspector
 };
+const CameraInspector: React.FC<InspectorProps> = ({ component, onUpdate, onStartUpdate, onCommit }) => (
+    <AutoInspector
+        schemaId="CameraComponent"
+        value={component}
+        scope="scene"
+        onChange={(path, value) => {
+            if (path === 'presetId') {
+                const presetId = String(value || '');
+                onUpdate('presetId', presetId);
+                const preset = presetId ? assetManager.getAsset(presetId) : null;
+                if (preset?.type === 'CAMERA_PRESET') {
+                    Object.entries(preset.data).forEach(([key, presetValue]) => onUpdate(key, presetValue));
+                }
+                return;
+            }
+            onUpdate(path, value);
+        }}
+        onStartUpdate={onStartUpdate}
+        onCommit={onCommit}
+    />
+);
+
+export const CameraModule: EngineModule = {
+    id: ComponentType.CAMERA,
+    name: 'Camera',
+    icon: 'Camera',
+    order: 18,
+    InspectorComponent: CameraInspector
+};
+
 
 const ParticleInspector: React.FC<InspectorProps> = ({ component, onUpdate, onStartUpdate, onCommit }) => {
-    const materials = assetManager.getAssetsByType('MATERIAL');
     const effects = effectRegistry.getOptions(); 
     return (
         <ModulePropertyPanel title="Particle System">
@@ -245,12 +289,11 @@ const ParticleInspector: React.FC<InspectorProps> = ({ component, onUpdate, onSt
                 </div>
             </div>
             
-            <div className="flex items-center gap-2 py-1">
-                <span className="w-24 text-text-secondary text-[10px]">Material</span>
-                <div className="flex-1">
-                   <Select icon="Palette" value={component.materialId || ""} options={[{ label: 'Default', value: "" }, ...materials.map(m => ({ label: m.name, value: m.id }))]} onChange={(v) => { onStartUpdate(); onUpdate('materialId', v); onCommit(); }} />
-                </div>
-            </div>
+            <MaterialSlotField
+                value={component.materialId || ''}
+                defaultLabel="Default Particle Material"
+                onChange={(v) => { onStartUpdate(); onUpdate('materialId', v); onCommit(); }}
+            />
 
             <div className="flex items-center gap-2 py-1">
                 <span className="w-24 text-text-secondary text-[10px]">FX Layer</span>
@@ -379,9 +422,11 @@ export const VirtualPivotModule: EngineModule = {
 };
 
 export const registerCoreModules = (physicsSys: PhysicsSystem, particleSys: ParticleSystem, animSys: AnimationSystem) => {
+    registerCoreInspectorSchemas();
     moduleManager.register(TransformModule);
     moduleManager.register(MeshModule);
     moduleManager.register(LightModule);
+    moduleManager.register(CameraModule);
     
     PhysicsModule.system = createPhysicsSystemAdapter(physicsSys);
     moduleManager.register(PhysicsModule);

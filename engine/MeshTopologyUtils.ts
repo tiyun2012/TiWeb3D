@@ -2,6 +2,7 @@
 import { LogicalMesh, Vector3, MeshTopology, HalfEdge } from '@/types';
 /* Ray is exported from ./math, not ../types */
 import { Vec3Utils, RayUtils, AABB, Ray, AABBUtils } from './math';
+import { meshEdgeKey } from './MeshEdgeGeometry';
 
 export interface MeshPickingResult {
     t: number;
@@ -98,7 +99,7 @@ export const MeshTopologyUtils = {
                     next: faceStartEdgeIdx + ((i + 1) % len),
                     prev: faceStartEdgeIdx + ((i - 1 + len) % len),
                     face: faceIdx,
-                    edgeKey: [vCurrent, vNext].sort((a,b)=>a-b).join('-')
+                    edgeKey: meshEdgeKey(vCurrent, vNext)
                 };
 
                 halfEdges.push(he);

@@ -1,47 +1,15 @@
 
 import { AnimationClip, SkeletalMeshAsset, AnimationTrack } from '@/types';
-import { Mat4Utils, QuatUtils, Vec3Utils, MathUtils } from '../math';
+import { Mat4Utils, QuatUtils } from '../math';
 import { assetManager } from '../AssetManager';
-import { DebugRenderer } from '../renderers/DebugRenderer';
+import { DebugRenderer, getBoneRestDirectionWorld, getMatrixUnitAxes, getSkeletonJointRadius } from '../renderers/DebugRenderer';
 import { engineInstance } from '../engine';
+import { AnimationEvaluator } from '../animation/AnimationEvaluator';
 
 export class AnimationSystem {
     
     evaluateTrack(track: AnimationTrack, time: number): Float32Array {
-        // Find keyframe
-        const times = track.times;
-        const values = track.values;
-        
-        let idx = 0;
-        for (let i = 0; i < times.length - 1; i++) {
-            if (time < times[i + 1]) {
-                idx = i;
-                break;
-            }
-        }
-        
-        const t1 = times[idx];
-        const t2 = times[idx + 1] || t1;
-        const factor = (time - t1) / (t2 - t1);
-        const t = Math.max(0, Math.min(1, isNaN(factor) ? 0 : factor));
-        
-        const stride = track.type === 'rotation' ? 4 : 3;
-        const start = idx * stride;
-        const end = (idx + 1) * stride;
-        
-        if (track.type === 'rotation') {
-            const q1 = { x: values[start], y: values[start+1], z: values[start+2], w: values[start+3] };
-            const q2 = { x: values[end], y: values[end+1], z: values[end+2], w: values[end+3] };
-            const qRes = { x: 0, y: 0, z: 0, w: 1 };
-            QuatUtils.slerp(q1, q2, t, qRes);
-            return new Float32Array([qRes.x, qRes.y, qRes.z, qRes.w]);
-        } else {
-            const v1 = { x: values[start], y: values[start+1], z: values[start+2] };
-            const v2 = { x: values[end], y: values[end+1], z: values[end+2] };
-            const vRes = { x: 0, y: 0, z: 0 };
-            Vec3Utils.lerp(v1, v2, t, vRes);
-            return new Float32Array([vRes.x, vRes.y, vRes.z]);
-        }
+        return AnimationEvaluator.evaluateTrack(track, time);
     }
 
     update(dt: number, time: number, meshSystem: any, ecs: any, sceneGraph: any, debugRenderer?: DebugRenderer, selectedIndices?: Set<number>, meshComponentMode?: string) {
@@ -124,7 +92,7 @@ export class AnimationSystem {
                         
                         if (isBoneSelected || meshComponentMode !== 'OBJECT') {
                              const isRoot = bone.parentIndex === -1;
-                             const radius = isBoneSelected ? 0.08 : isRoot ? 0.06 : 0.045;
+                             const radius = getSkeletonJointRadius(isRoot, 10, 1.0, isBoneSelected ? 'selected' : 'normal');
                              const color = isBoneSelected ? { r: 1.0, g: 0.72, b: 0.1 } : isRoot ? { r: 0.18, g: 0.82, b: 0.45 } : { r: 0.35, g: 0.75, b: 1.0 };
                              debugRenderer.drawWireSphere(bPos, radius, color, 12);
                              if (bone.parentIndex !== -1) {
@@ -132,7 +100,39 @@ export class AnimationSystem {
                                  const pMat = sceneGraph.getWorldMatrix(pId);
                                  if (pMat) {
                                      const pPos = { x: pMat[12], y: pMat[13], z: pMat[14] };
-                                     debugRenderer.drawBoneOctahedron(pPos, bPos, { r: 0.9, g: 0.92, b: 0.96 });
+                                     const parentAxes = getMatrixUnitAxes(pMat);
+                                     const liveDirection = {
+                                         x: bPos.x - pPos.x,
+                                         y: bPos.y - pPos.y,
+                                         z: bPos.z - pPos.z,
+                                     };
+                                     const restDirection = getBoneRestDirectionWorld(bone.bindPose, parentAxes, liveDirection);
+                                     const parentBone = skelAsset.skeleton.bones[bone.parentIndex];
+                                     const parentRadius = getSkeletonJointRadius(
+                                         parentBone?.parentIndex === -1,
+                                         10,
+                                         1.0,
+                                         'normal'
+                                     );
+                                     const childRadius = getSkeletonJointRadius(
+                                         bone.parentIndex === -1,
+                                         10,
+                                         1.0,
+                                         'normal'
+                                     );
+                                     debugRenderer.drawBoneOctahedron(
+                                         pPos,
+                                         bPos,
+                                         { r: 0.9, g: 0.92, b: 0.96 },
+                                         {
+                                             parentRadius,
+                                             childRadius,
+                                             parentXAxis: parentAxes.x,
+                                             parentYAxis: parentAxes.y,
+                                             parentZAxis: parentAxes.z,
+                                             restDirection,
+                                         }
+                                     );
                                  }
                              }
                         }

@@ -1,5 +1,5 @@
 
-import { StaticMeshAsset, SkeletalMeshAsset, SkeletonAsset, MaterialAsset, PhysicsMaterialAsset, ScriptAsset, RigAsset, TextureAsset, SceneAsset, GraphNode, GraphConnection, Asset, LogicalMesh, FolderAsset, BoneData } from '@/types';
+import { StaticMeshAsset, SkeletalMeshAsset, SkeletonAsset, MaterialAsset, PhysicsMaterialAsset, ScriptAsset, RigAsset, TextureAsset, SceneAsset, GraphNode, GraphConnection, Asset, LogicalMesh, FolderAsset, BoneData, CameraPresetAsset, PostProcessProfileAsset } from '@/types';
 import { MaterialTemplate, MATERIAL_TEMPLATES } from './MaterialTemplates';
 import { MESH_TYPES } from './constants';
 import { ProceduralGeneration } from './ProceduralGeneration';
@@ -7,6 +7,7 @@ import { MeshTopologyUtils } from './MeshTopologyUtils';
 // @ts-ignore
 import * as THREE from 'three';
 import { eventBus } from './EventBus';
+import { createDefaultCameraSettings } from './camera/CameraSettings';
 
 export interface RigTemplate {
     name: string;
@@ -267,6 +268,7 @@ class AssetManagerService {
     }
 
     getMeshID(uuid: string): number { return this.meshUuidToInt.get(uuid) || 0; }
+    getMeshUUID(intId: number): string | undefined { return this.meshIntToUuid.get(intId); }
     getMaterialID(uuid: string): number { return this.matUuidToInt.get(uuid) || 0; }
     getMaterialUUID(intId: number): string | undefined { return this.matIntToUuid.get(intId); } 
     getPhysicsMaterialID(uuid: string): number { return this.physMatUuidToInt.get(uuid) || 0; }
@@ -382,11 +384,34 @@ class AssetManagerService {
         return newAsset;
     }
 
+
+    createCameraPreset(name: string, path: string = '/Content/Cameras'): CameraPresetAsset {
+        const id = crypto.randomUUID();
+        const asset: CameraPresetAsset = {
+            id, name, type: 'CAMERA_PRESET', path,
+            data: createDefaultCameraSettings(),
+        };
+        this.registerAsset(asset);
+        eventBus.emit('ASSET_CREATED', { id: asset.id, type: asset.type });
+        return asset;
+    }
+
+    createPostProcessProfile(name: string, path: string = '/Content/PostProcess'): PostProcessProfileAsset {
+        const id = crypto.randomUUID();
+        const asset: PostProcessProfileAsset = {
+            id, name, type: 'POST_PROCESS_PROFILE', path,
+            data: { enabled: true, effects: [] },
+        };
+        this.registerAsset(asset);
+        eventBus.emit('ASSET_CREATED', { id: asset.id, type: asset.type });
+        return asset;
+    }
+
     createScene(name: string, json: string = '{}', path: string = '/Content/Scenes'): SceneAsset {
         const id = crypto.randomUUID();
         const asset: SceneAsset = {
             id, name, type: 'SCENE', path,
-            data: { json }
+            data: { json, postProcessProfileId: '' }
         };
         this.registerAsset(asset);
         eventBus.emit('ASSET_CREATED', { id: asset.id, type: 'SCENE' });
@@ -554,7 +579,7 @@ eventBus.emit('ASSET_CREATED', { id: skeletonAsset.id, type: 'SKELETON' });
                  animations: animations
              };
              this.registerAsset(skelAsset);
-             eventBus.emit('ASSET_CREATED', { id: skelAsset.id, type: 'SKELETON' });
+             eventBus.emit('ASSET_CREATED', { id: skelAsset.id, type: 'SKELETAL_MESH' });
              return skelAsset;
         }
 

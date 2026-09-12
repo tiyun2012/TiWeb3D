@@ -15,10 +15,11 @@ interface SelectProps {
     icon?: string;
     placeholder?: string;
     className?: string;
+    disabled?: boolean;
 }
 
 export const Select: React.FC<SelectProps> = ({ 
-    value, options, onChange, icon, placeholder = "Select...", className = "" 
+    value, options, onChange, icon, placeholder = "Select...", className = "", disabled = false
 }) => {
     const [isOpen, setIsOpen] = useState(false);
     const triggerRef = useRef<HTMLButtonElement>(null);
@@ -48,6 +49,7 @@ export const Select: React.FC<SelectProps> = ({
     }, [isOpen]);
 
     const handleOpen = () => {
+        if (disabled) return;
         if (triggerRef.current) {
             const rect = triggerRef.current.getBoundingClientRect();
             setCoords({
@@ -63,7 +65,8 @@ export const Select: React.FC<SelectProps> = ({
         <>
             <button 
                 ref={triggerRef}
-                className={`flex items-center justify-between w-full bg-input-bg rounded border border-transparent hover:border-white/10 px-2 py-1 text-xs text-white outline-none focus:border-accent transition-colors ${className}`}
+                disabled={disabled}
+                className={`flex items-center justify-between w-full bg-input-bg rounded border border-transparent hover:border-white/10 px-2 py-1 text-xs text-white outline-none focus:border-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${className}`}
                 onClick={handleOpen}
                 title={selectedOption?.label || placeholder}
             >

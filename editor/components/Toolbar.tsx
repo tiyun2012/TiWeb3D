@@ -95,7 +95,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ onSave, onLoad }) => {
                     <div className="absolute top-8 left-0 bg-[#252525] border border-white/10 shadow-2xl rounded-md py-1 min-w-[180px] text-text-primary z-[100] animate-in fade-in zoom-in-95 duration-75">
                         <div className="px-4 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2" onClick={() => wm?.toggleWindow('hierarchy')}><Icon name="ListTree" size={12} /> Hierarchy</div>
                         <div className="px-4 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2" onClick={() => wm?.toggleWindow('inspector')}><Icon name="Settings2" size={12} /> Inspector</div>
-                        <div className="px-4 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2" onClick={() => wm?.toggleWindow('tool_options')}><Icon name="Tool" size={12} /> Tool Options</div>
+                        <div className="px-4 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2" onClick={() => wm?.toggleWindow('tool_options')}><Icon name="Wrench" size={12} /> Tool Options</div>
                         <div className="px-4 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2" onClick={() => wm?.toggleWindow('project')}><Icon name="FolderOpen" size={12} /> Project</div>
                         <div className="px-4 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2" onClick={() => wm?.toggleWindow('console')}><Icon name="Terminal" size={12} /> Console</div>
                         <div className="border-t border-white/5 my-1"></div>

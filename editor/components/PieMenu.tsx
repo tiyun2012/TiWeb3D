@@ -169,14 +169,14 @@ export const PieMenu: React.FC<PieMenuProps> = ({ x, y, onSelectMode, onAction, 
              if (hoverItem) {
                  let found = false;
                  // Check all branches
-                 Object.values(config.branches).forEach((items: any[]) => {
+                 for (const items of Object.values(config.branches) as any[][]) {
                      const item = items.find((i: any) => i.id === hoverItem);
                      if (item) {
                          if (item.type === 'MODE') onSelectMode(item.id as MeshComponentMode);
                          else onAction(item.id);
                          found = true;
                      }
-                 });
+                 }
                  if (found) onClose();
              }
         };

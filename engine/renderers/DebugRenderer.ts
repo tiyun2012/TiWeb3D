@@ -70,75 +70,250 @@ export function generateWireSphereLines(
 }
 
 /**
- * Shared utility to generate 3D octahedron bone lines connecting parent P to child C.
+ * Shared skeleton visual sizing. The structural joint radius is independent of
+ * parent-child distance; selection/hover may enlarge the sphere without changing
+ * the bone base that is anchored to the parent joint.
+ */
+export type SkeletonJointVisualState = 'normal' | 'hovered' | 'selected';
+
+export function getSkeletonJointRadius(
+    isRoot: boolean,
+    jointRadius: number = 10,
+    rootScale: number = 1.6,
+    state: SkeletonJointVisualState = 'normal'
+): number {
+    const baseRadius = state === 'selected'
+        ? 0.08
+        : state === 'hovered'
+        ? 0.07
+        : isRoot
+        ? 0.06
+        : 0.045;
+    const radiusScale = Math.max(0.01, jointRadius / 10);
+    return baseRadius * radiusScale * (isRoot ? rootScale : 1.0);
+}
+
+export interface SkeletonVisualAxes {
+    x: [number, number, number];
+    y: [number, number, number];
+    z: [number, number, number];
+}
+
+export function getMatrixUnitAxes(matrix: ArrayLike<number>): SkeletonVisualAxes {
+    return {
+        x: normalizeTuple([matrix[0] ?? 1, matrix[1] ?? 0, matrix[2] ?? 0], [1, 0, 0]),
+        y: normalizeTuple([matrix[4] ?? 0, matrix[5] ?? 1, matrix[6] ?? 0], [0, 1, 0]),
+        z: normalizeTuple([matrix[8] ?? 0, matrix[9] ?? 0, matrix[10] ?? 1], [0, 0, 1])
+    };
+}
+
+export function transformLocalDirectionByAxes(
+    localDirection: Vec3Like | undefined,
+    parentAxes: SkeletonVisualAxes,
+    fallback: Vec3Like = [0, 1, 0]
+): [number, number, number] {
+    if (!localDirection) return normalizeTuple(toVec3Tuple(fallback, [0, 1, 0]), [0, 1, 0]);
+    const [lx, ly, lz] = toVec3Tuple(localDirection, [0, 1, 0]);
+    const localLen = Math.hypot(lx, ly, lz);
+    if (localLen < 1e-7) return normalizeTuple(toVec3Tuple(fallback, [0, 1, 0]), [0, 1, 0]);
+    const nx = lx / localLen;
+    const ny = ly / localLen;
+    const nz = lz / localLen;
+    return normalizeTuple([
+        parentAxes.x[0] * nx + parentAxes.y[0] * ny + parentAxes.z[0] * nz,
+        parentAxes.x[1] * nx + parentAxes.y[1] * ny + parentAxes.z[1] * nz,
+        parentAxes.x[2] * nx + parentAxes.y[2] * ny + parentAxes.z[2] * nz
+    ], [0, 1, 0]);
+}
+
+export function getBoneRestDirectionWorld(
+    childBindPose: ArrayLike<number> | undefined,
+    parentAxes: SkeletonVisualAxes,
+    fallback: Vec3Like = [0, 1, 0]
+): [number, number, number] {
+    if (!childBindPose) return transformLocalDirectionByAxes(undefined, parentAxes, fallback);
+    return transformLocalDirectionByAxes(
+        [childBindPose[12] ?? 0, childBindPose[13] ?? 0, childBindPose[14] ?? 0],
+        parentAxes,
+        fallback
+    );
+}
+
+export interface BoneOctahedronOptions {
+    /** Stable structural size of the parent joint. Bone width derives from this, never child distance. */
+    parentRadius?: number;
+    /** Structural size of the child joint. Used to stop the visible bone at the child sphere surface. */
+    childRadius?: number;
+    /** Parent joint local frame expressed in world space. */
+    parentXAxis?: Vec3Like;
+    parentYAxis?: Vec3Like;
+    parentZAxis?: Vec3Like;
+    /** Rest/bind bone direction in world space. Used only as the no-twist roll reference. */
+    restDirection?: Vec3Like;
+    /** Radius multiplier for the parent-side four-point base ring. */
+    widthScale?: number;
+    /** Multiplier applied to parentRadius before placing the base-ring center along the live direction. */
+    baseOffsetScale?: number;
+}
+
+function normalizeTuple(v: [number, number, number], fallback: [number, number, number]): [number, number, number] {
+    const len = Math.hypot(v[0], v[1], v[2]);
+    if (len < 1e-7) return fallback;
+    return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+function projectAxisToPlane(
+    axis: [number, number, number],
+    normal: [number, number, number]
+): [number, number, number] {
+    const dot = axis[0] * normal[0] + axis[1] * normal[1] + axis[2] * normal[2];
+    return [
+        axis[0] - normal[0] * dot,
+        axis[1] - normal[1] * dot,
+        axis[2] - normal[2] * dot
+    ];
+}
+
+function crossTuple(
+    a: [number, number, number],
+    b: [number, number, number]
+): [number, number, number] {
+    return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0]
+    ];
+}
+
+function dotTuple(a: [number, number, number], b: [number, number, number]): number {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+/**
+ * Rotate a vector by the shortest rotation taking `from` to `to`.
+ * The 180-degree case uses a caller-provided stable axis so the visual frame
+ * stays deterministic instead of flipping to an arbitrary world-up choice.
+ */
+function rotateByShortestArc(
+    vector: [number, number, number],
+    from: [number, number, number],
+    to: [number, number, number],
+    oppositeAxis: [number, number, number]
+): [number, number, number] {
+    const d = Math.max(-1, Math.min(1, dotTuple(from, to)));
+    if (d > 1 - 1e-7) return vector;
+
+    if (d < -1 + 1e-6) {
+        const axis = normalizeTuple(projectAxisToPlane(oppositeAxis, from), [1, 0, 0]);
+        // Rodrigues for PI radians: v' = 2 axis (axis dot v) - v.
+        const axisDotV = dotTuple(axis, vector);
+        return [
+            2 * axis[0] * axisDotV - vector[0],
+            2 * axis[1] * axisDotV - vector[1],
+            2 * axis[2] * axisDotV - vector[2]
+        ];
+    }
+
+    const qv = crossTuple(from, to);
+    const qw = 1 + d;
+    const qLen = Math.hypot(qv[0], qv[1], qv[2], qw) || 1;
+    const qx = qv[0] / qLen;
+    const qy = qv[1] / qLen;
+    const qz = qv[2] / qLen;
+    const qwn = qw / qLen;
+
+    const qVec: [number, number, number] = [qx, qy, qz];
+    const t = crossTuple(qVec, vector);
+    const twoT: [number, number, number] = [t[0] * 2, t[1] * 2, t[2] * 2];
+    const qCrossT = crossTuple(qVec, twoT);
+    return [
+        vector[0] + qwn * twoT[0] + qCrossT[0],
+        vector[1] + qwn * twoT[1] + qCrossT[1],
+        vector[2] + qwn * twoT[2] + qCrossT[2]
+    ];
+}
+
+/**
+ * Shared utility to generate the wireframe bone shape connecting parent P to child C.
+ *
+ * Important visual contract:
+ * - The parent joint center is the pivot; the bone swings with the live parent->child direction.
+ * - Visible geometry starts outside the parent joint sphere and stops at the child sphere surface.
+ * - Cross-section size is fixed from the parent joint radius, never parent-child distance.
+ * - Roll is transported from the parent's local rest frame onto the live direction, avoiding
+ *   arbitrary corkscrew twist while the child moves around the parent.
  */
 export function generateBoneOctahedronLines(
     p: Vec3Like,
     c: Vec3Like,
     outLines: number[],
-    headFraction: number = 0.2,
-    maxWidth: number = 0.18
+    options: BoneOctahedronOptions = {}
 ): void {
     const [px, py, pz] = toVec3Tuple(p);
     const [cx, cy, cz] = toVec3Tuple(c);
 
-    const vx = cx - px;
-    const vy = cy - py;
-    const vz = cz - pz;
-    const len = Math.hypot(vx, vy, vz);
+    const liveVector: [number, number, number] = [cx - px, cy - py, cz - pz];
+    const len = Math.hypot(liveVector[0], liveVector[1], liveVector[2]);
     if (len < 0.001) return;
+    const liveForward = normalizeTuple(liveVector, [0, 1, 0]);
 
-    const fx = vx / len;
-    const fy = vy / len;
-    const fz = vz / len;
+    const parentX = normalizeTuple(toVec3Tuple(options.parentXAxis, [1, 0, 0]), [1, 0, 0]);
+    const parentY = normalizeTuple(toVec3Tuple(options.parentYAxis, [0, 1, 0]), [0, 1, 0]);
+    const parentZ = normalizeTuple(toVec3Tuple(options.parentZAxis, [0, 0, 1]), [0, 0, 1]);
+    const restForward = normalizeTuple(toVec3Tuple(options.restDirection, liveForward), liveForward);
 
-    // Perpendicular vector
-    let ax = 0, ay = 1, az = 0;
-    if (Math.abs(fy) > 0.95) {
-        ax = 1; ay = 0; az = 0;
+    // Build the authored roll frame at rest from the parent's own axes.
+    let restRightProjected = projectAxisToPlane(parentX, restForward);
+    if (Math.hypot(...restRightProjected) < 1e-4) restRightProjected = projectAxisToPlane(parentZ, restForward);
+    if (Math.hypot(...restRightProjected) < 1e-4) restRightProjected = projectAxisToPlane(parentY, restForward);
+    let restRight = normalizeTuple(restRightProjected, [1, 0, 0]);
+    let restUp = normalizeTuple(crossTuple(restRight, restForward), [0, 0, 1]);
+
+    // Keep the authored frame's handedness aligned with the parent's local Z.
+    if (dotTuple(restUp, parentZ) < 0) {
+        restRight = [-restRight[0], -restRight[1], -restRight[2]];
+        restUp = [-restUp[0], -restUp[1], -restUp[2]];
     }
 
-    // Right = Cross(F, A)
-    let rx = fy * az - fz * ay;
-    let ry = fz * ax - fx * az;
-    let rz = fx * ay - fy * ax;
-    const rLen = Math.hypot(rx, ry, rz);
-    if (rLen > 0.0001) {
-        rx /= rLen; ry /= rLen; rz /= rLen;
-    }
+    // Swing the entire rest frame onto the live direction. This is what makes the bone
+    // rotate about the parent center when the child moves, without inventing extra axial roll.
+    let liveRight = rotateByShortestArc(restRight, restForward, liveForward, restUp);
+    liveRight = normalizeTuple(projectAxisToPlane(liveRight, liveForward), restRight);
+    const liveUp = normalizeTuple(crossTuple(liveRight, liveForward), restUp);
 
-    // Up = Cross(F, R)
-    const ux = fy * rz - fz * ry;
-    const uy = fz * rx - fx * rz;
-    const uz = fx * ry - fy * rx;
+    const parentRadius = Math.max(0.001, Math.abs(options.parentRadius ?? 0.045));
+    const childRadius = Math.max(0, Math.abs(options.childRadius ?? parentRadius));
+    const widthScale = options.widthScale ?? 0.85;
+    const baseOffsetScale = Math.max(1.0, options.baseOffsetScale ?? 1.05);
+    const baseRadius = parentRadius * widthScale;
 
-    // Waist position and radius
-    const waistDist = len * headFraction;
-    const waistRadius = Math.max(0.035, Math.min(len * 0.12, maxWidth));
+    // The visible bone occupies only the free space between the two joint spheres.
+    // Parent/child centers remain the transform pivots, not rendered bone endpoints.
+    const baseDist = parentRadius * baseOffsetScale;
+    const tipDist = len - childRadius;
+    if (tipDist <= baseDist + 1e-5) return;
 
-    const mx = px + fx * waistDist;
-    const my = py + fy * waistDist;
-    const mz = pz + fz * waistDist;
+    const bx = px + liveForward[0] * baseDist;
+    const by = py + liveForward[1] * baseDist;
+    const bz = pz + liveForward[2] * baseDist;
+    const tx = px + liveForward[0] * tipDist;
+    const ty = py + liveForward[1] * tipDist;
+    const tz = pz + liveForward[2] * tipDist;
 
-    // 4 corners of waist
-    const k1: [number, number, number] = [mx + rx * waistRadius, my + ry * waistRadius, mz + rz * waistRadius];
-    const k2: [number, number, number] = [mx + ux * waistRadius, my + uy * waistRadius, mz + uz * waistRadius];
-    const k3: [number, number, number] = [mx - rx * waistRadius, my - ry * waistRadius, mz - rz * waistRadius];
-    const k4: [number, number, number] = [mx - ux * waistRadius, my - uy * waistRadius, mz - uz * waistRadius];
+    const k1: [number, number, number] = [bx + liveRight[0] * baseRadius, by + liveRight[1] * baseRadius, bz + liveRight[2] * baseRadius];
+    const k2: [number, number, number] = [bx + liveUp[0] * baseRadius, by + liveUp[1] * baseRadius, bz + liveUp[2] * baseRadius];
+    const k3: [number, number, number] = [bx - liveRight[0] * baseRadius, by - liveRight[1] * baseRadius, bz - liveRight[2] * baseRadius];
+    const k4: [number, number, number] = [bx - liveUp[0] * baseRadius, by - liveUp[1] * baseRadius, bz - liveUp[2] * baseRadius];
+    const tip: [number, number, number] = [tx, ty, tz];
 
     const addLine = (a: [number, number, number], b: [number, number, number]) => {
         outLines.push(a[0], a[1], a[2], b[0], b[1], b[2]);
     };
 
-    const pTup: [number, number, number] = [px, py, pz];
-    const cTup: [number, number, number] = [cx, cy, cz];
-
-    // From parent P to waist corners
-    addLine(pTup, k1); addLine(pTup, k2); addLine(pTup, k3); addLine(pTup, k4);
-    // From child C to waist corners
-    addLine(cTup, k1); addLine(cTup, k2); addLine(cTup, k3); addLine(cTup, k4);
-    // Around waist ring
+    // Four-point parent-side base ring + four tapered rails to the child sphere surface.
+    // Deliberately no line is emitted from the parent center: the joint sphere owns that region.
     addLine(k1, k2); addLine(k2, k3); addLine(k3, k4); addLine(k4, k1);
+    addLine(k1, tip); addLine(k2, tip); addLine(k3, tip); addLine(k4, tip);
 }
 
 /**
@@ -336,11 +511,10 @@ export class DebugRenderer {
         p: Vec3Like,
         c: Vec3Like,
         color: { r: number; g: number; b: number },
-        headFraction: number = 0.2,
-        maxWidth: number = 0.18
+        options: BoneOctahedronOptions = {}
     ) {
         const lines: number[] = [];
-        generateBoneOctahedronLines(p, c, lines, headFraction, maxWidth);
+        generateBoneOctahedronLines(p, c, lines, options);
         for (let i = 0; i < lines.length; i += 6) {
             this.drawLine(
                 { x: lines[i], y: lines[i + 1], z: lines[i + 2] },

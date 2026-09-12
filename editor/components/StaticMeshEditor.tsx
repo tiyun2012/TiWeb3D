@@ -4,59 +4,43 @@ import { createPortal } from 'react-dom';
 import { EditorContext } from '@/editor/state/EditorContext';
 import { AssetViewportEngine } from '@/editor/viewports/AssetViewportEngine';
 import { assetManager } from '@/engine/AssetManager';
+import { eventBus } from '@/engine/EventBus';
 import { GizmoSystem } from '@/engine/GizmoSystem';
 import { Mat4Utils, Vec3Utils } from '@/engine/math';
+import { getMeshVertexPointSizes, getViewportPixelRatio } from '@/engine/MeshComponentVisualStyle';
+import { VIEW_MODES } from '@/engine/constants';
+import {
+  applyMeshSurfaceUniforms,
+  DEFAULT_MESH_PREVIEW_LIGHT,
+  DEFAULT_MESH_SURFACE_MATERIAL,
+  MESH_SURFACE_RENDER_MODE,
+} from '@/engine/renderers/MeshSurfaceContract';
+import { MaterialPreviewRenderer } from '@/engine/renderers/MaterialPreviewRenderer';
+import {
+  buildMeshEdgeIndices,
+  buildMeshEdgeIndicesFromKeys,
+  collectFaceEdgeKeys,
+  MESH_EDGE_COLORS,
+  meshEdgeKey,
+} from '@/engine/MeshEdgeGeometry';
+import { MeshEdgeOverlay } from '@/editor/viewports/MeshEdgeOverlay';
+import { MESH_VERTEX_COLORS, MeshVertexOverlay } from '@/editor/viewports/MeshVertexOverlay';
 import { MeshComponentMode, StaticMeshAsset, SkeletalMeshAsset, ToolType } from '@/types';
 
 import { Icon } from './Icon';
 import { PieMenu } from './PieMenu';
 import { AssetViewport3D, AssetViewportRenderArgs, CameraState } from './AssetViewport3D';
+import { AssetEditorTemplate } from './asset-editor/AssetEditorTemplate';
+import { MeshAssetHierarchy, MeshHierarchySection } from './asset-editor/MeshAssetHierarchy';
+import { MeshAssetInspector } from './asset-editor/MeshAssetInspector';
+import { AssetViewportToolbarAction, assetViewportAllows, meshModeActionId } from './asset-editor/assetViewportCapabilities';
 
-const RENDER_MODE_ITEMS: Array<{ id: number; label: string; icon: string }> = [
-  { id: 0, label: 'Lit', icon: 'Sun' },
-  { id: 1, label: 'Flat', icon: 'Square' },
-  { id: 2, label: 'Normals', icon: 'BoxSelect' },
-];
+// Keep the asset editor's shared surface modes numerically identical to Scene View.
+const RENDER_MODE_ITEMS: Array<{ id: number; label: string; icon: string }> = VIEW_MODES
+  .filter(mode => mode.id <= MESH_SURFACE_RENDER_MODE.UNLIT)
+  .map(mode => ({ ...mode }));
 
 type DirtyKind = 'NONE' | 'VERTS' | 'FULL';
-
-function buildWireframeIndices(
-  indices: Uint16Array | Uint32Array,
-  faces?: number[][]
-): { wire: Uint16Array | Uint32Array; useUint32: boolean } {
-  const edgeSet = new Set<string>();
-  const edges: number[] = [];
-  const add = (a: number, b: number) => {
-    const i0 = Math.min(a, b);
-    const i1 = Math.max(a, b);
-    const k = `${i0}_${i1}`;
-    if (edgeSet.has(k)) return;
-    edgeSet.add(k);
-    edges.push(i0, i1);
-  };
-
-  if (faces && faces.length > 0) {
-    for (let i = 0; i < faces.length; i++) {
-      const face = faces[i];
-      for (let j = 0; j < face.length; j++) {
-        add(face[j], face[(j + 1) % face.length]);
-      }
-    }
-  } else {
-    for (let i = 0; i < indices.length; i += 3) {
-      const a = indices[i];
-      const b = indices[i + 1];
-      const c = indices[i + 2];
-      add(a, b);
-      add(b, c);
-      add(c, a);
-    }
-  }
-
-  const maxIndex = edges.reduce((m, v) => (v > m ? v : m), 0);
-  const useUint32 = indices instanceof Uint32Array || maxIndex > 65535;
-  return { wire: useUint32 ? new Uint32Array(edges) : new Uint16Array(edges), useUint32 };
-}
 
 function computeFitCamera(
   asset: StaticMeshAsset | SkeletalMeshAsset
@@ -73,12 +57,18 @@ function computeFitCamera(
   return { radius: Math.max(maxDim * 1.5, 0.25), target: center };
 }
 
-export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
+export interface StaticMeshEditorProps {
+  assetId: string;
+  editorHeaderExtra?: React.ReactNode;
+}
+
+export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, editorHeaderExtra }) => {
   // Context shared with Scene viewport (tool + component mode)
   const editorCtx = useContext(EditorContext);
   const tool: ToolType = editorCtx?.tool ?? 'SELECT';
   const setTool = editorCtx?.setTool ?? (() => {});
   const meshComponentMode: MeshComponentMode = editorCtx?.meshComponentMode ?? 'OBJECT';
+  const vertexSize = editorCtx?.uiConfig.vertexSize ?? 1.0;
   const setMeshComponentMode = editorCtx?.setMeshComponentMode ?? (() => {});
 
   const meshComponentModeRef = useRef<MeshComponentMode>(meshComponentMode);
@@ -101,6 +91,35 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
 
   const [stats, setStats] = useState<{ verts: number; tris: number }>({ verts: 0, tris: 0 });
   const [pieMenu, setPieMenu] = useState<{ x: number; y: number } | null>(null);
+  const [hierarchySection, setHierarchySection] = useState<MeshHierarchySection>('ASSET');
+  const [materialId, setMaterialId] = useState<string>('');
+  const materialIdRef = useRef<string>('');
+  const materialRevisionRef = useRef(0);
+  useEffect(() => {
+    materialIdRef.current = materialId;
+  }, [materialId]);
+
+  useEffect(() => {
+    const asset = assetManager.getAsset(assetId);
+    const nextMaterialId = asset && (asset.type === 'MESH' || asset.type === 'SKELETAL_MESH')
+      ? asset.materialId || ''
+      : '';
+    setMaterialId(nextMaterialId);
+    materialIdRef.current = nextMaterialId;
+  }, [assetId]);
+
+  useEffect(() => eventBus.on('ASSET_UPDATED', payload => {
+    if (payload?.type === 'MATERIAL' && payload.id === materialIdRef.current) {
+      materialRevisionRef.current += 1;
+    }
+  }), []);
+
+  const handleMaterialChange = (nextMaterialId: string) => {
+    setMaterialId(nextMaterialId);
+    materialIdRef.current = nextMaterialId;
+    materialRevisionRef.current += 1;
+    assetManager.updateAsset(assetId, { materialId: nextMaterialId || undefined });
+  };
 
   // Local selection/gizmo engine for this viewport
   const previewEngineRef = useRef<AssetViewportEngine | null>(null);
@@ -128,18 +147,30 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
     meshVao: WebGLVertexArrayObject | null;
     vbo: WebGLBuffer | null;
     nbo: WebGLBuffer | null;
+    uvbo: WebGLBuffer | null;
+    colorbo: WebGLBuffer | null;
     ibo: WebGLBuffer | null;
-    wireVao: WebGLVertexArrayObject | null;
-    wireIbo: WebGLBuffer | null;
-    wire: { wire: Uint16Array | Uint32Array; useUint32: boolean } | null;
+    edgeOverlay: MeshEdgeOverlay;
+    selectedEdgeOverlay: MeshEdgeOverlay;
+    vertexOverlay: MeshVertexOverlay;
+    materialPreview: MaterialPreviewRenderer;
+    selectionEdgeRevision: number;
+    selectionEdgeMode: MeshComponentMode | null;
+    selectionVertexRevision: number;
   }>({
     meshVao: null,
     vbo: null,
     nbo: null,
+    uvbo: null,
+    colorbo: null,
     ibo: null,
-    wireVao: null,
-    wireIbo: null,
-    wire: null,
+    edgeOverlay: new MeshEdgeOverlay(),
+    selectedEdgeOverlay: new MeshEdgeOverlay(),
+    vertexOverlay: new MeshVertexOverlay(),
+    materialPreview: new MaterialPreviewRenderer(),
+    selectionEdgeRevision: -1,
+    selectionEdgeMode: null,
+    selectionVertexRevision: -1,
   });
 
   // Keep local engine in-sync with global tool + component mode
@@ -214,8 +245,10 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
     const meshVao = gl.createVertexArray();
     const vbo = gl.createBuffer();
     const nbo = gl.createBuffer();
+    const uvbo = gl.createBuffer();
+    const colorbo = gl.createBuffer();
     const ibo = gl.createBuffer();
-    if (!meshVao || !vbo || !nbo || !ibo) return;
+    if (!meshVao || !vbo || !nbo || !uvbo || !colorbo || !ibo) return;
 
     gl.bindVertexArray(meshVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
@@ -228,23 +261,63 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
 
+    const vertexCount = asset.geometry.vertices.length / 3;
+    const sourceUvs = asset.geometry.uvs;
+    const uvs = sourceUvs && sourceUvs.length >= vertexCount * 2
+      ? sourceUvs
+      : new Float32Array(vertexCount * 2);
+    gl.bindBuffer(gl.ARRAY_BUFFER, uvbo);
+    gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(8);
+    gl.vertexAttribPointer(8, 2, gl.FLOAT, false, 0, 0);
+
+    const sourceColors = asset.geometry.colors;
+    const colors = sourceColors && sourceColors.length >= vertexCount * 3
+      ? sourceColors
+      : new Float32Array(vertexCount * 3).fill(1);
+    gl.bindBuffer(gl.ARRAY_BUFFER, colorbo);
+    gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(13);
+    gl.vertexAttribPointer(13, 3, gl.FLOAT, false, 0, 0);
+
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, asset.geometry.indices, gl.DYNAMIC_DRAW);
 
-    const wire = buildWireframeIndices(asset.geometry.indices, asset.topology?.faces);
-    const wireVao = gl.createVertexArray();
-    const wireIbo = gl.createBuffer();
-    if (!wireVao || !wireIbo) return;
-
-    gl.bindVertexArray(wireVao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, wireIbo);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, wire.wire, gl.DYNAMIC_DRAW);
+    const edgeOverlay = new MeshEdgeOverlay();
+    edgeOverlay.init(
+      gl,
+      vbo,
+      buildMeshEdgeIndices(asset.geometry.indices, asset.topology?.faces),
+      gl.DYNAMIC_DRAW,
+    );
+    const selectedEdgeOverlay = new MeshEdgeOverlay();
+    selectedEdgeOverlay.init(
+      gl,
+      vbo,
+      buildMeshEdgeIndicesFromKeys([], asset.geometry.indices instanceof Uint32Array),
+      gl.DYNAMIC_DRAW,
+    );
+    const vertexOverlay = new MeshVertexOverlay();
+    vertexOverlay.init(gl, vbo);
+    const materialPreview = new MaterialPreviewRenderer();
+    materialPreview.init(gl);
     gl.bindVertexArray(null);
 
-    glResourcesRef.current = { meshVao, vbo, nbo, ibo, wireVao, wireIbo, wire };
+    glResourcesRef.current = {
+      meshVao,
+      vbo,
+      nbo,
+      uvbo,
+      colorbo,
+      ibo,
+      edgeOverlay,
+      selectedEdgeOverlay,
+      vertexOverlay,
+      materialPreview,
+      selectionEdgeRevision: -1,
+      selectionEdgeMode: null,
+      selectionVertexRevision: -1,
+    };
   };
 
   const handleCleanupGl = (gl: WebGL2RenderingContext) => {
@@ -252,18 +325,22 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
     if (res.meshVao) gl.deleteVertexArray(res.meshVao);
     if (res.vbo) gl.deleteBuffer(res.vbo);
     if (res.nbo) gl.deleteBuffer(res.nbo);
+    if (res.uvbo) gl.deleteBuffer(res.uvbo);
+    if (res.colorbo) gl.deleteBuffer(res.colorbo);
     if (res.ibo) gl.deleteBuffer(res.ibo);
-    if (res.wireVao) gl.deleteVertexArray(res.wireVao);
-    if (res.wireIbo) gl.deleteBuffer(res.wireIbo);
+    res.edgeOverlay.dispose(gl);
+    res.selectedEdgeOverlay.dispose(gl);
+    res.vertexOverlay.dispose(gl);
+    res.materialPreview.dispose(gl);
   };
 
   const handleRender = (args: AssetViewportRenderArgs) => {
-    const { gl, vp, meshProgram, lineProgram } = args;
+    const { gl, vp, meshProgram, lineProgram, viewportSize, eye } = args;
     const asset = assetManager.getAsset(assetId) as StaticMeshAsset | SkeletalMeshAsset | undefined;
     if (!asset || (asset.type !== 'MESH' && asset.type !== 'SKELETAL_MESH')) return;
 
     const res = glResourcesRef.current;
-    if (!res.meshVao || !res.vbo || !res.nbo || !res.ibo || !res.wireVao || !res.wireIbo) return;
+    if (!res.meshVao || !res.vbo || !res.nbo || !res.uvbo || !res.colorbo || !res.ibo) return;
 
     // Apply geometry updates from modeling/vertex edits
     const dirty = dirtyRef.current;
@@ -276,45 +353,128 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
       if (dirty === 'FULL') {
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, res.ibo);
         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, asset.geometry.indices, gl.DYNAMIC_DRAW);
-        const wire = buildWireframeIndices(asset.geometry.indices, asset.topology?.faces);
-        res.wire = wire;
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, res.wireIbo);
-        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, wire.wire, gl.DYNAMIC_DRAW);
+        res.edgeOverlay.update(
+          gl,
+          buildMeshEdgeIndices(asset.geometry.indices, asset.topology?.faces),
+          gl.DYNAMIC_DRAW,
+        );
+        res.selectionEdgeRevision = -1;
+        res.selectionVertexRevision = -1;
       }
       dirtyRef.current = 'NONE';
     }
 
     const engine = previewEngineRef.current;
-    const model = engine?.sceneGraph.getWorldMatrix(engine.entityId) ?? Mat4Utils.create();
+    const previewEntityId = engine?.entityId;
+    const model = previewEntityId
+      ? engine.sceneGraph.getWorldMatrix(previewEntityId) ?? Mat4Utils.create()
+      : Mat4Utils.create();
     const mvp = Mat4Utils.create();
     Mat4Utils.multiply(vp, model, mvp);
 
-    // Draw mesh
-    gl.useProgram(meshProgram);
-    gl.uniformMatrix4fv(gl.getUniformLocation(meshProgram, 'u_mvp'), false, mvp);
-    gl.uniformMatrix4fv(gl.getUniformLocation(meshProgram, 'u_model'), false, model);
-    gl.uniform3f(gl.getUniformLocation(meshProgram, 'u_lightDir'), 0.5, -1.0, 0.5);
-    gl.uniform3f(gl.getUniformLocation(meshProgram, 'u_color'), 0.8, 0.8, 0.8);
-    gl.uniform1i(gl.getUniformLocation(meshProgram, 'u_renderMode'), renderModeRef.current);
+    // Draw mesh. Empty material slot intentionally uses the built-in Standard
+    // Lambert fallback; assigning a project Material compiles that exact graph
+    // in this viewport's WebGL context.
+    const assignedMaterialProgram = res.materialPreview.setMaterial(
+      gl,
+      materialIdRef.current,
+      materialRevisionRef.current,
+    );
+    const activeMeshProgram = assignedMaterialProgram ?? meshProgram;
+    gl.useProgram(activeMeshProgram);
+    if (assignedMaterialProgram) {
+      res.materialPreview.bindCommonUniforms(gl, activeMeshProgram, {
+        mvp,
+        model,
+        cameraPosition: eye,
+        renderMode: renderModeRef.current,
+        timeSeconds: performance.now() / 1000,
+        lightDirection: DEFAULT_MESH_PREVIEW_LIGHT.direction,
+        lightColor: DEFAULT_MESH_PREVIEW_LIGHT.color,
+        lightIntensity: DEFAULT_MESH_PREVIEW_LIGHT.intensity,
+      });
+    } else {
+      gl.uniformMatrix4fv(gl.getUniformLocation(activeMeshProgram, 'u_mvp'), false, mvp);
+      gl.uniformMatrix4fv(gl.getUniformLocation(activeMeshProgram, 'u_model'), false, model);
+      applyMeshSurfaceUniforms(gl, activeMeshProgram, {
+        cameraPosition: eye,
+        renderMode: renderModeRef.current,
+        light: DEFAULT_MESH_PREVIEW_LIGHT,
+        material: DEFAULT_MESH_SURFACE_MATERIAL,
+      });
+    }
     gl.bindVertexArray(res.meshVao);
+    if (assignedMaterialProgram) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    }
     gl.enable(gl.POLYGON_OFFSET_FILL);
     gl.polygonOffset(1, 1);
     const idxType =
       asset.geometry.indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
     gl.drawElements(gl.TRIANGLES, asset.geometry.indices.length, idxType, 0);
     gl.disable(gl.POLYGON_OFFSET_FILL);
+    if (assignedMaterialProgram) gl.disable(gl.BLEND);
 
-    // Wireframe overlay
-    if (showWireframeRef.current && res.wire) {
-      gl.useProgram(lineProgram);
-      gl.uniformMatrix4fv(gl.getUniformLocation(lineProgram, 'u_mvp'), false, mvp);
-      gl.uniform4f(gl.getUniformLocation(lineProgram, 'u_color'), 0.9, 0.9, 0.9, 0.25);
-      gl.bindVertexArray(res.wireVao);
-      gl.drawElements(
-        gl.LINES,
-        res.wire.wire.length,
-        res.wire.useUint32 ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT,
-        0
+    // Authored polygon-edge overlay. Component edit modes always show a dim
+    // topology cage; Object mode only shows it when Wireframe is enabled.
+    const componentMode = meshComponentModeRef.current;
+    const showTopologyCage = showWireframeRef.current || componentMode !== 'OBJECT';
+    if (showTopologyCage) {
+      const baseColor = componentMode === 'OBJECT'
+        ? MESH_EDGE_COLORS.wireframe
+        : { ...MESH_EDGE_COLORS.dim, a: 0.9 };
+      res.edgeOverlay.draw(gl, lineProgram, mvp, baseColor);
+    }
+
+    // Edge and face selections reuse the same edge-index contract instead of
+    // maintaining a second renderer. Rebuild only when selection/mode changes.
+    if (componentMode === 'EDGE' || componentMode === 'FACE') {
+      const selection = engine?.selectionSystem.subSelection;
+      if (selection && (res.selectionEdgeRevision !== selectionTickRef.current || res.selectionEdgeMode !== componentMode)) {
+        const selectedKeys = componentMode === 'EDGE'
+          ? selection.edgeIds
+          : collectFaceEdgeKeys(asset.topology?.faces, selection.faceIds);
+        res.selectedEdgeOverlay.update(
+          gl,
+          buildMeshEdgeIndicesFromKeys(selectedKeys, asset.geometry.indices instanceof Uint32Array),
+          gl.DYNAMIC_DRAW,
+        );
+        res.selectionEdgeRevision = selectionTickRef.current;
+        res.selectionEdgeMode = componentMode;
+      }
+      res.selectedEdgeOverlay.draw(gl, lineProgram, mvp, { ...MESH_EDGE_COLORS.selected, a: 1.0 });
+    }
+
+    // Vertex mode uses the same position VBO through a reusable point overlay.
+    // Draw base vertices first, then selected/hovered points at the same depth
+    // with LEQUAL + depth writes disabled so the highlight cannot disappear
+    // behind the base point pass.
+    if (componentMode === 'VERTEX') {
+      const selection = engine?.selectionSystem;
+      const vertexCount = asset.geometry.vertices.length / 3;
+      if (selection && res.selectionVertexRevision !== selectionTickRef.current) {
+        res.vertexOverlay.updateSelected(gl, selection.subSelection.vertexIds, vertexCount);
+        res.selectionVertexRevision = selectionTickRef.current;
+      }
+
+      const pointSizes = getMeshVertexPointSizes(
+        vertexSize,
+        getViewportPixelRatio(viewportSize.pixelWidth, viewportSize.cssWidth),
+      );
+      res.vertexOverlay.drawAll(gl, lineProgram, mvp, vertexCount, MESH_VERTEX_COLORS.base, pointSizes.base);
+      res.vertexOverlay.drawSelected(gl, lineProgram, mvp, MESH_VERTEX_COLORS.selected, pointSizes.selected);
+
+      const hovered = selection?.hoveredVertex;
+      const hoveredIndex = hovered && hovered.entityId === previewEntityId ? hovered.index : null;
+      res.vertexOverlay.drawHovered(
+        gl,
+        lineProgram,
+        mvp,
+        hoveredIndex,
+        vertexCount,
+        MESH_VERTEX_COLORS.hovered,
+        pointSizes.hovered,
       );
     }
 
@@ -357,8 +517,10 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
 
       // Component picking in edit modes
       if (meshComponentMode !== 'OBJECT') {
+        const previewEntityId = engine.entityId;
+        if (!previewEntityId) return;
         const picked = engine.selectionSystem.pickMeshComponent(
-          engine.entityId,
+          previewEntityId,
           coords.x,
           coords.y,
           coords.width,
@@ -376,7 +538,7 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
               engine.selectionSystem.subSelection.vertexIds.delete(id);
             else engine.selectionSystem.subSelection.vertexIds.add(id);
           } else if (meshComponentMode === 'EDGE') {
-            const id = picked.edgeId.sort((a, b) => a - b).join('-');
+            const id = meshEdgeKey(picked.edgeId[0], picked.edgeId[1]);
             if (engine.selectionSystem.subSelection.edgeIds.has(id))
               engine.selectionSystem.subSelection.edgeIds.delete(id);
             else engine.selectionSystem.subSelection.edgeIds.add(id);
@@ -439,6 +601,23 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
     [renderMode]
   );
 
+  const currentAsset = useMemo(() => {
+    const asset = assetManager.getAsset(assetId);
+    return asset && (asset.type === 'MESH' || asset.type === 'SKELETAL_MESH')
+      ? (asset as StaticMeshAsset | SkeletalMeshAsset)
+      : null;
+  }, [assetId, selectionTick, stats]);
+
+  const selectionCounts = useMemo(() => {
+    const selection = previewEngineRef.current?.selectionSystem;
+    return {
+      object: selection?.selectedIndices.size ?? 0,
+      vertices: selection?.subSelection.vertexIds.size ?? 0,
+      edges: selection?.subSelection.edgeIds.size ?? 0,
+      faces: selection?.subSelection.faceIds.size ?? 0,
+    };
+  }, [selectionTick]);
+
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const _tick = selectionTick;
   const isSelected = useMemo(() => {
@@ -447,17 +626,18 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
   }, [selectionTick]);
 
   const handlePieAction = (action: string) => {
-    if (action === 'tool_select') setTool('SELECT');
-    if (action === 'tool_move') setTool('MOVE');
-    if (action === 'tool_rotate') setTool('ROTATE');
-    if (action === 'tool_scale') setTool('SCALE');
+    if (!currentAsset) return;
+    if (action === 'tool_select' && assetViewportAllows(currentAsset.type, 'tool.select')) setTool('SELECT');
+    if (action === 'tool_move' && assetViewportAllows(currentAsset.type, 'tool.move')) setTool('MOVE');
+    if (action === 'tool_rotate' && assetViewportAllows(currentAsset.type, 'tool.rotate')) setTool('ROTATE');
+    if (action === 'tool_scale' && assetViewportAllows(currentAsset.type, 'tool.scale')) setTool('SCALE');
 
-    if (action === 'toggle_grid') setShowGrid(v => !v);
-    if (action === 'toggle_wire') setShowWireframe(v => !v);
-    if (action === 'reset_cam' || action === 'focus') focusCamera();
+    if (action === 'toggle_grid' && assetViewportAllows(currentAsset.type, 'view.grid')) setShowGrid(v => !v);
+    if (action === 'toggle_wire' && assetViewportAllows(currentAsset.type, 'mesh.wireframe')) setShowWireframe(v => !v);
+    if ((action === 'reset_cam' || action === 'focus') && assetViewportAllows(currentAsset.type, 'view.focus')) focusCamera();
 
-    if (action === 'duplicate') resetTransform();
-    if (action === 'delete') {
+    if (action === 'duplicate' && assetViewportAllows(currentAsset.type, 'mesh.object')) resetTransform();
+    if (action === 'delete' && assetViewportAllows(currentAsset.type, 'mesh.object')) {
       resetTransform();
       focusCamera();
     }
@@ -465,14 +645,81 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'z' || e.key === 'Z') {
+    if ((e.key === 'z' || e.key === 'Z') && currentAsset && assetViewportAllows(currentAsset.type, 'mesh.wireframe')) {
       setShowWireframe(v => !v);
     }
   };
 
+  const meshToolbarActions: AssetViewportToolbarAction[] = currentAsset
+    ? [
+        ...(['OBJECT', 'VERTEX', 'EDGE', 'FACE'] as MeshComponentMode[]).map(mode => ({
+          id: meshModeActionId(mode),
+          group: 'component-mode',
+          label: `${mode.charAt(0) + mode.slice(1).toLowerCase()} Mode`,
+          icon: mode === 'OBJECT' ? 'Box' : mode === 'VERTEX' ? 'CircleDot' : mode === 'EDGE' ? 'Spline' : 'Square',
+          active: meshComponentMode === mode,
+          onTrigger: () => {
+            setMeshComponentMode(mode);
+            setHierarchySection(
+              mode === 'VERTEX' ? 'VERTICES' : mode === 'EDGE' ? 'EDGES' : mode === 'FACE' ? 'FACES' : 'GEOMETRY',
+            );
+          },
+        })),
+        {
+          id: 'mesh.shading',
+          group: 'display',
+          label: `Shading: ${renderModeItem.label}`,
+          icon: renderModeItem.icon,
+          onTrigger: () => setRenderMode(p => (p + 1) % RENDER_MODE_ITEMS.length),
+        },
+        {
+          id: 'mesh.wireframe',
+          group: 'display',
+          label: 'Toggle Wireframe (Z)',
+          icon: 'Codepen',
+          active: showWireframe,
+          onTrigger: () => setShowWireframe(v => !v),
+        },
+      ]
+    : [];
+
+  if (!currentAsset) {
+    return (
+      <div className="h-full flex items-center justify-center bg-[#151515] text-text-secondary text-xs">
+        Mesh asset could not be loaded.
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col h-full bg-[#151515] select-none text-xs w-full">
+    <AssetEditorTemplate
+      assetType={currentAsset.type}
+      assetName={currentAsset.name}
+      headerExtra={editorHeaderExtra}
+      hierarchy={
+        <MeshAssetHierarchy
+          asset={currentAsset}
+          activeSection={hierarchySection}
+          meshComponentMode={meshComponentMode}
+          onSectionChange={setHierarchySection}
+          onMeshComponentModeChange={setMeshComponentMode}
+        />
+      }
+      inspector={
+        <MeshAssetInspector
+          asset={currentAsset}
+          section={hierarchySection}
+          meshComponentMode={meshComponentMode}
+          selectionCounts={selectionCounts}
+          renderModeLabel={renderModeItem.label}
+          wireframe={showWireframe}
+          materialId={materialId}
+          onMaterialChange={handleMaterialChange}
+        />
+      }
+    >
       <AssetViewport3D
+        assetType={currentAsset.type}
         tool={tool}
         setTool={setTool}
         camera={camera}
@@ -491,33 +738,7 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
         }}
         engine={previewEngine}
         gizmoSystem={gizmoSystem}
-        toolbarExtra={
-          <>
-            <div
-              className="bg-black/40 backdrop-blur border border-white/5 rounded-md flex items-center px-2 py-1 text-[10px] text-text-secondary min-w-[100px] justify-between cursor-pointer hover:bg-white/5"
-              onClick={() => setRenderMode(p => (p + 1) % RENDER_MODE_ITEMS.length)}
-              title="Cycle Shading Mode"
-            >
-              <div className="flex items-center gap-2">
-                <Icon name={renderModeItem.icon as any} size={12} className="text-accent" />
-                <span className="font-semibold text-white/90">{renderModeItem.label}</span>
-              </div>
-              <Icon name="ChevronRight" size={10} className="text-text-secondary" />
-            </div>
-
-            <div className="bg-black/40 backdrop-blur border border-white/5 rounded-md flex p-1 text-text-secondary">
-              <button
-                className={`p-1 hover:text-white rounded hover:bg-white/10 ${
-                  showWireframe ? 'text-accent' : ''
-                }`}
-                onClick={() => setShowWireframe(v => !v)}
-                title="Toggle Wireframe (Z)"
-              >
-                <Icon name="Codepen" size={14} />
-              </button>
-            </div>
-          </>
-        }
+        toolbarActions={meshToolbarActions}
         shortcutsLegend="Alt+LMB Orbit • Alt+MMB Pan • Alt+RMB Zoom • RMB Pie"
         onInitGl={handleInitGl}
         onCleanupGl={handleCleanupGl}
@@ -539,7 +760,12 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
               y={pieMenu.y}
               currentMode={meshComponentMode}
               onSelectMode={m => {
-                setMeshComponentMode(m);
+                if (assetViewportAllows(currentAsset.type, meshModeActionId(m))) {
+                  setMeshComponentMode(m);
+                  setHierarchySection(
+                    m === 'VERTEX' ? 'VERTICES' : m === 'EDGE' ? 'EDGES' : m === 'FACE' ? 'FACES' : 'GEOMETRY',
+                  );
+                }
                 setPieMenu(null);
               }}
               onAction={handlePieAction}
@@ -549,6 +775,6 @@ export const StaticMeshEditor: React.FC<{ assetId: string }> = ({ assetId }) => 
           )
         }
       />
-    </div>
+    </AssetEditorTemplate>
   );
 };

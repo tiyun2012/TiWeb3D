@@ -1,6 +1,8 @@
 
 import { ComponentStorage } from '../ecs/ComponentStorage';
 import { INITIAL_CAPACITY, COMPONENT_MASKS } from '../constants';
+import { LAMBERT_SURFACE_GLSL, MESH_SURFACE_RENDER_MODE } from '../renderers/MeshSurfaceContract';
+import { assetManager } from '../AssetManager';
 
 interface MeshBatch {
     vao: WebGLVertexArrayObject;
@@ -132,16 +134,7 @@ uniform int u_selectedBoneIndex; // For skinning visualization
 layout(location=0) out vec4 outColor;
 layout(location=1) out vec4 outData; 
 
-vec3 getStylizedLighting(vec3 normal, vec3 viewDir, vec3 albedo) {
-    float NdotL = dot(normal, -u_lightDir);
-    float lightBand = smoothstep(0.0, 0.05, NdotL);
-    vec3 shadowColor = vec3(0.05, 0.05, 0.15); 
-    float rim = pow(1.0 - max(dot(normal, viewDir), 0.0), 4.0);
-    vec3 litColor = albedo * u_lightColor * u_lightIntensity;
-    vec3 finalLight = mix(shadowColor * albedo, litColor, lightBand);
-    finalLight += vec3(rim) * 0.5 * u_lightColor;
-    return finalLight;
-}
+${LAMBERT_SURFACE_GLSL}
 
 // Robust Turbo-style Ramp Color for Heatmaps
 vec3 heatMap(float t) {
@@ -161,9 +154,9 @@ void main() {
     vec3 albedo = v_color * texColor.rgb;
     vec3 result = vec3(0.0);
     
-    if (u_renderMode == 0) result = getStylizedLighting(normal, viewDir, albedo);
-    else if (u_renderMode == 1) result = normal * 0.5 + 0.5;
-    else if (u_renderMode == 2) result = albedo;
+    if (u_renderMode == ${MESH_SURFACE_RENDER_MODE.LIT}) result = shadeLambertSurface(normal, u_lightDir, albedo, u_lightColor, u_lightIntensity);
+    else if (u_renderMode == ${MESH_SURFACE_RENDER_MODE.NORMALS}) result = normal * 0.5 + 0.5;
+    else if (u_renderMode == ${MESH_SURFACE_RENDER_MODE.UNLIT}) result = albedo;
     else if (u_renderMode == 5) {
        // Skin Weight Visualization (Ramp Color)
        float influence = 0.0;
@@ -242,6 +235,19 @@ export class MeshRenderSystem {
         gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, 256, 256, 16);
         gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.REPEAT);
+
+        // Every layer starts white. The built-in Lambert fallback therefore
+        // shows entity/vertex color even before any texture asset is uploaded.
+        const white = new Uint8Array(256 * 256 * 4);
+        white.fill(255);
+        for (let layer = 0; layer < 16; layer++) {
+            gl.texSubImage3D(
+                gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer, 256, 256, 1,
+                gl.RGBA, gl.UNSIGNED_BYTE, white
+            );
+        }
     }
 
     private initBoneTexture(gl: WebGL2RenderingContext) {
@@ -386,8 +392,19 @@ export class MeshRenderSystem {
     prepareBuckets(store: ComponentStorage, count: number) {
         this.buckets.clear(); this.excludedBuckets.clear();
         for (let i = 0; i < count; i++) {
-            if (store.isActive[i] && store.meshType[i] !== 0) { 
-                const key = (store.materialIndex[i] << 16) | store.meshType[i];
+            if (store.isActive[i] && store.meshType[i] !== 0) {
+                // Entity material overrides the mesh asset default. An empty slot
+                // falls back to the mesh asset material, then built-in Lambert.
+                let materialIndex = store.materialIndex[i];
+                if (materialIndex === 0) {
+                    const meshUuid = assetManager.getMeshUUID(store.meshType[i]);
+                    const meshAsset = meshUuid ? assetManager.getAsset(meshUuid) : null;
+                    const assetMaterialId = meshAsset && (meshAsset.type === 'MESH' || meshAsset.type === 'SKELETAL_MESH')
+                        ? meshAsset.materialId
+                        : undefined;
+                    if (assetMaterialId) materialIndex = assetManager.getMaterialID(assetMaterialId);
+                }
+                const key = (materialIndex << 16) | store.meshType[i];
                 if (store.effectIndex[i] >= 99.5) { 
                     if(!this.excludedBuckets.has(key)) this.excludedBuckets.set(key, []); 
                     this.excludedBuckets.get(key)!.push(i); 

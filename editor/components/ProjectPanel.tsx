@@ -10,15 +10,32 @@ import { engineInstance } from '@/engine/engine';
 import { NodeGraph } from './NodeGraph';
 import { ImportWizard } from './ImportWizard';
 import { StaticMeshEditor } from './StaticMeshEditor';
+import { SkeletalMeshEditor } from './SkeletalMeshEditor';
 import { SkeletonEditor } from './SkeletonEditor';
 import { consoleService } from '@/engine/Console';
 import { Asset, AssetType } from '@/types';
 import { eventBus } from '@/engine/EventBus';
+import { assetTypeRegistry, AssetCreateCategory } from '@/engine/AssetTypeRegistry';
 
 type ViewMode = 'GRID' | 'LIST';
 
+const CREATE_CATEGORY_ORDER: AssetCreateCategory[] = ['Project', 'Rendering', 'Animation', 'Logic', 'Physics', 'Other'];
+
 const getSubFolders = (assets: Asset[], path: string) => {
     return assets.filter(a => a.type === 'FOLDER' && a.path === path);
+};
+
+const getAssetEditorWindowLayout = () => {
+    const width = Math.max(820, Math.min(1180, window.innerWidth - 80));
+    const height = Math.max(620, Math.min(760, window.innerHeight - 80));
+    return {
+        width,
+        height,
+        initialPosition: {
+            x: Math.max(40, (window.innerWidth - width) / 2),
+            y: Math.max(40, (window.innerHeight - height) / 2),
+        },
+    };
 };
 
 const AssetItem: React.FC<{ 
@@ -41,21 +58,9 @@ const AssetItem: React.FC<{
         }
     }, [renaming]);
 
-    const iconName = asset.type === 'FOLDER' ? 'Folder' : (
-        asset.type === 'MATERIAL' ? 'Palette' : (
-        asset.type === 'MESH' ? 'Box' : (
-        asset.type === 'SKELETAL_MESH' ? 'PersonStanding' : (
-        asset.type === 'TEXTURE' ? 'Image' : (
-        asset.type === 'SCRIPT' ? 'FileCode' : (
-        asset.type === 'RIG' ? 'GitBranch' : (
-        asset.type === 'SCENE' ? 'Clapperboard' : 'File'
-    )))))));
-
-    const color = asset.type === 'FOLDER' ? 'text-yellow-500' : (
-        asset.type === 'MATERIAL' ? 'text-emerald-400' : (
-        asset.type === 'MESH' ? 'text-blue-400' : (
-        asset.type === 'SKELETAL_MESH' ? 'text-purple-400' : 'text-text-secondary'
-    )));
+    const assetDefinition = assetTypeRegistry.get(asset.type);
+    const iconName = asset.type === 'FOLDER' ? 'Folder' : (assetDefinition?.icon ?? 'File');
+    const color = assetDefinition?.colorClass ?? 'text-text-secondary';
 
     return (
         <div 
@@ -121,6 +126,10 @@ export const ProjectPanel: React.FC = () => {
     // Context Menu State
     const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'BG' | 'ASSET', assetId?: string } | null>(null);
     const [renamingId, setRenamingId] = useState<string | null>(null);
+    const [, setAssetRegistryVersion] = useState(0);
+
+    // Keep the Create menu live when modules/plugins register asset types after startup.
+    useEffect(() => assetTypeRegistry.subscribe(() => setAssetRegistryVersion((version) => version + 1)), []);
 
     // Editors
 
@@ -167,13 +176,13 @@ export const ProjectPanel: React.FC = () => {
     };
 
     const handleCreate = (type: AssetType) => {
-        if (type === 'MATERIAL') assetManager.createMaterial('New Material', undefined, currentPath);
-        if (type === 'SCRIPT') assetManager.createScript('New Script', currentPath);
-        if (type === 'RIG') assetManager.createRig('New Rig', undefined, currentPath);
-        if (type === 'SCENE') assetManager.createScene('New Scene', '{}', currentPath);
-        if (type === 'FOLDER') assetManager.createFolder('New Folder', currentPath);
-        if (type === 'PHYSICS_MATERIAL') assetManager.createPhysicsMaterial('New Physics Mat', undefined, currentPath);
-        if (type === 'SKELETON') assetManager.createSkeleton('New Skeleton', currentPath);
+        try {
+            const created = assetTypeRegistry.create(type, { path: currentPath });
+            setSelectedAssetIds([created.id]);
+            setRenamingId(created.id);
+        } catch (error) {
+            consoleService.error(error instanceof Error ? error.message : String(error));
+        }
     };
 
     const handleOpen = (asset: Asset) => {
@@ -197,10 +206,10 @@ export const ProjectPanel: React.FC = () => {
                 id: winId,
                 title: asset.name,
                 icon: asset.type === 'MESH' ? 'Box' : 'Bone',
-                content: <StaticMeshEditor assetId={asset.id} />,
-                width: 800,
-                height: 600,
-                initialPosition: { x: Math.max(50, window.innerWidth / 2 - 400), y: Math.max(50, window.innerHeight / 2 - 300) }
+                content: asset.type === 'SKELETAL_MESH'
+                    ? <SkeletalMeshEditor assetId={asset.id} />
+                    : <StaticMeshEditor assetId={asset.id} />,
+                ...getAssetEditorWindowLayout()
             });
             wm?.openWindow(winId);
         } else if (asset.type === 'SKELETON') {
@@ -210,9 +219,7 @@ export const ProjectPanel: React.FC = () => {
                 title: asset.name,
                 icon: 'Bone',
                 content: <SkeletonEditor assetId={asset.id} />,
-                width: 800,
-                height: 600,
-                initialPosition: { x: Math.max(50, window.innerWidth / 2 - 400), y: Math.max(50, window.innerHeight / 2 - 300) }
+                ...getAssetEditorWindowLayout()
             });
             wm?.openWindow(winId);
         } else if (asset.type === 'SCENE') {
@@ -237,6 +244,12 @@ export const ProjectPanel: React.FC = () => {
     };
 
     const pathParts = currentPath.split('/').filter(Boolean);
+    const createGroups = CREATE_CATEGORY_ORDER
+        .map((category) => ({
+            category,
+            definitions: assetTypeRegistry.getCreatable().filter((definition) => (definition.createCategory ?? 'Other') === category),
+        }))
+        .filter((group) => group.definitions.length > 0);
 
     return (
         <div className="h-full flex flex-col bg-[#1a1a1a] text-xs font-sans relative" onContextMenu={(e) => e.preventDefault()}>
@@ -375,16 +388,28 @@ export const ProjectPanel: React.FC = () => {
                 >
                     {contextMenu.type === 'BG' && (
                         <>
-                            <div className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2" onClick={() => { handleCreate('FOLDER'); setContextMenu(null); }}>
-                                <Icon name="FolderPlus" size={14} /> New Folder
-                            </div>
-                            <div className="border-t border-white/10 my-1"></div>
-                            <div className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer" onClick={() => { handleCreate('SCENE'); setContextMenu(null); }}>Scene</div>
-                            <div className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer" onClick={() => { handleCreate('MATERIAL'); setContextMenu(null); }}>Material</div>
-                            <div className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer" onClick={() => { handleCreate('SCRIPT'); setContextMenu(null); }}>Script</div>
-                            <div className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer" onClick={() => { handleCreate('RIG'); setContextMenu(null); }}>Rig</div>
-                            <div className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer" onClick={() => { handleCreate('PHYSICS_MATERIAL'); setContextMenu(null); }}>Physics Material</div>
-                            <div className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer" onClick={() => { handleCreate('SKELETON'); setContextMenu(null); }}>Skeleton</div>
+                            {createGroups.map((group, groupIndex) => (
+                                <React.Fragment key={group.category}>
+                                    {groupIndex > 0 && <div className="border-t border-white/10 my-1" />}
+                                    <div className="px-3 pt-1.5 pb-1 text-[9px] uppercase tracking-wider text-text-secondary/60 select-none">
+                                        {group.category}
+                                    </div>
+                                    {group.definitions.map((definition) => (
+                                        <div
+                                            key={definition.type}
+                                            className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2"
+                                            title={definition.description}
+                                            onClick={() => {
+                                                handleCreate(definition.type);
+                                                setContextMenu(null);
+                                            }}
+                                        >
+                                            <Icon name={definition.icon as any} size={14} className={definition.colorClass} />
+                                            <span>{definition.label}</span>
+                                        </div>
+                                    ))}
+                                </React.Fragment>
+                            ))}
                         </>
                     )}
 
@@ -392,12 +417,15 @@ export const ProjectPanel: React.FC = () => {
                         <>
                             {(() => {
                                 const a = assetManager.getAsset(contextMenu.assetId);
-                                const canPlace = a && (a.type === 'MESH' || a.type === 'SKELETAL_MESH' || a.type === 'SKELETON');
+                                const canPlace = a && (a.type === 'MESH' || a.type === 'SKELETAL_MESH' || a.type === 'SKELETON' || a.type === 'CAMERA_PRESET');
                                 if (canPlace) return (
                                     <>
                                         <div className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2" 
                                             onClick={() => { 
-                                                const newId = engineInstance.createEntityFromAsset(contextMenu.assetId!, { x: 0, y: 0, z: 0 });
+                                                const selectedAsset = assetManager.getAsset(contextMenu.assetId!);
+                                                const newId = selectedAsset?.type === 'CAMERA_PRESET'
+                                                    ? engineInstance.createCameraFromPreset(contextMenu.assetId!, { x: 0, y: 0, z: 0 })
+                                                    : engineInstance.createEntityFromAsset(contextMenu.assetId!, { x: 0, y: 0, z: 0 });
                                                 setContextMenu(null);
                                             }}>
                                             <Icon name="PlusSquare" size={14} /> Place in Scene

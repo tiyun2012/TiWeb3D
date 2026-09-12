@@ -2,10 +2,18 @@
 import { GraphNode, GraphConnection } from '@/types';
 import { NodeRegistry } from './NodeRegistry';
 import { SHADER_VARYINGS } from './constants';
+import { DISPLAY_TRANSFER_GLSL, MESH_SURFACE_RENDER_MODE, STANDARD_SURFACE_GLSL } from './renderers/MeshSurfaceContract';
 
-interface CompileResult {
+export interface ShaderCompileResult {
     vs: string;
     fs: string;
+}
+
+export interface ShaderCompileOptions {
+    /** Convert linear shader output to display space for direct-to-canvas previews. */
+    directToDisplay?: boolean;
+    /** Emit only color target 0 for default-framebuffer preview rendering. */
+    singleTarget?: boolean;
 }
 
 const safeFloat = (val: any): string => {
@@ -52,7 +60,11 @@ const SOFT_SEL_LOGIC = `
             }
 `;
 
-export const compileShader = (nodes: GraphNode[], connections: GraphConnection[]): CompileResult | string => {
+export const compileShader = (
+    nodes: GraphNode[],
+    connections: GraphConnection[],
+    options: ShaderCompileOptions = {},
+): ShaderCompileResult | string => {
     const outNode = nodes.find(n => n.type === 'StandardMaterial' || n.type === 'ShaderOutput');
     if (!outNode) return '';
 
@@ -127,29 +139,12 @@ export const compileShader = (nodes: GraphNode[], connections: GraphConnection[]
     const vsFinalAssignment = vsData.finalVar ? `vertexOffset = vec3(${vsData.finalVar});` : '';
 
     let fsSource = '';
-    const fsGlobals: string[] = [`
-    const float PI = 3.14159265359;
-    float DistributionGGX(vec3 N, vec3 H, float roughness) {
-        float a = roughness*roughness; float a2 = a*a; float NdotH = max(dot(N, H), 0.0); float NdotH2 = NdotH*NdotH;
-        float num = a2; float denom = (NdotH2 * (a2 - 1.0) + 1.0); denom = PI * denom * denom; return num / max(denom, 0.0000001);
-    }
-    float GeometrySchlickGGX(float NdotV, float roughness) {
-        float r = (roughness + 1.0); float k = (r*r) / 8.0; return NdotV / (NdotV * (1.0 - k) + k);
-    }
-    float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
-        return GeometrySchlickGGX(max(dot(N, V), 0.0), roughness) * GeometrySchlickGGX(max(dot(N, L), 0.0), roughness);
-    }
-    vec3 fresnelSchlick(float cosTheta, vec3 F0) { return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0); }
-    vec3 getFakeIBL(vec3 N, vec3 V, float roughness, vec3 F0, vec3 albedo, float metallic) {
-        vec3 R = reflect(-V, N); float skyMix = smoothstep(-0.2, 0.2, R.y);
-        vec3 skyColor = vec3(0.3, 0.5, 0.8) * 1.2; vec3 groundColor = vec3(0.1, 0.1, 0.1);    
-        vec3 envColor = mix(groundColor, skyColor, skyMix) * (1.0 - roughness * 0.5);
-        vec3 F = fresnelSchlick(max(dot(N, V), 0.0), F0);
-        return mix(envColor * albedo * (vec3(1.0)-F) * (1.0-metallic) * 0.2, envColor * F * (1.0 - roughness), 1.0);
-    }
-    `];
+    const fsGlobals: string[] = [STANDARD_SURFACE_GLSL];
 
     const fsBody: string[] = [];
+    const displayColorExpr = (expr: string) => options.directToDisplay ? `linearToDisplay(${expr})` : expr;
+    const outDataAssignment = options.singleTarget ? '' : 'outData = vec4(v_effectIndex / 255.0, 0.0, 0.0, 1.0);';
+    if (options.directToDisplay) fsGlobals.push(DISPLAY_TRANSFER_GLSL);
     if (isPBR) {
         const albedo = generateGraphFromInput('albedo'); const metallic = generateGraphFromInput('metallic');
         const smoothness = generateGraphFromInput('smoothness'); const emission = generateGraphFromInput('emission');
@@ -163,7 +158,7 @@ export const compileShader = (nodes: GraphNode[], connections: GraphConnection[]
         void main() {
             ${fsBody.join('\n        ')}
             vec3 N = normalize(${normal.finalVar ? toVec3(normal.finalVar) : 'v_normal'});
-            vec3 V = normalize(u_cameraPos - v_worldPos); vec3 L = normalize(-u_lightDir); vec3 H = normalize(V + L);
+            vec3 V = normalize(u_cameraPos - v_worldPos);
             
             // [MODIFIED] Correct particle color tint (Raw color, let shader handle alpha)
             vec3 albedoVal = ${toVec3(albedo.finalVar, 'vec3(1.0)')} * v_color;
@@ -194,20 +189,24 @@ export const compileShader = (nodes: GraphNode[], connections: GraphConnection[]
             if (alphaVal < alphaClipVal) discard;
             if (alphaVal < 0.01) discard;
             
-            vec3 F0 = mix(vec3(0.04), albedoVal, metallicVal);
-            float NDF = DistributionGGX(N, H, roughnessVal); float G = GeometrySmith(N, V, L, roughnessVal);
-            vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-            vec3 specular = (NDF * G * F) / (4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001);
-            vec3 directLight = ((vec3(1.0) - F) * (1.0 - metallicVal) * albedoVal / PI + specular) * u_lightColor * u_lightIntensity * max(dot(N, L), 0.0);
-            
-            vec3 finalColor = directLight + getFakeIBL(N, V, roughnessVal, F0, albedoVal, metallicVal) + emissionVal;
+            vec3 finalColor = shadeStandardSurface(
+                N,
+                V,
+                u_lightDir,
+                albedoVal,
+                metallicVal,
+                roughnessVal,
+                u_lightColor,
+                u_lightIntensity
+            ) + emissionVal;
             finalColor += vec3(pow(1.0 - max(dot(N, V), 0.0), 4.0)) * rimStrengthVal * u_lightColor;
             
-            if (u_renderMode == 1) finalColor = N * 0.5 + 0.5;
+            if (u_renderMode == ${MESH_SURFACE_RENDER_MODE.NORMALS}) finalColor = N * 0.5 + 0.5;
+            else if (u_renderMode == ${MESH_SURFACE_RENDER_MODE.UNLIT}) finalColor = albedoVal + emissionVal;
             ${SOFT_SEL_LOGIC}
             
-            outColor = vec4(finalColor, alphaVal); 
-            outData = vec4(v_effectIndex / 255.0, 0.0, 0.0, 1.0);
+            outColor = vec4(${displayColorExpr('finalColor')}, alphaVal); 
+            ${outDataAssignment}
         }`;
     } else {
         const rgb = generateGraphFromInput('rgb'); fsGlobals.push(...rgb.functions);
@@ -218,7 +217,7 @@ export const compileShader = (nodes: GraphNode[], connections: GraphConnection[]
             // [MODIFIED] Correct particle color tint
             vec3 finalColor = ${rgbVar} * v_color; 
             
-            if (u_renderMode == 1) finalColor = normalize(v_normal) * 0.5 + 0.5; 
+            if (u_renderMode == ${MESH_SURFACE_RENDER_MODE.NORMALS}) finalColor = normalize(v_normal) * 0.5 + 0.5; 
             
             float alphaVal = 1.0;
             if (u_isParticle == 1) {
@@ -232,8 +231,8 @@ export const compileShader = (nodes: GraphNode[], connections: GraphConnection[]
             if (alphaVal < 0.01) discard;
 
             ${SOFT_SEL_LOGIC} 
-            outColor = vec4(finalColor, alphaVal); 
-            outData = vec4(v_effectIndex / 255.0, 0.0, 0.0, 1.0); 
+            outColor = vec4(${displayColorExpr('finalColor')}, alphaVal); 
+            ${outDataAssignment} 
         }`;
     }
     const vsSource = `// --- Global Functions (VS) ---\n${vsData.functions.join('\n')}\n// --- Graph Body (VS) ---\n${vsData.body}\n${vsFinalAssignment}`;
@@ -257,8 +256,8 @@ export const compileShader = (nodes: GraphNode[], connections: GraphConnection[]
     ${varyingHeader}
     // ---------------------------
     
-    layout(location=0) out vec4 outColor; 
-    layout(location=1) out vec4 outData; 
+    layout(location=0) out vec4 outColor;
+    ${options.singleTarget ? '' : 'layout(location=1) out vec4 outData;'}
     
     ${HEATMAP_FUNC} 
     ${[...new Set(fsGlobals)].join('\n')} 

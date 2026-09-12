@@ -811,28 +811,54 @@ export const RayUtils = {
     },
 
     intersectAABB: (ray: Ray, aabb: AABB): number | null => {
-        let tmin = (aabb.min.x - ray.origin.x) / ray.direction.x;
-        let tmax = (aabb.max.x - ray.origin.x) / ray.direction.x;
-        if (tmin > tmax) { const temp = tmin; tmin = tmax; tmax = temp; }
+        // Robust slab intersection. The previous direct divisions could produce NaN for
+        // rays parallel to a slab and starting exactly on its boundary (0 / 0), which
+        // made BVH traversal/picking intermittent for axis-aligned views.
+        const EPSILON = 1e-12;
+        let tmin = -Infinity;
+        let tmax = Infinity;
 
-        let tymin = (aabb.min.y - ray.origin.y) / ray.direction.y;
-        let tymax = (aabb.max.y - ray.origin.y) / ray.direction.y;
-        if (tymin > tymax) { const temp = tymin; tymin = tymax; tymax = temp; }
+        const ox = ray.origin.x, oy = ray.origin.y, oz = ray.origin.z;
+        const dx = ray.direction.x, dy = ray.direction.y, dz = ray.direction.z;
 
-        if ((tmin > tymax) || (tymin > tmax)) return null;
-        if (tymin > tmin) tmin = tymin;
-        if (tymax < tmax) tmax = tymax;
+        if (Math.abs(dx) < EPSILON) {
+            if (ox < aabb.min.x || ox > aabb.max.x) return null;
+        } else {
+            let t1 = (aabb.min.x - ox) / dx;
+            let t2 = (aabb.max.x - ox) / dx;
+            if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+            tmin = Math.max(tmin, t1);
+            tmax = Math.min(tmax, t2);
+            if (tmin > tmax) return null;
+        }
 
-        let tzmin = (aabb.min.z - ray.origin.z) / ray.direction.z;
-        let tzmax = (aabb.max.z - ray.origin.z) / ray.direction.z;
-        if (tzmin > tzmax) { const temp = tzmin; tzmin = tzmax; tzmax = temp; }
+        if (Math.abs(dy) < EPSILON) {
+            if (oy < aabb.min.y || oy > aabb.max.y) return null;
+        } else {
+            let t1 = (aabb.min.y - oy) / dy;
+            let t2 = (aabb.max.y - oy) / dy;
+            if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+            tmin = Math.max(tmin, t1);
+            tmax = Math.min(tmax, t2);
+            if (tmin > tmax) return null;
+        }
 
-        if ((tmin > tzmax) || (tzmin > tmax)) return null;
-        if (tzmin > tmin) tmin = tzmin;
-        if (tzmax < tmax) tmax = tzmax;
+        if (Math.abs(dz) < EPSILON) {
+            if (oz < aabb.min.z || oz > aabb.max.z) return null;
+        } else {
+            let t1 = (aabb.min.z - oz) / dz;
+            let t2 = (aabb.max.z - oz) / dz;
+            if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+            tmin = Math.max(tmin, t1);
+            tmax = Math.min(tmax, t2);
+            if (tmin > tmax) return null;
+        }
 
         if (tmax < 0) return null;
-        return tmin > 0 ? tmin : tmax;
+        // If the ray starts inside the box, the traversal entry distance is zero.
+        // Returning the exit distance can incorrectly prune a BVH node after a
+        // nearer hit has already been found in a sibling node.
+        return tmin > 0 ? tmin : 0;
     },
 
     intersectTriangle: (ray: Ray, v0: Vec3, v1: Vec3, v2: Vec3): number | null => {

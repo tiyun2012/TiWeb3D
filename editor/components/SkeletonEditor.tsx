@@ -2,23 +2,35 @@ import React, { useEffect, useMemo, useRef, useState, useContext, useCallback } 
 import { createPortal } from 'react-dom';
 import * as THREE from 'three';
 
-import { SkeletalMeshAsset, SkeletonAsset, ToolType } from '@/types';
+import { BoneData, SkeletalMeshAsset, SkeletonAsset, ToolType } from '@/types';
 import { assetManager } from '@/engine/AssetManager';
 import { AssetViewportEngine } from '@/editor/viewports/AssetViewportEngine';
 import { GizmoSystem } from '@/engine/GizmoSystem';
 import { Mat4Utils } from '@/engine/math';
+import { buildMeshEdgeIndices, MESH_EDGE_COLORS } from '@/engine/MeshEdgeGeometry';
+import {
+  applyMeshSurfaceUniforms,
+  DEFAULT_MESH_PREVIEW_LIGHT,
+  MESH_SURFACE_RENDER_MODE,
+} from '@/engine/renderers/MeshSurfaceContract';
+import { MeshEdgeOverlay } from '@/editor/viewports/MeshEdgeOverlay';
 import { EditorContext, SkeletonVizSettings, DEFAULT_SKELETON_VIZ } from '@/editor/state/EditorContext';
 
 import { Icon } from './Icon';
 import { SkeletonHierarchy } from './SkeletonHierarchy';
 import { AssetViewport3D, AssetViewportRenderArgs, CameraState } from './AssetViewport3D';
+import { AssetEditorTemplate } from './asset-editor/AssetEditorTemplate';
+import { AssetViewportToolbarAction } from './asset-editor/assetViewportCapabilities';
 import { JointInspector } from './inspector/JointInspector';
 import { SkeletonAssetInspector } from './inspector/SkeletonAssetInspector';
 import { SkeletonDisplayOptions } from './inspector/SkeletonDisplayOptions';
 import {
   generateWireSphereLines,
   generateBoneOctahedronLines,
-  generateAxisLines
+  generateAxisLines,
+  getMatrixUnitAxes,
+  getSkeletonJointRadius,
+  transformLocalDirectionByAxes
 } from '@/engine/renderers/DebugRenderer';
 
 function distToSegment2D(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
@@ -31,7 +43,30 @@ function distToSegment2D(px: number, py: number, x1: number, y1: number, x2: num
   return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
 }
 
-export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
+function cloneBoneData(bone: BoneData): BoneData {
+  return {
+    ...bone,
+    bindPose: new Float32Array(bone.bindPose),
+    inverseBindPose: new Float32Array(bone.inverseBindPose),
+    visual: bone.visual
+      ? {
+          ...bone.visual,
+          color: bone.visual.color ? { ...bone.visual.color } : undefined,
+        }
+      : undefined,
+  };
+}
+
+function cloneBoneList(bones: readonly BoneData[]): BoneData[] {
+  return bones.map(cloneBoneData);
+}
+
+export interface SkeletonEditorProps {
+  assetId: string;
+  editorHeaderExtra?: React.ReactNode;
+}
+
+export const SkeletonEditor: React.FC<SkeletonEditorProps> = ({ assetId, editorHeaderExtra }) => {
   const [refresh, setRefresh] = useState(0);
   const [tool, setTool] = useState<ToolType>('SELECT');
   const [selectedBoneIndex, setSelectedBoneIndex] = useState<number | null>(null);
@@ -40,6 +75,12 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
   useEffect(() => {
     selectedBoneIndexRef.current = selectedBoneIndex;
   }, [selectedBoneIndex]);
+
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editDirty, setEditDirty] = useState(false);
+  const [draftRevision, setDraftRevision] = useState(0);
+  const editBonesRef = useRef<BoneData[] | null>(null);
+  const editAssetIdRef = useRef<string | null>(null);
 
   // Unified Skeleton Visualization Options (synced with EditorContext or local)
   const editorCtx = useContext(EditorContext);
@@ -51,7 +92,6 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     displayOptionsRef.current = displayOptions;
   }, [displayOptions]);
 
-  const [showInspector, setShowInspector] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [showMesh, setShowMesh] = useState(true);
   const [showWireframeMesh, setShowWireframeMesh] = useState(false);
@@ -76,7 +116,18 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
       return a as SkeletonAsset | SkeletalMeshAsset;
     }
     return null;
-  }, [assetId, refresh]);
+  }, [assetId, refresh, isEditMode]);
+
+  // Edit mode uses a private draft. The AssetManager remains the source of the
+  // last confirmed pose until the user explicitly confirms the edit session.
+  const editorAsset = useMemo(() => {
+    if (!currentAsset) return null;
+    if (!isEditMode || editAssetIdRef.current !== assetId || !editBonesRef.current) return currentAsset;
+    return {
+      ...currentAsset,
+      skeleton: { ...currentAsset.skeleton, bones: editBonesRef.current },
+    } as SkeletonAsset | SkeletalMeshAsset;
+  }, [currentAsset, assetId, isEditMode, draftRevision]);
 
   // Associated Skeletal Mesh (if this skeleton is linked to a mesh)
   const associatedMesh = useMemo(() => {
@@ -98,11 +149,18 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
   const [previewEngine, setPreviewEngine] = useState<AssetViewportEngine | null>(null);
   const [gizmoSystem, setGizmoSystem] = useState<GizmoSystem | null>(null);
   const [transformRevision, setTransformRevision] = useState<number>(0);
+  // Live gizmo edits stay local to the private edit draft. ASSET_UPDATED is
+  // emitted only by explicit Confirm; mouse movement and mouse-up never persist.
+  const skeletonAssetDirtyRef = useRef(false);
   const boneEntitiesRef = useRef<string[]>([]);
+  // Snapshot the authored local bone direction when this editor session/rebuild starts.
+  // Gizmo translation updates bindPose live, so reading bindPose during the drag would make
+  // the visual base rotate with the child and reintroduce the twisting artifact.
+  const boneVisualRestDirectionsRef = useRef<Array<[number, number, number]>>([]);
 
   // Camera Framing
   const fitCamera = useMemo(() => {
-    if (!currentAsset || !currentAsset.skeleton?.bones?.length) {
+    if (!editorAsset || !editorAsset.skeleton?.bones?.length) {
       return { radius: 3.5, target: { x: 0, y: 1.0, z: 0 } };
     }
 
@@ -118,7 +176,7 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
       return { radius: Math.max(maxDim * 1.6, 2.0), target: center };
     }
 
-    const bones = currentAsset.skeleton.bones;
+    const bones = editorAsset.skeleton.bones;
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
 
@@ -143,7 +201,18 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
       z: (minZ + maxZ) * 0.5,
     };
     return { radius: Math.max(maxDim * 2.2, 2.5), target: center };
-  }, [currentAsset, associatedMesh]);
+  }, [editorAsset, associatedMesh]);
+
+  useEffect(() => {
+    // Draft edits never cross asset boundaries. Switching assets without confirming
+    // discards the draft and therefore returns to the last confirmed pose.
+    editBonesRef.current = null;
+    editAssetIdRef.current = null;
+    setIsEditMode(false);
+    setEditDirty(false);
+    setSelectedBoneIndex(null);
+    setTool('SELECT');
+  }, [assetId]);
 
   const [camera, setCamera] = useState<CameraState>({
     theta: 0.6,
@@ -152,21 +221,28 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     target: { ...fitCamera.target },
   });
 
-  // Rebuild preview engine & bone entities when asset changes
+  // Rebuild preview engine & bone entities when asset/edit-session structure changes.
   useEffect(() => {
-    const asset = assetManager.getAsset(assetId) as SkeletonAsset | SkeletalMeshAsset | undefined;
-    if (!asset || !asset.skeleton?.bones) return;
+    const savedAsset = assetManager.getAsset(assetId) as SkeletonAsset | SkeletalMeshAsset | undefined;
+    if (!savedAsset || !savedAsset.skeleton?.bones) return;
+
+    const bones = isEditMode && editAssetIdRef.current === assetId && editBonesRef.current
+      ? editBonesRef.current
+      : savedAsset.skeleton.bones;
 
     const onNotifyUI = () => {
-      const curAsset = assetManager.getAsset(assetId) as SkeletonAsset | SkeletalMeshAsset | undefined;
+      // Pose/View mode is intentionally read-only. Selection/UI notifications must
+      // never write preview transforms back into the confirmed skeleton.
+      if (!isEditMode || editAssetIdRef.current !== assetId || !editBonesRef.current) return;
+
       const engine = previewEngineRef.current;
       const ids = boneEntitiesRef.current;
-      if (!curAsset || !engine || !ids.length) return;
+      const draftBones = editBonesRef.current;
+      if (!engine || !ids.length) return;
 
       let changed = false;
-      const bones = curAsset.skeleton.bones;
 
-      bones.forEach((b: any, i: number) => {
+      draftBones.forEach((b: any, i: number) => {
         const id = ids[i];
         if (!id) return;
         const idx = engine.ecs.idToIndex.get(id);
@@ -207,7 +283,10 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
       });
 
       if (changed) {
-        assetManager.updateAsset(curAsset.id, { skeleton: { ...curAsset.skeleton, bones } });
+        // The draft is private to this SkeletonEditor session. Nothing is written
+        // to AssetManager until the user explicitly confirms the edit.
+        skeletonAssetDirtyRef.current = true;
+        setEditDirty(true);
         setTransformRevision(r => r + 1);
       }
     };
@@ -215,7 +294,11 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     const engine = new AssetViewportEngine(onNotifyUI);
     engine.meshComponentMode = 'OBJECT';
 
-    const bones = asset.skeleton.bones;
+    boneVisualRestDirectionsRef.current = bones.map((b: any) => [
+      b.bindPose?.[12] ?? 0,
+      b.bindPose?.[13] ?? 1,
+      b.bindPose?.[14] ?? 0,
+    ] as [number, number, number]);
     const ids = bones.map((b: any) => engine.ecs.createEntity(b.name || 'Joint'));
     boneEntitiesRef.current = ids;
 
@@ -263,7 +346,7 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
       setPreviewEngine(null);
       setGizmoSystem(null);
     };
-  }, [assetId, refresh]);
+  }, [assetId, refresh, isEditMode]);
 
   // Sync tool change
   useEffect(() => {
@@ -291,7 +374,7 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     const engine = previewEngineRef.current;
     const ids = boneEntitiesRef.current;
     if (engine && ids) {
-      const curSelectedId = Array.from(engine.selectionSystem.selectedEntityIds)[0] || null;
+      const curSelectedId = Array.from(engine.selectionSystem.selectedEntities)[0] ?? null;
       const targetId = selectedBoneIndex !== null && ids[selectedBoneIndex] ? ids[selectedBoneIndex] : null;
       if (curSelectedId !== targetId) {
         if (targetId) {
@@ -313,6 +396,7 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     meshVbo: WebGLBuffer | null;
     meshNbo: WebGLBuffer | null;
     meshIbo: WebGLBuffer | null;
+    meshEdgeOverlay: MeshEdgeOverlay;
   }>({
     boneVao: null,
     boneVbo: null,
@@ -320,6 +404,7 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     meshVbo: null,
     meshNbo: null,
     meshIbo: null,
+    meshEdgeOverlay: new MeshEdgeOverlay(),
   });
 
   const handleInitGl = (gl: WebGL2RenderingContext) => {
@@ -359,7 +444,17 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
       gl.bindVertexArray(null);
     }
 
-    glResourcesRef.current = { boneVao, boneVbo, meshVao, meshVbo, meshNbo, meshIbo };
+    const meshEdgeOverlay = new MeshEdgeOverlay();
+    if (associatedMesh?.geometry && meshVbo) {
+      meshEdgeOverlay.init(
+        gl,
+        meshVbo,
+        buildMeshEdgeIndices(associatedMesh.geometry.indices, associatedMesh.topology?.faces),
+        gl.STATIC_DRAW,
+      );
+    }
+
+    glResourcesRef.current = { boneVao, boneVbo, meshVao, meshVbo, meshNbo, meshIbo, meshEdgeOverlay };
   };
 
   const handleCleanupGl = (gl: WebGL2RenderingContext) => {
@@ -370,13 +465,14 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     if (res.meshVbo) gl.deleteBuffer(res.meshVbo);
     if (res.meshNbo) gl.deleteBuffer(res.meshNbo);
     if (res.meshIbo) gl.deleteBuffer(res.meshIbo);
+    res.meshEdgeOverlay.dispose(gl);
   };
 
   // Accurate, Depth-Aware Joint and Bone Screen Detection
   const findBoneAtScreen = useCallback(
     (screenX: number, screenY: number) => {
       const engine = previewEngineRef.current;
-      const asset = currentAsset;
+      const asset = editorAsset;
       const bones = asset?.skeleton?.bones;
       const ids = boneEntitiesRef.current;
       if (!engine || !bones || !bones.length || !ids.length) return null;
@@ -552,7 +648,7 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
 
       return null;
     },
-    [currentAsset]
+    [editorAsset]
   );
 
   // Synchronous hover state & label update with zero latency
@@ -578,35 +674,55 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
 
   // Render Skeleton Pass
   const handleRender = (args: AssetViewportRenderArgs) => {
-    const { gl, vp, lineProgram, meshProgram } = args;
+    const { gl, vp, lineProgram, meshProgram, eye } = args;
     const engine = previewEngineRef.current;
-    const asset = currentAsset;
+    const asset = editorAsset;
     const bones = asset?.skeleton?.bones || [];
     const ids = boneEntitiesRef.current;
     const curSelected = selectedBoneIndexRef.current;
     const mouse = mouseRef.current;
     const res = glResourcesRef.current;
 
-    // 1. Draw Associated Mesh (if enabled)
+    // 1. Draw Associated Mesh (if enabled). Both shaded and wireframe views use
+    // the same authored polygon-edge source as StaticMeshEditor. Wireframe mode
+    // first writes mesh depth with color disabled, then draws only visible edges.
     if (showMesh && associatedMesh?.geometry && res.meshVao && res.meshIbo) {
       const model = Mat4Utils.create();
       const mvp = Mat4Utils.create();
       Mat4Utils.multiply(vp, model, mvp);
+      const idxType =
+        associatedMesh.geometry.indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
 
-      if (!showWireframeMesh) {
+      gl.useProgram(meshProgram);
+      gl.uniformMatrix4fv(gl.getUniformLocation(meshProgram, 'u_mvp'), false, mvp);
+      gl.uniformMatrix4fv(gl.getUniformLocation(meshProgram, 'u_model'), false, model);
+      applyMeshSurfaceUniforms(gl, meshProgram, {
+        cameraPosition: eye,
+        renderMode: MESH_SURFACE_RENDER_MODE.LIT,
+        light: DEFAULT_MESH_PREVIEW_LIGHT,
+        material: {
+          albedo: [0.55, 0.6, 0.65],
+          metallic: 0.0,
+          smoothness: 0.5,
+        },
+      });
+      gl.bindVertexArray(res.meshVao);
+
+      if (showWireframeMesh) {
+        // Hidden-line depth prepass. This prevents back-side polygon edges from
+        // showing through the mesh while keeping the wireframe itself reusable.
+        gl.colorMask(false, false, false, false);
+        gl.depthMask(true);
+        gl.enable(gl.POLYGON_OFFSET_FILL);
+        gl.polygonOffset(1, 1);
+        gl.drawElements(gl.TRIANGLES, associatedMesh.geometry.indices.length, idxType, 0);
+        gl.disable(gl.POLYGON_OFFSET_FILL);
+        gl.colorMask(true, true, true, true);
+        res.meshEdgeOverlay.draw(gl, lineProgram, mvp, { ...MESH_EDGE_COLORS.wireframe, a: 0.95 });
+      } else {
         // Shaded ghost mesh
-        gl.useProgram(meshProgram);
-        gl.uniformMatrix4fv(gl.getUniformLocation(meshProgram, 'u_mvp'), false, mvp);
-        gl.uniformMatrix4fv(gl.getUniformLocation(meshProgram, 'u_model'), false, model);
-        gl.uniform3f(gl.getUniformLocation(meshProgram, 'u_lightDir'), 0.5, -1.0, 0.5);
-        gl.uniform3f(gl.getUniformLocation(meshProgram, 'u_color'), 0.55, 0.6, 0.65);
-        gl.uniform1i(gl.getUniformLocation(meshProgram, 'u_renderMode'), 0);
-
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        gl.bindVertexArray(res.meshVao);
-        const idxType =
-          associatedMesh.geometry.indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
         gl.drawElements(gl.TRIANGLES, associatedMesh.geometry.indices.length, idxType, 0);
         gl.disable(gl.BLEND);
       }
@@ -669,10 +785,44 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
               : isBoneHovered
               ? hoveredBoneLines
               : boneLines;
+            const parentBone = bones[b.parentIndex];
+            const parentAxes = getMatrixUnitAxes(pMat);
+            const liveDirection: [number, number, number] = [
+              cMat[12] - pMat[12],
+              cMat[13] - pMat[13],
+              cMat[14] - pMat[14],
+            ];
+            const restDirection = transformLocalDirectionByAxes(
+              boneVisualRestDirectionsRef.current[i],
+              parentAxes,
+              liveDirection
+            );
+            const parentIsRoot = parentBone?.parentIndex === -1;
+            const parentRadius = getSkeletonJointRadius(
+              parentIsRoot,
+              displayOptions.jointRadius,
+              displayOptions.rootScale,
+              'normal'
+            );
+            const childRadius = getSkeletonJointRadius(
+              b.parentIndex === -1,
+              displayOptions.jointRadius,
+              displayOptions.rootScale,
+              'normal'
+            );
+
             generateBoneOctahedronLines(
               [pMat[12], pMat[13], pMat[14]],
               [cMat[12], cMat[13], cMat[14]],
-              targetLines
+              targetLines,
+              {
+                parentRadius,
+                childRadius,
+                parentXAxis: parentAxes.x,
+                parentYAxis: parentAxes.y,
+                parentZAxis: parentAxes.z,
+                restDirection,
+              }
             );
           }
         }
@@ -719,10 +869,12 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
         const sphereLines: number[] = [];
         const isSelected = j.index === curSelected;
         const isHovered = curHovered !== null && j.index === curHovered;
-        const baseRadius = isSelected ? 0.08 : isHovered ? 0.07 : j.isRoot ? 0.06 : 0.045;
-        const radiusScale = displayOptions.jointRadius / 10;
-        const rootScaleFactor = j.isRoot ? displayOptions.rootScale : 1.0;
-        const radius = baseRadius * radiusScale * rootScaleFactor;
+        const radius = getSkeletonJointRadius(
+          j.isRoot,
+          displayOptions.jointRadius,
+          displayOptions.rootScale,
+          isSelected ? 'selected' : isHovered ? 'hovered' : 'normal'
+        );
 
         const id = ids[j.index];
         const worldMat = id ? engine.sceneGraph.getWorldMatrix(id) : null;
@@ -730,12 +882,10 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
         let ry: [number, number, number] = [0, 1, 0];
         let rz: [number, number, number] = [0, 0, 1];
         if (worldMat) {
-          const lenX = Math.hypot(worldMat[0], worldMat[1], worldMat[2]) || 1;
-          const lenY = Math.hypot(worldMat[4], worldMat[5], worldMat[6]) || 1;
-          const lenZ = Math.hypot(worldMat[8], worldMat[9], worldMat[10]) || 1;
-          rx = [worldMat[0] / lenX, worldMat[1] / lenX, worldMat[2] / lenX];
-          ry = [worldMat[4] / lenY, worldMat[5] / lenY, worldMat[6] / lenY];
-          rz = [worldMat[8] / lenZ, worldMat[9] / lenZ, worldMat[10] / lenZ];
+          const axes = getMatrixUnitAxes(worldMat);
+          rx = axes.x;
+          ry = axes.y;
+          rz = axes.z;
         }
 
         generateWireSphereLines([j.x, j.y, j.z], radius, sphereLines, 12, rx, ry, rz);
@@ -817,6 +967,75 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     gl.bindVertexArray(null);
   };
 
+  const markDraftChanged = useCallback((bones?: BoneData[], structural = false) => {
+    if (!isEditMode) return;
+    if (bones) editBonesRef.current = bones;
+    skeletonAssetDirtyRef.current = true;
+    setEditDirty(true);
+    setDraftRevision(r => r + 1);
+    if (structural) setRefresh(r => r + 1);
+  }, [isEditMode]);
+
+  const beginSkeletonEdit = useCallback(() => {
+    if (!currentAsset?.skeleton?.bones) return;
+    editBonesRef.current = cloneBoneList(currentAsset.skeleton.bones);
+    editAssetIdRef.current = assetId;
+    skeletonAssetDirtyRef.current = false;
+    setEditDirty(false);
+    setTool('SELECT');
+    setIsEditMode(true);
+    setDraftRevision(r => r + 1);
+    setRefresh(r => r + 1);
+  }, [currentAsset, assetId]);
+
+  const resetSkeletonDraft = useCallback(() => {
+    if (!isEditMode || !currentAsset?.skeleton?.bones) return;
+    editBonesRef.current = cloneBoneList(currentAsset.skeleton.bones);
+    editAssetIdRef.current = assetId;
+    skeletonAssetDirtyRef.current = false;
+    setEditDirty(false);
+    setTool('SELECT');
+    setSelectedBoneIndex(prev => {
+      const max = currentAsset.skeleton.bones.length - 1;
+      return prev !== null && prev <= max ? prev : null;
+    });
+    setDraftRevision(r => r + 1);
+    setRefresh(r => r + 1);
+  }, [isEditMode, currentAsset, assetId]);
+
+  const cancelSkeletonEdit = useCallback(() => {
+    // The confirmed AssetManager skeleton was never mutated, so cancellation is
+    // simply discarding the draft and rebuilding from the saved pose.
+    editBonesRef.current = null;
+    editAssetIdRef.current = null;
+    skeletonAssetDirtyRef.current = false;
+    setEditDirty(false);
+    setTool('SELECT');
+    setIsEditMode(false);
+    setDraftRevision(r => r + 1);
+    setRefresh(r => r + 1);
+  }, []);
+
+  const confirmSkeletonEdit = useCallback(() => {
+    if (!isEditMode || !currentAsset || !editBonesRef.current) return;
+
+    if (editDirty || skeletonAssetDirtyRef.current) {
+      const committedBones = cloneBoneList(editBonesRef.current);
+      assetManager.updateAsset(currentAsset.id, {
+        skeleton: { ...currentAsset.skeleton, bones: committedBones },
+      });
+    }
+
+    editBonesRef.current = null;
+    editAssetIdRef.current = null;
+    skeletonAssetDirtyRef.current = false;
+    setEditDirty(false);
+    setTool('SELECT');
+    setIsEditMode(false);
+    setDraftRevision(r => r + 1);
+    setRefresh(r => r + 1);
+  }, [isEditMode, editDirty, currentAsset]);
+
   // Viewport Mouse Events
   const handleMouseDown = (
     e: React.MouseEvent,
@@ -854,7 +1073,8 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     _e: MouseEvent,
     _coords: { x: number; y: number; width: number; height: number }
   ) => {
-    // Gizmo drag termination is managed by AssetViewport3D
+    // Gizmo mouse-up ends the local draft transform. The draft remains private
+    // until Confirm is pressed; leaving edit mode through Cancel discards it.
   };
 
   const handleContextMenu = (
@@ -880,8 +1100,8 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
 
   // Bone Hierarchy Operations
   const handleAddJoint = (parentIndex: number) => {
-    if (!currentAsset) return;
-    const bones = [...(currentAsset.skeleton?.bones || [])];
+    if (!isEditMode || !editorAsset) return;
+    const bones = [...(editorAsset.skeleton?.bones || [])];
 
     const identityMatrix = new Float32Array([
       1, 0, 0, 0,
@@ -895,7 +1115,7 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     }
 
     const newIndex = bones.length;
-    const newBone = {
+    const newBone: BoneData = {
       name: `Joint_${newIndex}`,
       parentIndex,
       bindPose: identityMatrix,
@@ -906,20 +1126,19 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
         0, parentIndex >= 0 ? -1.0 : 0, 0, 1,
       ]),
       visual: {
-        color: [0, 1, 0],
+        color: { x: 0, y: 1, z: 0 },
         size: 1.0,
       },
     };
 
     bones.push(newBone);
-    assetManager.updateAsset(currentAsset.id, { skeleton: { ...currentAsset.skeleton, bones } });
+    markDraftChanged(bones, true);
     handleSelectBone(newIndex);
-    setRefresh(r => r + 1);
   };
 
   const handleDeleteJoint = (boneIndex: number) => {
-    if (!currentAsset) return;
-    const bones = currentAsset.skeleton?.bones;
+    if (!isEditMode || !editorAsset) return;
+    const bones = editorAsset.skeleton?.bones;
     if (!bones || bones.length <= 1) return;
 
     const parentIdx = bones[boneIndex].parentIndex;
@@ -933,13 +1152,12 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
       }
     });
 
-    assetManager.updateAsset(currentAsset.id, { skeleton: { ...currentAsset.skeleton, bones: newBones } });
+    markDraftChanged(newBones, true);
     if (selectedBoneIndex === boneIndex) {
       handleSelectBone(null);
     } else if (selectedBoneIndex !== null && selectedBoneIndex > boneIndex) {
       handleSelectBone(selectedBoneIndex - 1);
     }
-    setRefresh(r => r + 1);
   };
 
   const handleFocusJoint = (index: number) => {
@@ -962,7 +1180,7 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     return () => window.removeEventListener('click', hide);
   }, []);
 
-  if (!currentAsset) {
+  if (!editorAsset) {
     return (
       <div className="flex items-center justify-center h-full bg-[#151515] text-text-secondary text-xs">
         <div className="flex flex-col items-center gap-2">
@@ -973,34 +1191,180 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
     );
   }
 
-  const bones = currentAsset.skeleton?.bones || [];
+  const bones = editorAsset.skeleton?.bones || [];
   const selectedBone = selectedBoneIndex !== null ? bones[selectedBoneIndex] : null;
+  const skeletonToolbarActions: AssetViewportToolbarAction[] = associatedMesh
+    ? [
+        {
+          id: 'skeleton.meshOverlay',
+          group: 'skeleton-display',
+          label: 'Toggle Mesh Overlay',
+          icon: 'Box',
+          active: showMesh,
+          onTrigger: () => setShowMesh(v => !v),
+        },
+        {
+          id: 'skeleton.wireframeOverlay',
+          group: 'skeleton-display',
+          label: 'Toggle Wireframe Mesh',
+          icon: 'Grid',
+          active: showWireframeMesh,
+          className: showWireframeMesh ? 'text-cyan-400' : undefined,
+          onTrigger: () => setShowWireframeMesh(v => !v),
+        },
+      ]
+    : [];
+
+  const skeletonInspector = (
+    <div className="h-full flex flex-col bg-[#181818] min-h-0">
+      <div className="h-8 px-2.5 border-b border-white/10 bg-black/15 flex items-center gap-2 shrink-0">
+        <Icon name="SlidersHorizontal" size={12} className="text-accent" />
+        <span className="text-[10px] uppercase tracking-wider font-semibold text-text-secondary">
+          {selectedBoneIndex !== null ? 'Joint Inspector' : 'Skeleton Inspector'}
+        </span>
+      </div>
+      <div className="p-3 space-y-3 overflow-y-auto custom-scrollbar">
+        {selectedBoneIndex !== null ? (
+          <>
+            <JointInspector
+              asset={editorAsset}
+              jointIndex={selectedBoneIndex}
+              engine={previewEngine}
+              boneEntities={boneEntitiesRef.current}
+              revision={transformRevision}
+              editable={isEditMode}
+              onSkeletonChange={draftBones => markDraftChanged(draftBones, false)}
+              onUpdate={() => setTransformRevision(r => r + 1)}
+              onFocus={() => handleFocusJoint(selectedBoneIndex)}
+              onAddChild={isEditMode ? () => handleAddJoint(selectedBoneIndex) : undefined}
+              onDelete={isEditMode ? () => handleDeleteJoint(selectedBoneIndex) : undefined}
+            />
+            <SkeletonDisplayOptions
+              options={displayOptions}
+              onChange={setDisplayOptions}
+              showMeshOverlay={!!associatedMesh}
+              meshOverlayActive={showMesh}
+              onToggleMeshOverlay={() => setShowMesh(v => !v)}
+              showWireframe={!!associatedMesh}
+              wireframeActive={showWireframeMesh}
+              onToggleWireframe={() => setShowWireframeMesh(v => !v)}
+            />
+          </>
+        ) : (
+          <SkeletonAssetInspector
+            asset={editorAsset}
+            displayOptions={displayOptions}
+            onDisplayOptionsChange={setDisplayOptions}
+            associatedMeshName={associatedMesh?.name}
+            onAddRootJoint={isEditMode ? () => handleAddJoint(-1) : undefined}
+            showMeshOverlay={!!associatedMesh}
+            meshOverlayActive={showMesh}
+            onToggleMeshOverlay={() => setShowMesh(v => !v)}
+            showWireframe={!!associatedMesh}
+            wireframeActive={showWireframeMesh}
+            onToggleWireframe={() => setShowWireframeMesh(v => !v)}
+          />
+        )}
+      </div>
+    </div>
+  );
 
   return (
-    <div className="flex w-full h-full bg-[#151515] text-text-primary overflow-hidden select-none">
-      {/* Left Sidebar: Skeleton Bone Hierarchy */}
-      <div className="w-64 border-r border-white/10 flex flex-col bg-[#181818] shrink-0">
+    <AssetEditorTemplate
+      assetType={editorAsset.type}
+      assetName={editorAsset.name}
+      headerExtra={
+        <div className="flex items-center gap-1.5">
+          {editorHeaderExtra}
+          {!isEditMode ? (
+            <>
+              <span className="h-6 px-2 rounded flex items-center gap-1.5 border border-white/10 bg-black/20 text-[9px] uppercase font-semibold tracking-wider text-text-secondary">
+                <Icon name="Lock" size={10} />
+                Saved Pose
+              </span>
+              <button
+                type="button"
+                onClick={beginSkeletonEdit}
+                className="h-6 px-2.5 rounded flex items-center gap-1.5 border border-accent/40 bg-accent/15 text-accent hover:bg-accent/25 transition-colors text-[9px] uppercase font-semibold tracking-wider"
+                title="Create a private skeleton draft and enter edit mode"
+                aria-label="Edit skeleton"
+              >
+                <Icon name="Pencil" size={10} />
+                Edit Skeleton
+              </button>
+            </>
+          ) : (
+            <>
+              <span className={`h-6 px-2 rounded flex items-center gap-1.5 border text-[9px] uppercase font-semibold tracking-wider ${
+                editDirty
+                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+                  : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+              }`}>
+                <Icon name="Pencil" size={10} />
+                {editDirty ? 'Editing • Unsaved' : 'Editing'}
+              </span>
+              <button
+                type="button"
+                onClick={resetSkeletonDraft}
+                className="h-6 px-2 rounded flex items-center gap-1.5 border border-white/10 bg-black/20 text-text-secondary hover:text-white hover:bg-white/5 transition-colors text-[9px] uppercase font-semibold tracking-wider"
+                title="Reset the edit draft to the last confirmed pose"
+                aria-label="Reset skeleton draft"
+              >
+                <Icon name="Undo2" size={10} />
+                Reset
+              </button>
+              <button
+                type="button"
+                onClick={cancelSkeletonEdit}
+                className="h-6 px-2 rounded flex items-center gap-1.5 border border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20 transition-colors text-[9px] uppercase font-semibold tracking-wider"
+                title="Discard the draft and return to the last confirmed pose"
+                aria-label="Cancel skeleton edit"
+              >
+                <Icon name="X" size={10} />
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmSkeletonEdit}
+                className="h-6 px-2.5 rounded flex items-center gap-1.5 border border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 transition-colors text-[9px] uppercase font-semibold tracking-wider"
+                title="Confirm the draft as the new saved skeleton pose"
+                aria-label="Confirm skeleton edit"
+              >
+                <Icon name="Check" size={10} />
+                Confirm
+              </button>
+            </>
+          )}
+        </div>
+      }
+      hierarchy={
         <SkeletonHierarchy
-          asset={currentAsset as SkeletonAsset}
-          onUpdate={() => setRefresh(r => r + 1)}
+          asset={editorAsset as SkeletonAsset}
+          onUpdate={() => setDraftRevision(r => r + 1)}
+          editable={isEditMode}
+          onSkeletonChange={(draftBones, options) => markDraftChanged(draftBones, !!options?.structural)}
           selectedBoneIndex={selectedBoneIndex}
           onSelectBone={handleSelectBone}
         />
-      </div>
-
-      {/* Right Viewport: Shared Reusable 3D Viewport */}
-      <div className="flex-1 relative h-full">
+      }
+      inspector={skeletonInspector}
+      hierarchyWidth={256}
+      inspectorWidth={320}
+    >
         <AssetViewport3D
+          assetType={editorAsset.type}
           tool={tool}
-          setTool={setTool}
+          setTool={nextTool => setTool(isEditMode ? nextTool : 'SELECT')}
+          allowedTools={isEditMode ? ['SELECT', 'MOVE', 'ROTATE', 'SCALE'] : ['SELECT']}
           camera={camera}
           onCameraChange={setCamera}
           fitCamera={fitCamera}
           showGrid={showGrid}
           onToggleGrid={() => setShowGrid(v => !v)}
           engine={previewEngine}
-          gizmoSystem={gizmoSystem}
+          gizmoSystem={isEditMode ? gizmoSystem : null}
           stats={[
+            { label: 'Mode', value: isEditMode ? 'EDIT' : 'POSE', color: isEditMode ? 'text-amber-300' : 'text-emerald-400' },
             { label: 'Bones', value: bones.length, color: 'text-accent' },
             { label: 'Mesh', value: associatedMesh ? 'Linked' : 'None', color: associatedMesh ? 'text-emerald-400' : 'text-text-secondary' },
           ]}
@@ -1008,44 +1372,8 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
             text: selectedBone ? selectedBone.name : 'No Joint Selected',
             active: selectedBone !== null,
           }}
-          toolbarExtra={
-            <div className="flex items-center gap-1.5">
-              {associatedMesh && (
-                <div className="bg-black/40 backdrop-blur border border-white/5 rounded-md flex p-1 text-text-secondary gap-0.5">
-                  <button
-                    type="button"
-                    className={`p-1 hover:text-white rounded hover:bg-white/10 ${showMesh ? 'text-accent' : ''}`}
-                    onClick={() => setShowMesh(v => !v)}
-                    title="Toggle Mesh Overlay"
-                    aria-label="Toggle Mesh Overlay"
-                  >
-                    <Icon name="Box" size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    className={`p-1 hover:text-white rounded hover:bg-white/10 ${showWireframeMesh ? 'text-cyan-400' : ''}`}
-                    onClick={() => setShowWireframeMesh(v => !v)}
-                    title="Toggle Wireframe Mesh"
-                    aria-label="Toggle Wireframe Mesh"
-                  >
-                    <Icon name="Grid" size={14} />
-                  </button>
-                </div>
-              )}
-              <div className="bg-black/40 backdrop-blur border border-white/5 rounded-md flex p-1 text-text-secondary">
-                <button
-                  type="button"
-                  className={`p-1 hover:text-white rounded hover:bg-white/10 ${showInspector ? 'text-accent bg-white/10' : ''}`}
-                  onClick={() => setShowInspector(v => !v)}
-                  title="Toggle Inspector"
-                  aria-label="Toggle Inspector"
-                >
-                  <Icon name="Sliders" size={14} />
-                </button>
-              </div>
-            </div>
-          }
-          shortcutsLegend="Alt+LMB Orbit • Alt+MMB Pan • Alt+RMB Zoom • Right-Click Context"
+          toolbarActions={skeletonToolbarActions}
+          shortcutsLegend={isEditMode ? "W/E/R Transform • Alt+Mouse Navigate • Confirm or Cancel to leave edit" : "Pose locked • Alt+Mouse Navigate • Click Edit Skeleton to modify"}
           onInitGl={handleInitGl}
           onCleanupGl={handleCleanupGl}
           onRender={handleRender}
@@ -1079,17 +1407,19 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
                           <Icon name="Bone" size={10} />
                           <span>{bones[contextMenu.boneIndex]?.name || 'Joint'}</span>
                         </div>
-                        <div
-                          className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2"
-                          onClick={() => {
-                            const bIdx = contextMenu.boneIndex!;
-                            setContextMenu(null);
-                            handleAddJoint(bIdx);
-                          }}
-                        >
-                          <Icon name="Plus" size={12} />
-                          <span>Add Child Joint</span>
-                        </div>
+                        {isEditMode && (
+                          <div
+                            className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2"
+                            onClick={() => {
+                              const bIdx = contextMenu.boneIndex!;
+                              setContextMenu(null);
+                              handleAddJoint(bIdx);
+                            }}
+                          >
+                            <Icon name="Plus" size={12} />
+                            <span>Add Child Joint</span>
+                          </div>
+                        )}
                         <div
                           className="px-3 py-1.5 hover:bg-white/10 cursor-pointer flex items-center gap-2"
                           onClick={() => {
@@ -1101,7 +1431,7 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
                           <Icon name="Crosshair" size={12} />
                           <span>Focus Joint</span>
                         </div>
-                        {bones.length > 1 && (
+                        {isEditMode && bones.length > 1 && (
                           <div
                             className="px-3 py-1.5 hover:bg-red-500/20 hover:text-red-400 cursor-pointer flex items-center gap-2 text-red-400"
                             onClick={() => {
@@ -1117,16 +1447,18 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
                       </>
                     ) : (
                       <>
-                        <div
-                          className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2"
-                          onClick={() => {
-                            setContextMenu(null);
-                            handleAddJoint(-1);
-                          }}
-                        >
-                          <Icon name="Plus" size={12} />
-                          <span>Add Root Joint</span>
-                        </div>
+                        {isEditMode && (
+                          <div
+                            className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2"
+                            onClick={() => {
+                              setContextMenu(null);
+                              handleAddJoint(-1);
+                            }}
+                          >
+                            <Icon name="Plus" size={12} />
+                            <span>Add Root Joint</span>
+                          </div>
+                        )}
                         <div
                           className="px-3 py-1.5 hover:bg-white/10 cursor-pointer flex items-center gap-2"
                           onClick={() => {
@@ -1149,70 +1481,6 @@ export const SkeletonEditor: React.FC<{ assetId: string }> = ({ assetId }) => {
             </>
           }
         />
-      </div>
-
-      {/* Right Sidebar: Dedicated Joint & Asset Inspector */}
-      {showInspector && (
-        <div className="w-80 border-l border-white/10 flex flex-col bg-[#181818] shrink-0 overflow-y-auto custom-scrollbar">
-          <div className="p-3 border-b border-white/10 flex items-center justify-between bg-black/20">
-            <div className="flex items-center gap-2 text-xs font-semibold text-text-primary">
-              <Icon name="Sliders" size={14} className="text-accent" />
-              <span>{selectedBoneIndex !== null ? 'Joint Inspector' : 'Skeleton Inspector'}</span>
-            </div>
-            <button
-              type="button"
-              className="p-1 text-text-secondary hover:text-white rounded hover:bg-white/10 transition-colors"
-              onClick={() => setShowInspector(false)}
-              title="Close Inspector"
-              aria-label="Close Inspector"
-            >
-              <Icon name="X" size={13} />
-            </button>
-          </div>
-
-          <div className="p-3 space-y-3">
-            {selectedBoneIndex !== null ? (
-              <>
-                <JointInspector
-                  asset={currentAsset}
-                  jointIndex={selectedBoneIndex}
-                  engine={previewEngine}
-                  boneEntities={boneEntitiesRef.current}
-                  revision={transformRevision}
-                  onUpdate={() => setRefresh(r => r + 1)}
-                  onFocus={() => handleFocusJoint(selectedBoneIndex)}
-                  onAddChild={() => handleAddJoint(selectedBoneIndex)}
-                  onDelete={() => handleDeleteJoint(selectedBoneIndex)}
-                />
-                <SkeletonDisplayOptions
-                  options={displayOptions}
-                  onChange={setDisplayOptions}
-                  showMeshOverlay={!!associatedMesh}
-                  meshOverlayActive={showMesh}
-                  onToggleMeshOverlay={() => setShowMesh(v => !v)}
-                  showWireframe={!!associatedMesh}
-                  wireframeActive={showWireframeMesh}
-                  onToggleWireframe={() => setShowWireframeMesh(v => !v)}
-                />
-              </>
-            ) : (
-              <SkeletonAssetInspector
-                asset={currentAsset}
-                displayOptions={displayOptions}
-                onDisplayOptionsChange={setDisplayOptions}
-                associatedMeshName={associatedMesh?.name}
-                onAddRootJoint={() => handleAddJoint(-1)}
-                showMeshOverlay={!!associatedMesh}
-                meshOverlayActive={showMesh}
-                onToggleMeshOverlay={() => setShowMesh(v => !v)}
-                showWireframe={!!associatedMesh}
-                wireframeActive={showWireframeMesh}
-                onToggleWireframe={() => setShowWireframeMesh(v => !v)}
-              />
-            )}
-          </div>
-        </div>
-      )}
-    </div>
+    </AssetEditorTemplate>
   );
 };

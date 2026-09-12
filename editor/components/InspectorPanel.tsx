@@ -7,11 +7,15 @@ import { Icon } from './Icon';
 import { EditorContext } from '@/editor/state/EditorContext';
 import { moduleManager } from '@/engine/ModuleManager';
 import { Select } from './ui/Select';
+import { MaterialSlotField } from '@/editor/components/inspector/MaterialSlotField';
 import { effectRegistry } from '@/engine/EffectRegistry';
 import { ROTATION_ORDERS } from '@/engine/constants';
 import { SkeletonDisplayOptions } from './inspector/SkeletonDisplayOptions';
 import { SkeletonAssetInspector } from './inspector/SkeletonAssetInspector';
 import { DraggableNumber, Vector3Input } from './ui/InputControls';
+import { AutoInspector } from './inspector/AutoInspector';
+import { PostProcessProfileInspector } from './inspector/PostProcessProfileInspector';
+import { CameraPresetAsset, PostProcessProfileAsset } from '@/types';
 
 interface InspectorPanelProps {
   object: Entity | Asset | GraphNode | null;
@@ -31,7 +35,7 @@ const TransformInspector: React.FC<InspectorProps> = ({ component, onUpdate, onS
                     <div className="text-[9px] uppercase text-text-secondary font-bold tracking-wider ml-1 opacity-70">Rotation</div>
                     <div className="flex gap-2">
                         <div className="flex items-center gap-1 min-w-[70px]">
-                            <Select value={editorCtx?.transformSpace || 'Gimbal'} options={['Gimbal', 'Local', 'World'].map(v => ({ label: v, value: v }))} onChange={(v) => editorCtx?.setTransformSpace(v as TransformSpace)} />
+                            <Select value={editorCtx?.transformSpace || 'World'} options={['World', 'Local'].map(v => ({ label: v, value: v }))} onChange={(v) => editorCtx?.setTransformSpace(v as TransformSpace)} />
                         </div>
                         {/* 
                         <div className="flex items-center gap-1 min-w-[50px]">
@@ -61,7 +65,6 @@ export const TransformModule: EngineModule = {
 };
 
 const MeshInspector: React.FC<InspectorProps> = ({ component, onUpdate, onStartUpdate, onCommit }) => {
-    const materials = assetManager.getAssetsByType('MATERIAL');
     const rigs = assetManager.getAssetsByType('RIG');
     const effects = effectRegistry.getOptions(); 
     
@@ -73,12 +76,11 @@ const MeshInspector: React.FC<InspectorProps> = ({ component, onUpdate, onStartU
                    <Select icon="Box" value={component.meshType} options={['Cube', 'Sphere', 'Plane', 'Custom'].map(v => ({ label: v, value: v }))} onChange={(v) => { onStartUpdate(); onUpdate('meshType', v); onCommit(); }} />
                 </div>
              </div>
-             <div className="flex items-center gap-2">
-                <span className="w-24 text-text-secondary text-[10px]">Material</span>
-                <div className="flex-1">
-                   <Select icon="Palette" value={component.materialId || ""} options={[{ label: 'Default', value: "" }, ...materials.map(m => ({ label: m.name, value: m.id }))]} onChange={(v) => { onStartUpdate(); onUpdate('materialId', v); onCommit(); }} />
-                </div>
-             </div>
+             <MaterialSlotField
+                value={component.materialId || ''}
+                defaultLabel="Asset Default / Standard Lambert"
+                onChange={(v) => { onStartUpdate(); onUpdate('materialId', v); onCommit(); }}
+             />
              <div className="flex items-center gap-2">
                 <span className="w-24 text-text-secondary text-[10px]">Rig Graph</span>
                 <div className="flex-1">
@@ -190,7 +192,8 @@ const getEntityInfo = (entity: Entity) => {
     }
 
     if (entity.components[ComponentType.VIRTUAL_PIVOT]) return { icon: 'Maximize', color: 'bg-emerald-600', label: 'Helper' };
-    if (entity.name.includes('Camera')) return { icon: 'Video', color: 'bg-red-500', label: 'Camera' };
+    if (entity.components[ComponentType.CAMERA]) return { icon: 'Camera', color: 'bg-red-500', label: 'Camera' };
+    if (entity.name.includes('Camera')) return { icon: 'Camera', color: 'bg-red-500', label: 'Camera' };
 
     return { icon: 'Cuboid', color: 'bg-gray-600', label: 'Entity' };
 };
@@ -310,15 +313,15 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({ object: initialO
                   return (
                       <ComponentCard 
                           key={mod.id} 
-                          title={mod.name} 
-                          icon={mod.icon} 
+                          title={mod.name ?? mod.id} 
+                          icon={mod.icon ?? 'Box'} 
                           component={comp} 
                           onRemove={mod.id === 'Transform' ? undefined : () => removeComponent(mod.id)}
                       >
                           <mod.InspectorComponent 
                               entity={entity!}
                               component={comp}
-                              onUpdate={(f, v) => updateComponent(mod.id, f, v)}
+                              onUpdate={(f: string, v: any) => updateComponent(mod.id, f, v)}
                               onStartUpdate={() => engineInstance.pushUndoState()}
                               onCommit={() => engineInstance.notifyUI()}
                           />
@@ -447,6 +450,35 @@ export const InspectorPanel: React.FC<InspectorPanelProps> = ({ object: initialO
                  {renderHeaderControls()}
             </div>
             <div className="p-4 space-y-4">
+                {asset.type === 'CAMERA_PRESET' && (
+                    <AutoInspector
+                        schemaId="CameraSettings"
+                        value={(asset as CameraPresetAsset).data}
+                        scope="asset"
+                        onChange={(path, value) => {
+                            const preset = asset as CameraPresetAsset;
+                            assetManager.updateAsset(asset.id, { data: { ...preset.data, [path]: value } });
+                            setRefresh(r => r + 1);
+                        }}
+                    />
+                )}
+
+                {asset.type === 'POST_PROCESS_PROFILE' && (
+                    <PostProcessProfileInspector asset={asset as PostProcessProfileAsset} />
+                )}
+
+                {asset.type === 'SCENE' && (
+                    <AutoInspector
+                        schemaId="SceneRendering"
+                        value={(asset as any).data}
+                        scope="asset"
+                        onChange={(path, value) => {
+                            assetManager.updateAsset(asset.id, { data: { ...(asset as any).data, [path]: value } });
+                            setRefresh(r => r + 1);
+                        }}
+                    />
+                )}
+
                 {asset.type === 'PHYSICS_MATERIAL' && (
                     <>
                         <DraggableNumber label="Static Friction" value={Number((asset as PhysicsMaterialAsset).data.staticFriction)} onChange={v => { assetManager.updatePhysicsMaterial(asset.id, {staticFriction:v}); setRefresh(r=>r+1); }} step={0.05} />

@@ -1,4 +1,5 @@
 
+import { MESH_SURFACE_RENDER_MODE } from './renderers/MeshSurfaceContract';
 export const INITIAL_CAPACITY = 10000;
 export const MESH_TYPES: Record<string, number> = { 'None': 0, 'Cube': 1, 'Sphere': 2, 'Plane': 3, 'Cylinder': 4, 'Cone': 5 };
 export const MESH_NAMES: Record<number, string> = { 0: 'None', 1: 'Cube', 2: 'Sphere', 3: 'Plane', 4: 'Cylinder', 5: 'Cone' };
@@ -22,13 +23,14 @@ export const COMPONENT_MASKS = {
     PHYSICS: 8,
     SCRIPT: 16,
     VIRTUAL_PIVOT: 32,
-    PARTICLE_SYSTEM: 64 
+    PARTICLE_SYSTEM: 64,
+    CAMERA: 128
 };
 
 export const VIEW_MODES = [
-    { id: 0, label: 'Lit', icon: 'Sun' },
-    { id: 1, label: 'Normals', icon: 'BoxSelect' },
-    { id: 2, label: 'Unlit', icon: 'Circle' },
+    { id: MESH_SURFACE_RENDER_MODE.LIT, label: 'Lit', icon: 'Sun' },
+    { id: MESH_SURFACE_RENDER_MODE.NORMALS, label: 'Normals', icon: 'BoxSelect' },
+    { id: MESH_SURFACE_RENDER_MODE.UNLIT, label: 'Unlit', icon: 'Circle' },
     { id: 3, label: 'Wireframe', icon: 'Grid' },
     { id: 4, label: 'Overdraw', icon: 'Layers' }
 ];
