@@ -7,15 +7,12 @@ import { EditorContext } from '@/editor/state/EditorContext';
 import { WindowManagerContext } from './WindowManager';
 import { MATERIAL_TEMPLATES } from '@/engine/MaterialTemplates';
 import { engineInstance } from '@/engine/engine';
-import { NodeGraph } from './NodeGraph';
 import { ImportWizard } from './ImportWizard';
-import { StaticMeshEditor } from './StaticMeshEditor';
-import { SkeletalMeshEditor } from './SkeletalMeshEditor';
-import { SkeletonEditor } from './SkeletonEditor';
 import { consoleService } from '@/engine/Console';
 import { Asset, AssetType } from '@/types';
 import { eventBus } from '@/engine/EventBus';
 import { assetTypeRegistry, AssetCreateCategory } from '@/engine/AssetTypeRegistry';
+import { assetEditorRegistry } from '@/editor/AssetEditorRegistry';
 
 type ViewMode = 'GRID' | 'LIST';
 
@@ -25,18 +22,6 @@ const getSubFolders = (assets: Asset[], path: string) => {
     return assets.filter(a => a.type === 'FOLDER' && a.path === path);
 };
 
-const getAssetEditorWindowLayout = () => {
-    const width = Math.max(820, Math.min(1180, window.innerWidth - 80));
-    const height = Math.max(620, Math.min(760, window.innerHeight - 80));
-    return {
-        width,
-        height,
-        initialPosition: {
-            x: Math.max(40, (window.innerWidth - width) / 2),
-            y: Math.max(40, (window.innerHeight - height) / 2),
-        },
-    };
-};
 
 const AssetItem: React.FC<{ 
     asset: Asset; 
@@ -188,41 +173,18 @@ export const ProjectPanel: React.FC = () => {
     const handleOpen = (asset: Asset) => {
         if (asset.type === 'FOLDER') {
             handleNavigate(`${currentPath === '/' ? '' : currentPath}/${asset.name}`);
-        } else if (asset.type === 'MATERIAL' || asset.type === 'SCRIPT' || asset.type === 'RIG') {
-            const winId = `editor_${asset.id}`;
-            wm?.registerWindow({
-                id: winId,
-                title: asset.name,
-                icon: asset.type === 'MATERIAL' ? 'Palette' : (asset.type === 'SCRIPT' ? 'Code' : 'Cpu'),
-                content: <NodeGraph assetId={asset.id} />,
-                width: 800,
-                height: 600,
-                initialPosition: { x: Math.max(50, window.innerWidth / 2 - 400), y: Math.max(50, window.innerHeight / 2 - 300) }
-            });
-            wm?.openWindow(winId);
-        } else if (asset.type === 'MESH' || asset.type === 'SKELETAL_MESH') {
-            const winId = `editor_${asset.id}`;
-            wm?.registerWindow({
-                id: winId,
-                title: asset.name,
-                icon: asset.type === 'MESH' ? 'Box' : 'Bone',
-                content: asset.type === 'SKELETAL_MESH'
-                    ? <SkeletalMeshEditor assetId={asset.id} />
-                    : <StaticMeshEditor assetId={asset.id} />,
-                ...getAssetEditorWindowLayout()
-            });
-            wm?.openWindow(winId);
-        } else if (asset.type === 'SKELETON') {
-            const winId = `editor_${asset.id}`;
-            wm?.registerWindow({
-                id: winId,
-                title: asset.name,
-                icon: 'Bone',
-                content: <SkeletonEditor assetId={asset.id} />,
-                ...getAssetEditorWindowLayout()
-            });
-            wm?.openWindow(winId);
-        } else if (asset.type === 'SCENE') {
+            return;
+        }
+
+        const editorDefinition = assetEditorRegistry.get(asset.type);
+        if (editorDefinition && wm) {
+            const windowConfig = editorDefinition.createWindow(asset);
+            wm.registerWindow(windowConfig);
+            wm.openWindow(windowConfig.id);
+            return;
+        }
+
+        if (asset.type === 'SCENE') {
             if (confirm("Load Scene? Unsaved changes will be lost.")) {
                 engineInstance.loadSceneFromAsset(asset.id);
             }
@@ -417,7 +379,7 @@ export const ProjectPanel: React.FC = () => {
                         <>
                             {(() => {
                                 const a = assetManager.getAsset(contextMenu.assetId);
-                                const canPlace = a && (a.type === 'MESH' || a.type === 'SKELETAL_MESH' || a.type === 'SKELETON' || a.type === 'CAMERA_PRESET');
+                                const canPlace = !!(a && assetTypeRegistry.get(a.type)?.placeable);
                                 if (canPlace) return (
                                     <>
                                         <div className="px-3 py-1.5 hover:bg-accent hover:text-white cursor-pointer flex items-center gap-2" 

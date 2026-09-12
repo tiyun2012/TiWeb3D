@@ -4,8 +4,10 @@ import ReactDOM from 'react-dom/client';
 import App from './app/App';
 import { EngineProvider } from '@/engine/api/EngineProvider';
 import { registerBuiltInAssetTypes } from '@/engine/BuiltInAssetTypes';
+import { registerBuiltInAssetEditors } from '@/editor/BuiltInAssetEditors';
 
 registerBuiltInAssetTypes();
+registerBuiltInAssetEditors();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

@@ -131,7 +131,7 @@ The Content Browser already subscribes, so a newly registered creatable asset ap
 
 The registry currently owns **asset creation and Content Browser presentation metadata**. It does not automatically invent behavior for:
 
-- double-click editor windows,
+- double-click editor windows (owned by `AssetEditorRegistry`),
 - drag/drop scene placement,
 - custom asset inspectors,
 - serialization rules,
@@ -146,3 +146,7 @@ Those capabilities have different runtime dependencies and should be registered 
 3. Import-only types should still register icon/label metadata when shown in the Content Browser.
 4. Core registrations run during application bootstrap, before React mounts.
 5. Optional modules may register later; UI consumers must subscribe instead of assuming a frozen registry.
+
+## Related editor capability registry
+
+Double-click editor opening is registered separately through `editor/AssetEditorRegistry.ts`. See `docs/ASSET_EDITOR_REGISTRY.md`. This separation is intentional: an asset can be creatable without having a dedicated editor, and optional editor modules can register UI behavior without adding React dependencies to the engine-facing asset type registry.

@@ -84,6 +84,14 @@ const CAPABILITY_TABLE: Partial<Record<AssetType, AssetViewportCapabilities>> = 
     hasHierarchy: true,
     hasInspector: true,
   },
+  CAMERA_PRESET: {
+    assetType: 'CAMERA_PRESET',
+    actions: new Set(['view.grid', 'view.focus', 'view.autoRotate', 'panel.inspector']),
+    tools: [],
+    meshModes: [],
+    hasHierarchy: false,
+    hasInspector: true,
+  },
   SKELETON: {
     assetType: 'SKELETON',
     actions: new Set([

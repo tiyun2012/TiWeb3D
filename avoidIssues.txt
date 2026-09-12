@@ -278,3 +278,13 @@ ASSET TYPE / CONTENT BROWSER REGISTRY
 - Register creatable asset types with engine/AssetTypeRegistry.ts (built-ins live in BuiltInAssetTypes.ts).
 - Content Browser subscribes to the registry; runtime/plugin registrations should appear automatically.
 - CAMERA_PRESET is the reusable camera asset; live Scene cameras remain Camera ECS components.
+
+
+---
+
+### 25. ASSET EDITOR REGISTRATION / CAMERA PRESET EDITOR
+- **NO HARDCODED DOUBLE-CLICK ROUTING:** Content Browser editor opening belongs to `editor/AssetEditorRegistry.ts` + `editor/BuiltInAssetEditors.tsx`. Do not add new asset-editor `if (asset.type === ...)` branches to `ProjectPanel.tsx`.
+- **SEPARATE CREATION FROM EDITING:** `AssetTypeRegistry` owns creation/presentation; `AssetEditorRegistry` owns editor-window opening. Keep React/window-manager concerns out of the engine-facing asset type registry.
+- **CAMERA PRESET LAYOUT:** `CAMERA_PRESET` uses `AssetEditorTemplate` with hierarchy disabled, `AssetViewport3D` in the center, and the shared `CameraSettings` `AutoInspector` on the right.
+- **CAMERA PRESET HAS NO TRANSFORM:** The Camera Preset viewport may visualize a canonical frustum, but position/rotation belong to live Scene Camera entities. Never serialize preview-orbit state into the preset.
+- **REUSE CAMERA SCHEMA:** Do not duplicate Camera fields in `CameraPresetEditor`; use `schemaId="CameraSettings"` so Scene Camera and Camera Preset remain aligned.

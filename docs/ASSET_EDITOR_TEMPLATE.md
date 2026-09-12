@@ -62,3 +62,7 @@ Full asset-editor windows open larger than before because a persistent hierarchy
 - Keyboard shortcuts must check the same capability id as the visible control.
 - Hierarchy selections may change an editor mode only when the corresponding capability is allowed.
 - Do not duplicate the three-column shell, viewport toolbar groups, or renderer lifecycle.
+
+## Two-panel asset editors
+
+`AssetEditorTemplate` also supports asset types that intentionally have no hierarchy. `CAMERA_PRESET` sets `hasHierarchy=false` and `hasInspector=true`, producing a Viewport + Inspector layout while still reusing the same editor chrome and `AssetViewport3D`. Do not create a second layout shell for this case.

@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { AssetType } from '@/types';
 import { Icon } from '@/editor/components/Icon';
 import { getAssetViewportCapabilities } from './assetViewportCapabilities';
+import { assetTypeRegistry } from '@/engine/AssetTypeRegistry';
 
 export interface AssetEditorTemplateProps {
   assetType: AssetType;
@@ -58,6 +59,7 @@ export const AssetEditorTemplate: React.FC<AssetEditorTemplateProps> = ({
   defaultInspectorVisible = true,
 }) => {
   const capabilities = useMemo(() => getAssetViewportCapabilities(assetType), [assetType]);
+  const assetDefinition = assetTypeRegistry.get(assetType);
   const [showHierarchy, setShowHierarchy] = useState(
     defaultHierarchyVisible && capabilities.hasHierarchy,
   );
@@ -69,7 +71,7 @@ export const AssetEditorTemplate: React.FC<AssetEditorTemplateProps> = ({
     <div className="flex flex-col w-full h-full min-w-0 min-h-0 bg-[#151515] text-text-primary overflow-hidden select-none">
       <div className="h-8 shrink-0 border-b border-white/10 bg-[#1c1c1c] flex items-center gap-2 px-2">
         <div className="flex items-center gap-2 min-w-0 mr-auto">
-          <Icon name="BoxSelect" size={12} className="text-accent shrink-0" />
+          <Icon name={(assetDefinition?.icon ?? 'BoxSelect') as any} size={12} className="text-accent shrink-0" />
           <span className="text-[10px] font-semibold text-white truncate">{assetName}</span>
           <span className="text-[9px] px-1.5 py-0.5 rounded bg-black/30 border border-white/5 text-text-secondary font-mono">
             {assetType}

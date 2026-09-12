@@ -60,7 +60,24 @@ const assetViewport = read('editor/components/AssetViewport3D.tsx');
 assert(assetViewport.includes('assetViewportAllows'), 'AssetViewport3D must capability-filter viewport actions');
 assert(assetViewport.includes('toolbarActions'), 'AssetViewport3D must render asset toolbar actions through descriptors');
 const projectPanel = read('editor/components/ProjectPanel.tsx');
-assert(projectPanel.includes('<SkeletalMeshEditor assetId={asset.id} />'), 'SKELETAL_MESH assets must route through SkeletalMeshEditor');
+assert(exists('editor/AssetEditorRegistry.ts'), 'AssetEditorRegistry must exist for Content Browser double-click routing');
+assert(exists('editor/BuiltInAssetEditors.tsx'), 'BuiltInAssetEditors must exist');
+const builtInAssetEditors = read('editor/BuiltInAssetEditors.tsx');
+assert(
+  builtInAssetEditors.includes("type: 'SKELETAL_MESH'") && builtInAssetEditors.includes('<SkeletalMeshEditor assetId={asset.id} />'),
+  'SKELETAL_MESH assets must route through SkeletalMeshEditor via AssetEditorRegistry',
+);
+assert(
+  builtInAssetEditors.includes("type: 'CAMERA_PRESET'") && builtInAssetEditors.includes('<CameraPresetEditor assetId={asset.id} />'),
+  'CAMERA_PRESET must register CameraPresetEditor for double-click opening',
+);
+assert(
+  projectPanel.includes('assetEditorRegistry.get(asset.type)') &&
+    !projectPanel.includes("asset.type === 'CAMERA_PRESET'") &&
+    !projectPanel.includes('<StaticMeshEditor') &&
+    !projectPanel.includes('<SkeletonEditor'),
+  'ProjectPanel must resolve asset editors through AssetEditorRegistry instead of hardcoded editor components',
+);
 
 assert(exists('editor/components/viewport/ViewportTemplate.tsx'), 'ViewportTemplate must exist');
 assert(exists('editor/viewports/viewportCamera.ts'), 'shared viewportCamera utilities must exist');
@@ -355,6 +372,23 @@ assert(
 assert(
   read('index.tsx').includes('registerBuiltInAssetTypes();'),
   'built-in asset types must register during application bootstrap before editor UI mounts',
+);
+assert(
+  read('index.tsx').includes('registerBuiltInAssetEditors();'),
+  'built-in asset editors must register during application bootstrap before Content Browser interaction',
+);
+assert(exists('editor/components/CameraPresetEditor.tsx'), 'CameraPresetEditor must exist');
+const cameraPresetEditorSource = read('editor/components/CameraPresetEditor.tsx');
+assert(
+  cameraPresetEditorSource.includes('AssetViewport3D') &&
+    cameraPresetEditorSource.includes('AssetEditorTemplate') &&
+    cameraPresetEditorSource.includes('schemaId="CameraSettings"'),
+  'CameraPresetEditor must reuse AssetViewport3D, AssetEditorTemplate, and the shared CameraSettings schema',
+);
+assert(
+  read('editor/components/asset-editor/assetViewportCapabilities.ts').includes('CAMERA_PRESET') &&
+    read('editor/components/asset-editor/assetViewportCapabilities.ts').includes('hasHierarchy: false'),
+  'Camera Preset editor capabilities must keep hierarchy disabled while retaining inspector support',
 );
 assert(
   read('engine/ecs/EntitySystem.ts').includes('ComponentType.CAMERA') &&

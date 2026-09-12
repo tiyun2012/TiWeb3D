@@ -105,3 +105,10 @@ Camera, Scene post-process references, and reusable auto-inspector registration 
 ## Asset Type Registry / Content Browser creation
 
 Content Browser asset creation is registry-driven. Built-in asset definitions are registered at application bootstrap in `engine/BuiltInAssetTypes.ts`; `editor/components/ProjectPanel.tsx` reads `engine/AssetTypeRegistry.ts` rather than maintaining a parallel type/factory list. New creatable asset types must register their label, icon, category, default name, and factory with `assetTypeRegistry`. See `docs/ASSET_TYPE_REGISTRY.md`.
+
+
+## Asset Editor Registry / double-click routing
+
+Content Browser editor opening is registered through `editor/AssetEditorRegistry.ts`; built-ins are installed by `editor/BuiltInAssetEditors.tsx`. `ProjectPanel.tsx` must query the registry instead of hardcoding editor components by asset type. See `docs/ASSET_EDITOR_REGISTRY.md`.
+
+Camera Preset uses this path and opens a two-panel `CameraPresetEditor` (Viewport + Inspector) that reuses `AssetViewport3D` and the `CameraSettings` AutoInspector schema. See `docs/CAMERA_PRESET_EDITOR.md`.
