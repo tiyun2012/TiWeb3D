@@ -374,3 +374,11 @@ CAMERA RESOLUTION / PRESET RULES
 - **CPU CAGE AND GPU SOLID MUST INVALIDATE TOGETHER:** Scene component overlays read asset CPU vertices directly while solid meshes use GPU VBOs. If asset geometry mutates without a GPU preview invalidation, the viewport shows a new cage over an old solid mesh.
 - **REUSE GPU BUFFERS FOR LIVE EDITING:** `MeshRenderSystem.registerMesh`/preview update paths must reuse VBO/NBO/IBO objects where possible. Never allocate fresh geometry buffers on each drag event; that leaks GPU resources and destabilizes VAO state.
 - **ASSET HEATMAP OBSERVES SESSION WEIGHTS:** Static Mesh Editor heatmap uses the same `AssetViewportEngine.softSelectionWeights` produced by deformation. Upload it as the shared soft-weight vertex attribute; do not recompute a second heatmap weight set in rendering code.
+
+---
+
+### 16. VIEWPORT HOTKEY CONTEXT
+- **ACTIVE VIEWPORT OWNS GLOBAL SHORTCUTS:** Scene and asset editors can be mounted simultaneously. Any window-level viewport shortcut must be gated through `ViewportInputRouter`; never let every mounted viewport react to the same `keydown`.
+- **CLAIM ON POINTER CONTEXT:** Viewports claim input ownership on pointer enter/down. Scene is the fallback only when no asset viewport is active.
+- **NO GLOBAL EDITOR STATE IN BRUSH HOOKS:** Reusable gestures such as `B` radius adjustment must receive a host API adapter (`configureSoftSelection`) and local state. Do not read/write Scene `EditorContext` from a generic viewport interaction hook.
+- **GESTURES BELONG TO THEIR START VIEWPORT:** B + LMB may start only when the mouse-down target belongs to the currently active viewport. Continue move/up globally only after that gesture has started.

@@ -1,102 +1,145 @@
-import { useEffect, useRef, useState, useContext } from 'react';
-import { EditorContext } from '@/editor/state/EditorContext';
+import { useEffect, useRef, useState } from 'react';
+import { viewportInputRouter } from '@/editor/input/ViewportInputRouter';
 
 interface BrushInteractionOptions {
+    /** Stable id registered by the viewport input router. */
+    viewportId: string;
+    /** False when the active context cannot use a soft-selection brush. */
+    available?: boolean;
+    softSelectionEnabled: boolean;
+    softSelectionRadius: number;
+    /** Routes continuous/toggle changes through the host's mesh-editing API. */
+    configureSoftSelection: (settings: { enabled?: boolean; radius?: number }) => void;
     onBrushAdjustStart?: () => void;
     onBrushAdjustEnd?: () => void;
+    minRadius?: number;
+    sensitivity?: number;
 }
 
-export const useBrushInteraction = (options: BrushInteractionOptions = {}) => {
-    const ctx = useContext(EditorContext);
-    
-    // Safety check for context usage
-    if (!ctx) return { isAdjustingBrush: false, isBrushKeyHeld: { current: false } };
-
-    const { 
-        softSelectionEnabled, setSoftSelectionEnabled,
-        softSelectionRadius, setSoftSelectionRadius 
-    } = ctx;
-
+/**
+ * Context-aware B shortcut shared by Scene and asset viewports.
+ *
+ * - B tap toggles soft selection in the active viewport only.
+ * - B + LMB drag started inside that viewport changes its local radius.
+ * - The hook never reaches into EditorContext; hosts provide their API adapter.
+ */
+export const useBrushInteraction = ({
+    viewportId,
+    available = true,
+    softSelectionEnabled,
+    softSelectionRadius,
+    configureSoftSelection,
+    onBrushAdjustStart,
+    onBrushAdjustEnd,
+    minRadius = 0.1,
+    sensitivity = 0.05,
+}: BrushInteractionOptions) => {
     const [isAdjustingBrush, setIsAdjustingBrush] = useState(false);
     const bKeyRef = useRef(false);
-    const dragHappenedRef = useRef(false); // Track if mouse action occurred during B press
+    const dragHappenedRef = useRef(false);
     const brushStartPos = useRef({ x: 0, y: 0, startRadius: 0 });
+    const latestRef = useRef({
+        available,
+        softSelectionEnabled,
+        softSelectionRadius,
+        configureSoftSelection,
+        onBrushAdjustStart,
+        onBrushAdjustEnd,
+        minRadius,
+        sensitivity,
+    });
 
-    // 1. Handle Key States (B Key)
     useEffect(() => {
-        const onDown = (e: KeyboardEvent) => { 
-            // Only trigger on first press, ignore repeats
-            if(e.key.toLowerCase() === 'b' && !e.repeat) {
-                bKeyRef.current = true; 
-                dragHappenedRef.current = false; // Reset on fresh press
+        latestRef.current = {
+            available,
+            softSelectionEnabled,
+            softSelectionRadius,
+            configureSoftSelection,
+            onBrushAdjustStart,
+            onBrushAdjustEnd,
+            minRadius,
+            sensitivity,
+        };
+    }, [
+        available,
+        softSelectionEnabled,
+        softSelectionRadius,
+        configureSoftSelection,
+        onBrushAdjustStart,
+        onBrushAdjustEnd,
+        minRadius,
+        sensitivity,
+    ]);
+
+    // B key ownership follows the active viewport, not whichever component happened
+    // to mount the first global listener.
+    useEffect(() => {
+        const onDown = (e: KeyboardEvent) => {
+            if (e.key.toLowerCase() !== 'b' || e.repeat) return;
+            if (!viewportInputRouter.isActive(viewportId) || !latestRef.current.available) return;
+            const active = document.activeElement;
+            if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') return;
+            bKeyRef.current = true;
+            dragHappenedRef.current = false;
+        };
+        const onUp = (e: KeyboardEvent) => {
+            if (e.key.toLowerCase() !== 'b' || !bKeyRef.current) return;
+            bKeyRef.current = false;
+            if (!dragHappenedRef.current) {
+                const latest = latestRef.current;
+                if (latest.available) latest.configureSoftSelection({ enabled: !latest.softSelectionEnabled });
             }
         };
-        const onUp = (e: KeyboardEvent) => { 
-            if(e.key.toLowerCase() === 'b') {
-                bKeyRef.current = false; 
-                // If B was pressed and released without a drag action, toggle soft selection
-                if (!dragHappenedRef.current) {
-                    setSoftSelectionEnabled(!softSelectionEnabled);
-                }
-            }
-        };
-        
+
         window.addEventListener('keydown', onDown);
         window.addEventListener('keyup', onUp);
-        
         return () => {
             window.removeEventListener('keydown', onDown);
             window.removeEventListener('keyup', onUp);
         };
-    }, [setSoftSelectionEnabled, softSelectionEnabled]);
+    }, [viewportId]);
 
-    // 2. Handle Mouse Interaction (Global)
     useEffect(() => {
         const handleGlobalMouseMove = (e: MouseEvent) => {
-            if (isAdjustingBrush) {
-                const dx = e.clientX - brushStartPos.current.x;
-                const sensitivity = 0.05;
-                const newRad = Math.max(0.1, brushStartPos.current.startRadius + dx * sensitivity);
-                setSoftSelectionRadius(newRad);
-            }
+            if (!isAdjustingBrush) return;
+            const latest = latestRef.current;
+            const dx = e.clientX - brushStartPos.current.x;
+            const newRadius = Math.max(latest.minRadius, brushStartPos.current.startRadius + dx * latest.sensitivity);
+            latest.configureSoftSelection({ radius: newRadius });
         };
 
         const handleGlobalMouseUp = () => {
-            if (isAdjustingBrush) {
-                setIsAdjustingBrush(false);
-                options.onBrushAdjustEnd?.();
-            }
+            if (!isAdjustingBrush) return;
+            setIsAdjustingBrush(false);
+            latestRef.current.onBrushAdjustEnd?.();
         };
 
         const onWindowMouseDown = (e: MouseEvent) => {
-            if (bKeyRef.current && e.button === 0) {
-                // Mark that we used the B key for interaction (prevent toggle on release)
-                dragHappenedRef.current = true;
+            if (!bKeyRef.current || e.button !== 0) return;
+            if (!viewportInputRouter.isActive(viewportId)) return;
+            if (!viewportInputRouter.eventBelongsTo(viewportId, e.target)) return;
+            const latest = latestRef.current;
+            if (!latest.available) return;
 
-                // IMPORTANT: Stop propagation to prevent SceneView from handling this click as a selection
-                e.preventDefault(); 
-                e.stopPropagation();
-                
-                // Force enable soft selection when adjusting brush
-                if (!softSelectionEnabled) setSoftSelectionEnabled(true);
-                
-                setIsAdjustingBrush(true);
-                options.onBrushAdjustStart?.();
-                brushStartPos.current = { x: e.clientX, y: e.clientY, startRadius: softSelectionRadius };
-            }
+            dragHappenedRef.current = true;
+            e.preventDefault();
+            e.stopPropagation();
+
+            if (!latest.softSelectionEnabled) latest.configureSoftSelection({ enabled: true });
+            setIsAdjustingBrush(true);
+            latest.onBrushAdjustStart?.();
+            brushStartPos.current = { x: e.clientX, y: e.clientY, startRadius: latest.softSelectionRadius };
         };
 
         window.addEventListener('mousemove', handleGlobalMouseMove);
         window.addEventListener('mouseup', handleGlobalMouseUp);
-        // Use capture to intercept before React components
-        window.addEventListener('mousedown', onWindowMouseDown, { capture: true }); 
-        
+        window.addEventListener('mousedown', onWindowMouseDown, { capture: true });
         return () => {
             window.removeEventListener('mousemove', handleGlobalMouseMove);
             window.removeEventListener('mouseup', handleGlobalMouseUp);
             window.removeEventListener('mousedown', onWindowMouseDown, { capture: true });
         };
-    }, [isAdjustingBrush, softSelectionEnabled, softSelectionRadius, setSoftSelectionRadius, setSoftSelectionEnabled]);
+    }, [isAdjustingBrush, viewportId]);
 
     return { isAdjustingBrush, isBrushKeyHeld: bKeyRef };
 };

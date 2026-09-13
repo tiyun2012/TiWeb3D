@@ -92,3 +92,11 @@ When adding a new modeling operation:
 The command catalogue shares **behavior and command identity**, not transient viewport state. Each host context owns its active tool/component mode/soft-selection configuration and passes those values through its `EditorCommandContext`.
 
 For example, `staticMesh.softTransform.live` is the same command ID in Scene and Static Mesh Editor, but executing it in the asset editor only changes that editor's local session. It must not put Scene into component-edit mode or enable Scene's heatmap. This separation is required for future Skeletal Mesh/source-mesh adapters as well.
+
+## Hotkeys and viewport context
+
+The command catalogue does not own global keyboard focus. `ViewportInputRouter` first decides which mounted viewport owns input; that viewport then invokes its local command/service adapter.
+
+This prevents a single `F` press from focusing both Scene and an open asset editor. Continuous gestures such as `B` radius adjustment are not modeled as repeated catalogue commands: the active viewport routes the gesture into its local `configureSoftSelection()` API, while a B tap uses the same soft-selection state transition. This keeps command identity reusable without making continuous pointer input global.
+
+Rule: **hotkey -> active viewport context -> local command/API adapter -> shared domain implementation**. Never bind a modeling hotkey directly to `engineInstance` when the same capability may exist in an asset viewport.

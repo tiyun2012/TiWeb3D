@@ -1,5 +1,7 @@
-import React, { useEffect, useImperativeHandle, useRef, useState } from 'react';
+import React, { useEffect, useId, useImperativeHandle, useRef, useState } from 'react';
 import { useViewportSize } from '@/editor/hooks/useViewportSize';
+import { useViewportInputContext } from '@/editor/hooks/useViewportInputContext';
+import { viewportInputRouter } from '@/editor/input/ViewportInputRouter';
 import { AssetViewportEngine } from '@/editor/viewports/AssetViewportEngine';
 import { frameCameraOnFocusTarget, type FocusTarget, type ViewportFocusProvider } from '@/editor/viewports/viewportFocus';
 import { GizmoSystem } from '@/engine/GizmoSystem';
@@ -129,6 +131,8 @@ export interface AssetViewport3DHandle {
 
 export interface AssetViewport3DProps {
   assetType?: AssetType;
+  /** Stable input-context id when a host needs shared viewport hotkeys/brush gestures. */
+  inputContextId?: string;
   tool: ToolType;
   setTool: (tool: ToolType) => void;
   allowedTools?: readonly ToolType[];
@@ -178,6 +182,7 @@ export interface AssetViewport3DProps {
 
 export const AssetViewport3D = React.forwardRef<AssetViewport3DHandle, AssetViewport3DProps>(({
   assetType,
+  inputContextId,
   tool,
   setTool,
   allowedTools,
@@ -215,6 +220,9 @@ export const AssetViewport3D = React.forwardRef<AssetViewport3DHandle, AssetView
 }, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const generatedInputContextId = useId();
+  const viewportInputId = inputContextId ?? `asset-viewport-${generatedInputContextId.replace(/:/g, '')}`;
+  useViewportInputContext(viewportInputId, containerRef);
   const profileNavigation = viewportProfile?.navigation;
   const navigation = {
     orbit: navigationEnabled && (navigationPolicy?.orbit ?? profileNavigation?.orbit ?? true),
@@ -354,6 +362,7 @@ export const AssetViewport3D = React.forwardRef<AssetViewport3DHandle, AssetView
   // Keybindings
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (!viewportInputRouter.isActive(viewportInputId)) return;
       const active = document.activeElement;
       if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') return;
 
@@ -382,7 +391,7 @@ export const AssetViewport3D = React.forwardRef<AssetViewport3DHandle, AssetView
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [assetType, allowedTools, setTool, onToggleGrid, fitCamera, focusProvider, defaultCamera, onCustomKeyDown, navigation.focus, projectionSettings]);
+  }, [assetType, allowedTools, setTool, onToggleGrid, fitCamera, focusProvider, defaultCamera, onCustomKeyDown, navigation.focus, projectionSettings, viewportInputId]);
 
   // Main WebGL Loop
   useEffect(() => {

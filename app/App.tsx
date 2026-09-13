@@ -7,6 +7,7 @@ import { EditorContext, EditorContextType, DEFAULT_UI_CONFIG, UIConfiguration, G
 import { assetManager } from '@/engine/AssetManager';
 import { consoleService } from '@/engine/Console';
 import '@/editor/commands/StaticMeshCommandCatalogue';
+import { SCENE_VIEWPORT_INPUT_ID, viewportInputRouter } from '@/editor/input/ViewportInputRouter';
 
 // Components
 import { Toolbar } from '@/editor/components/Toolbar';
@@ -277,6 +278,9 @@ const EditorInterface: React.FC = () => {
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Delete' || e.key === 'Backspace') {
+                // Object deletion belongs to Scene context. Asset editors may have
+                // their own Delete command for components/topology.
+                if (!viewportInputRouter.isActive(SCENE_VIEWPORT_INPUT_ID)) return;
                 const active = document.activeElement;
                 const isInput = active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA';
                 if (!isInput && editor?.selectedIds.length && editor.selectionType === 'ENTITY') {

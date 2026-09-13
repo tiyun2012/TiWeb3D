@@ -87,3 +87,17 @@ The full stack is:
 `AssetEditorTemplate` (Hierarchy / Viewport / Inspector) -> `AssetViewport3D` (renderer host and filtered asset toolbar) -> `ViewportTemplate` (canvas/chrome placement).
 
 See `/docs/ASSET_EDITOR_TEMPLATE.md` for asset-type capability filtering and skeletal-mesh workspace routing.
+
+## Active viewport input context
+
+Viewport hotkeys must follow the viewport the user is actually working in. Mounted viewports therefore register with `editor/input/ViewportInputRouter.ts` through `useViewportInputContext()`.
+
+- Pointer enter or pointer down claims the viewport input context.
+- Scene View is the fallback context when no asset viewport is active.
+- Window-level shortcuts must check `viewportInputRouter.isActive(viewportId)` before acting.
+- `AssetViewport3D` does this for its shared Q/W/E/R/G/F shortcuts, so an open asset editor and Scene View cannot both respond to the same key.
+- Hosts that need a stable id (for example Static Mesh brush interaction) pass `inputContextId`; other asset viewports receive an internal id automatically.
+
+`F` remains a viewport navigation shortcut: it focuses through the owning viewport's focus provider/API. It must never reach across to another mounted viewport.
+
+`B` is a gesture rather than a plain command. `useBrushInteraction()` is reusable and context-aware: B tap toggles the host soft-selection state, while B + LMB drag changes radius only when the gesture starts inside the active viewport. The hook receives a `configureSoftSelection()` adapter instead of reading global `EditorContext`, allowing Static Mesh Editor and Scene View to keep independent transient state while reusing the same mesh-editing API.

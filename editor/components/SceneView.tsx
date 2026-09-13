@@ -1,6 +1,8 @@
 
 import React, { useRef, useEffect, useState, useLayoutEffect, useContext, useCallback } from 'react';
 import { useViewportSize } from '@/editor/hooks/useViewportSize';
+import { useViewportInputContext } from '@/editor/hooks/useViewportInputContext';
+import { SCENE_VIEWPORT_INPUT_ID, viewportInputRouter } from '@/editor/input/ViewportInputRouter';
 import { createPortal } from 'react-dom';
 import { ComponentType, ToolType } from '@/types';
 import { SceneGraph } from '@/engine/SceneGraph';
@@ -43,6 +45,7 @@ import '@/editor/commands/StaticMeshCommandCatalogue';
 import { resolveSceneStaticMeshEditTarget } from '@/engine/mesh-editing/StaticMeshEditTarget';
 
 const MARQUEE_DRAG_THRESHOLD_PX = 4;
+type SoftSelectionCommandSettings = Parameters<NonNullable<EditorCommandContext['services']['configureSoftSelection']>>[0];
 const sceneEngineApi = createEngineAPI(engineInstance);
 
 interface SceneViewProps {
@@ -67,11 +70,6 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         setSoftSelectionHeatmapVisible,
         setTool
     } = useContext(EditorContext)!;
-    
-    // --- HOOKS ---
-    const { isAdjustingBrush, isBrushKeyHeld } = useBrushInteraction({
-        onBrushAdjustEnd: () => engineInstance.endVertexDrag()
-    });
     
     // State for local view settings
     const [renderMode, setRenderMode] = useState(0);
@@ -257,6 +255,32 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
     const viewportSize = useViewportSize(containerRef, { dprCap: 2 });
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const viewMenuRef = useRef<HTMLDivElement>(null);
+    useViewportInputContext(SCENE_VIEWPORT_INPUT_ID, containerRef, { fallback: true });
+
+    const configureSceneSoftSelection = useCallback((settings: SoftSelectionCommandSettings) => {
+        if (settings.enabled !== undefined) setSoftSelectionEnabled(settings.enabled);
+        if (settings.radius !== undefined) setSoftSelectionRadius(settings.radius);
+        if (settings.mode !== undefined) setSoftSelectionMode(settings.mode);
+        if (settings.falloff !== undefined) setSoftSelectionFalloff(settings.falloff);
+        if (settings.heatmapVisible !== undefined) setSoftSelectionHeatmapVisible(settings.heatmapVisible);
+    }, [
+        setSoftSelectionEnabled,
+        setSoftSelectionRadius,
+        setSoftSelectionMode,
+        setSoftSelectionFalloff,
+        setSoftSelectionHeatmapVisible,
+    ]);
+
+    const sceneBrushAvailable = meshComponentMode !== 'OBJECT'
+        && Boolean(resolveSceneStaticMeshEditTarget(engineInstance, selectedIds));
+    const { isAdjustingBrush, isBrushKeyHeld } = useBrushInteraction({
+        viewportId: SCENE_VIEWPORT_INPUT_ID,
+        available: sceneBrushAvailable,
+        softSelectionEnabled,
+        softSelectionRadius,
+        configureSoftSelection: configureSceneSoftSelection,
+        onBrushAdjustEnd: () => engineInstance.endVertexDrag(),
+    });
 
     const selectedCameraId = selectedIds.find(id => engineInstance.ecs.hasComponent(id, ComponentType.CAMERA)) ?? null;
     const resolvedViewCamera = viewCameraEntityId ? engineInstance.getResolvedCamera(viewCameraEntityId) : null;
@@ -325,12 +349,13 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
     }, [meshComponentMode]);
 
     useEffect(() => {
-        engineInstance.softSelectionEnabled = softSelectionEnabled;
-        engineInstance.softSelectionRadius = softSelectionRadius;
-        engineInstance.softSelectionMode = softSelectionMode;
-        engineInstance.softSelectionFalloff = softSelectionFalloff;
-        engineInstance.softSelectionHeatmapVisible = softSelectionHeatmapVisible;
-        engineInstance.recalculateSoftSelection();
+        sceneEngineApi.commands.meshEditing.configureSoftSelection({
+            enabled: softSelectionEnabled,
+            radius: softSelectionRadius,
+            mode: softSelectionMode,
+            falloff: softSelectionFalloff,
+            heatmapVisible: softSelectionHeatmapVisible,
+        });
     }, [
         softSelectionEnabled,
         softSelectionRadius,
@@ -549,6 +574,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
 
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
+            if (!viewportInputRouter.isActive(SCENE_VIEWPORT_INPUT_ID)) return;
             const active = document.activeElement;
             if (active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA') return;
             if (e.key === 'f' || e.key === 'F') {
@@ -952,14 +978,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
                     if (command === 'CONNECT') engineInstance.connectComponents();
                     if (command === 'DELETE_FACE') engineInstance.deleteSelectedFaces();
                 },
-                configureSoftSelection: settings => {
-                    if (settings.enabled !== undefined) setSoftSelectionEnabled(settings.enabled);
-                    if (settings.radius !== undefined) setSoftSelectionRadius(settings.radius);
-                    if (settings.mode !== undefined) setSoftSelectionMode(settings.mode);
-                    if (settings.falloff !== undefined) setSoftSelectionFalloff(settings.falloff);
-                    if (settings.heatmapVisible !== undefined) setSoftSelectionHeatmapVisible(settings.heatmapVisible);
-                    sceneEngineApi.commands.meshEditing.configureSoftSelection(settings);
-                },
+                configureSoftSelection: configureSceneSoftSelection,
             },
         };
     })();

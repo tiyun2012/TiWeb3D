@@ -1,7 +1,8 @@
-import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { EditorContext } from '@/editor/state/EditorContext';
+import { useBrushInteraction } from '@/editor/hooks/useBrushInteraction';
 import { AssetViewportEngine } from '@/editor/viewports/AssetViewportEngine';
 import { resolveMeshFocusTarget } from '@/editor/viewports/focusTargetResolvers';
 import type { EditorCommandCapability, EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
@@ -47,6 +48,7 @@ const RENDER_MODE_ITEMS: Array<{ id: number; label: string; icon: string }> = VI
   .map(mode => ({ ...mode }));
 
 type DirtyKind = 'NONE' | 'VERTS' | 'FULL';
+type SoftSelectionCommandSettings = Parameters<NonNullable<EditorCommandContext['services']['configureSoftSelection']>>[0];
 
 function computeFitCamera(
   asset: StaticMeshAsset | SkeletalMeshAsset
@@ -155,6 +157,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   } | null>(null);
 
   const viewportRef = useRef<AssetViewport3DHandle | null>(null);
+  const viewportInputId = `static-mesh:${assetId}`;
 
   // Buffers
   const glResourcesRef = useRef<{
@@ -204,24 +207,6 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       previewEngineRef.current.recalculateSoftSelection();
     }
   }, [meshComponentMode]);
-
-  useEffect(() => {
-    const engine = previewEngineRef.current;
-    if (!engine) return;
-    engine.api.commands.meshEditing.configureSoftSelection({
-      enabled: softSelectionEnabled,
-      radius: softSelectionRadius,
-      mode: softSelectionMode,
-      falloff: softSelectionFalloff,
-      heatmapVisible: softSelectionHeatmapVisible,
-    });
-  }, [
-    softSelectionEnabled,
-    softSelectionRadius,
-    softSelectionMode,
-    softSelectionFalloff,
-    softSelectionHeatmapVisible,
-  ]);
 
   useEffect(() => {
     gizmoSystemRef.current?.setTool(tool);
@@ -789,6 +774,18 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     engine.selectionSystem.selectLoop(mode);
   };
 
+  const configureSoftSelection = useCallback((settings: SoftSelectionCommandSettings) => {
+    // The local edit engine owns deformation weights and heatmap invalidation.
+    // Apply the command synchronously, then mirror its settings into React UI state.
+    previewEngineRef.current?.api.commands.meshEditing.configureSoftSelection(settings);
+
+    if (settings.enabled !== undefined) setSoftSelectionEnabled(settings.enabled);
+    if (settings.radius !== undefined) setSoftSelectionRadius(settings.radius);
+    if (settings.mode !== undefined) setSoftSelectionMode(settings.mode);
+    if (settings.falloff !== undefined) setSoftSelectionFalloff(settings.falloff);
+    if (settings.heatmapVisible !== undefined) setSoftSelectionHeatmapVisible(settings.heatmapVisible);
+  }, []);
+
   const commandContext = useMemo<EditorCommandContext>(() => {
     const staticMeshTarget = currentAsset && currentAsset.type === 'MESH'
       ? resolveAssetStaticMeshEditTarget(currentAsset as StaticMeshAsset)
@@ -828,14 +825,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           focusCamera();
         },
         selectLoop: handleSelectLoop,
-        configureSoftSelection: settings => {
-          if (settings.enabled !== undefined) setSoftSelectionEnabled(settings.enabled);
-          if (settings.radius !== undefined) setSoftSelectionRadius(settings.radius);
-          if (settings.mode !== undefined) setSoftSelectionMode(settings.mode);
-          if (settings.falloff !== undefined) setSoftSelectionFalloff(settings.falloff);
-          if (settings.heatmapVisible !== undefined) setSoftSelectionHeatmapVisible(settings.heatmapVisible);
-          previewEngineRef.current?.api.commands.meshEditing.configureSoftSelection(settings);
-        },
+        configureSoftSelection,
       },
     };
   }, [
@@ -847,12 +837,17 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     softSelectionHeatmapVisible,
     setTool,
     setMeshComponentMode,
-    setSoftSelectionEnabled,
-    setSoftSelectionRadius,
-    setSoftSelectionMode,
-    setSoftSelectionFalloff,
-    setSoftSelectionHeatmapVisible,
+    configureSoftSelection,
   ]);
+
+  const { isAdjustingBrush } = useBrushInteraction({
+    viewportId: viewportInputId,
+    available: currentAsset?.type === 'MESH' && meshComponentMode !== 'OBJECT',
+    softSelectionEnabled,
+    softSelectionRadius,
+    configureSoftSelection,
+    onBrushAdjustEnd: () => previewEngineRef.current?.endVertexDrag(),
+  });
 
   const handlePieAction = (action: string) => {
     if (!currentAsset) return;
@@ -951,8 +946,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             softSelectionMode={softSelectionMode}
             softSelectionFalloff={softSelectionFalloff}
             softSelectionHeatmapVisible={softSelectionHeatmapVisible}
-            onSoftSelectionRadiusChange={setSoftSelectionRadius}
-            onSoftSelectionFalloffChange={setSoftSelectionFalloff}
+            onSoftSelectionRadiusChange={radius => configureSoftSelection({ radius })}
+            onSoftSelectionFalloffChange={falloff => configureSoftSelection({ falloff })}
             commandContext={commandContext}
           />
         ) : (
@@ -981,6 +976,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       <AssetViewport3D
         ref={viewportRef}
         assetType={currentAsset.type}
+        inputContextId={viewportInputId}
         tool={tool}
         setTool={setTool}
         camera={camera}
@@ -995,13 +991,13 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           { label: 'Mode', value: meshComponentMode, color: 'text-accent' },
         ]}
         selectionBadge={{
-          text: isSelected ? 'Selected' : 'No Sel',
+          text: isAdjustingBrush ? `Radius ${softSelectionRadius.toFixed(2)}` : isSelected ? 'Selected' : 'No Sel',
           active: isSelected,
         }}
         engine={previewEngine}
         gizmoSystem={gizmoSystem}
         toolbarActions={meshToolbarActions}
-        shortcutsLegend="Alt+LMB Orbit • Alt+MMB Pan • Alt+RMB Zoom • RMB Pie"
+        shortcutsLegend="F Focus • B Radius • Alt+LMB Orbit • Alt+MMB Pan • Alt+RMB Zoom • RMB Pie"
         onInitGl={handleInitGl}
         onCleanupGl={handleCleanupGl}
         onRender={handleRender}
