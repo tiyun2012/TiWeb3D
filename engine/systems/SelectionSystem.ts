@@ -10,6 +10,22 @@ import { meshEdgeKey } from '../MeshEdgeGeometry';
 
 type ScreenPoint = { x: number; y: number };
 
+export type HoveredMeshComponent =
+    | { entityId: string; mode: 'VERTEX'; vertexId: number }
+    | { entityId: string; mode: 'EDGE'; edgeId: [number, number]; edgeKey: string }
+    | { entityId: string; mode: 'FACE'; faceId: number };
+
+const pointToSegmentDistance2D = (point: ScreenPoint, a: ScreenPoint, b: ScreenPoint): number => {
+    const abX = b.x - a.x;
+    const abY = b.y - a.y;
+    const lengthSq = abX * abX + abY * abY;
+    if (lengthSq <= 1e-8) return Math.hypot(point.x - a.x, point.y - a.y);
+    const t = Math.max(0, Math.min(1, ((point.x - a.x) * abX + (point.y - a.y) * abY) / lengthSq));
+    const closestX = a.x + abX * t;
+    const closestY = a.y + abY * t;
+    return Math.hypot(point.x - closestX, point.y - closestY);
+};
+
 type ScreenRect = {
     left: number;
     right: number;
@@ -187,7 +203,19 @@ export class SelectionSystem {
         edgeIds: new Set<string>(),
         faceIds: new Set<number>()
     };
-    hoveredVertex: { entityId: string, index: number } | null = null;
+    hoveredMeshComponent: HoveredMeshComponent | null = null;
+
+    /** Backward-compatible vertex hover view for existing renderers/plugins. */
+    get hoveredVertex(): { entityId: string; index: number } | null {
+        const hovered = this.hoveredMeshComponent;
+        return hovered?.mode === 'VERTEX'
+            ? { entityId: hovered.entityId, index: hovered.vertexId }
+            : null;
+    }
+
+    clearMeshComponentHover() {
+        this.hoveredMeshComponent = null;
+    }
 
     get selectedEntities(): Set<string> {
         const set = new Set<string>();
@@ -221,7 +249,7 @@ export class SelectionSystem {
         this.subSelection.vertexIds.clear(); 
         this.subSelection.edgeIds.clear(); 
         this.subSelection.faceIds.clear();
-        this.hoveredVertex = null;
+        this.hoveredMeshComponent = null;
         this.engine.recalculateSoftSelection(); 
         if (notify) this.engine.notifyUI();
     }
@@ -487,53 +515,98 @@ export class SelectionSystem {
         return null;
     }
 
-    highlightVertexAt(mx: number, my: number, w: number, h: number) {
-        if (this.engine.meshComponentMode !== 'VERTEX' || this.selectedIndices.size === 0 || !this.engine.currentViewProj) {
-            this.hoveredVertex = null;
-            return;
+    /**
+     * Resolve hover for the active mesh component mode. The public command is
+     * mode-agnostic so Scene View, asset editors, tests and future agent APIs
+     * do not need separate vertex/edge/face interaction code.
+     */
+    hoverMeshComponentAt(mx: number, my: number, w: number, h: number): HoveredMeshComponent | null {
+        const mode = this.engine.meshComponentMode as MeshComponentMode;
+        if (mode === 'OBJECT' || this.selectedIndices.size === 0 || !this.engine.currentViewProj) {
+            this.hoveredMeshComponent = null;
+            return null;
         }
 
         const idx = Array.from(this.selectedIndices)[0];
         const entityId = this.engine.ecs.store.ids[idx];
         const meshIntId = this.engine.ecs.store.meshType[idx];
         const assetUuid = assetManager.meshIntToUuid.get(meshIntId);
-        const asset = assetManager.getAsset(assetUuid!) as StaticMeshAsset;
-        
-        if (!asset || !asset.topology) return;
+        const asset = assetUuid ? assetManager.getAsset(assetUuid) as StaticMeshAsset : null;
+        if (!asset || !asset.topology) {
+            this.hoveredMeshComponent = null;
+            return null;
+        }
 
         const pick = this.pickMeshComponent(entityId, mx, my, w, h);
-        
-        if (pick) {
-            const worldMat = this.engine.sceneGraph.getWorldMatrix(entityId);
-            if (!worldMat) {
-                this.hoveredVertex = null;
-                return;
-            }
+        if (!pick) {
+            this.hoveredMeshComponent = null;
+            return null;
+        }
 
-            const localVertex = {
-                x: asset.geometry.vertices[pick.vertexId*3],
-                y: asset.geometry.vertices[pick.vertexId*3+1],
-                z: asset.geometry.vertices[pick.vertexId*3+2]
+        if (mode === 'FACE') {
+            this.hoveredMeshComponent = { entityId, mode: 'FACE', faceId: pick.faceId };
+            return this.hoveredMeshComponent;
+        }
+
+        const worldMat = this.engine.sceneGraph.getWorldMatrix(entityId);
+        if (!worldMat) {
+            this.hoveredMeshComponent = null;
+            return null;
+        }
+
+        const projectVertex = (vertexId: number): ScreenPoint | null => {
+            const offset = vertexId * 3;
+            if (offset < 0 || offset + 2 >= asset.geometry.vertices.length) return null;
+            const local = {
+                x: asset.geometry.vertices[offset],
+                y: asset.geometry.vertices[offset + 1],
+                z: asset.geometry.vertices[offset + 2],
             };
-            const worldVertex = Vec3Utils.transformMat4(localVertex, worldMat, {x:0, y:0, z:0});
-            const viewProj = this.engine.currentViewProj;
-            const clipW = viewProj[3]*worldVertex.x + viewProj[7]*worldVertex.y + viewProj[11]*worldVertex.z + viewProj[15];
+            const world = Vec3Utils.transformMat4(local, worldMat, { x: 0, y: 0, z: 0 });
+            const viewProj = this.engine.currentViewProj!;
+            const clipW = viewProj[3] * world.x + viewProj[7] * world.y + viewProj[11] * world.z + viewProj[15];
+            if (clipW <= 0.001) return null;
+            const projected = Vec3Utils.transformMat4(world, viewProj, { x: 0, y: 0, z: 0 });
+            return {
+                x: (projected.x * 0.5 + 0.5) * w,
+                y: (1.0 - (projected.y * 0.5 + 0.5)) * h,
+            };
+        };
 
-            if (clipW > 0.001) {
-                const projected = Vec3Utils.transformMat4(worldVertex, viewProj, {x:0, y:0, z:0});
-                const screenX = (projected.x * 0.5 + 0.5) * w;
-                const screenY = (1.0 - (projected.y * 0.5 + 0.5)) * h;
-                const pixelDistance = Math.hypot(screenX - mx, screenY - my);
-
-                // Screen-space threshold stays stable across camera distance and object scale.
-                if (pixelDistance <= 12) {
-                    this.hoveredVertex = { entityId, index: pick.vertexId };
-                    return;
-                }
+        if (mode === 'VERTEX') {
+            const point = projectVertex(pick.vertexId);
+            if (point && Math.hypot(point.x - mx, point.y - my) <= 12) {
+                this.hoveredMeshComponent = { entityId, mode: 'VERTEX', vertexId: pick.vertexId };
+                return this.hoveredMeshComponent;
+            }
+        } else if (mode === 'EDGE') {
+            const a = projectVertex(pick.edgeId[0]);
+            const b = projectVertex(pick.edgeId[1]);
+            // Screen-space tolerance keeps edge hover stable across camera distance,
+            // object scale and perspective projection.
+            if (a && b && pointToSegmentDistance2D({ x: mx, y: my }, a, b) <= 9) {
+                const edgeId: [number, number] = [pick.edgeId[0], pick.edgeId[1]];
+                this.hoveredMeshComponent = {
+                    entityId,
+                    mode: 'EDGE',
+                    edgeId,
+                    edgeKey: meshEdgeKey(edgeId[0], edgeId[1]),
+                };
+                return this.hoveredMeshComponent;
             }
         }
-        
-        this.hoveredVertex = null;
+
+        this.hoveredMeshComponent = null;
+        return null;
+    }
+
+    /** @deprecated Use hoverMeshComponentAt(); retained for compatibility. */
+    highlightVertexAt(mx: number, my: number, w: number, h: number) {
+        if (this.engine.meshComponentMode !== 'VERTEX') {
+            this.hoveredMeshComponent = null;
+            return;
+        }
+        this.hoverMeshComponentAt(mx, my, w, h);
     }
 
     selectVerticesInBrush(mx: number, my: number, width: number, height: number, add: boolean = true) {

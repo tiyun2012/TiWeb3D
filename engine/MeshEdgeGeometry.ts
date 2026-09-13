@@ -22,6 +22,7 @@ export const MESH_EDGE_COLORS = {
   wireframe: { r: 0.62, g: 0.68, b: 0.76, a: 0.58 } satisfies MeshEdgeRgba,
   dim: { r: 0.3, g: 0.3, b: 0.35 } satisfies MeshEdgeRgb,
   selected: { r: 1.0, g: 1.0, b: 0.0 } satisfies MeshEdgeRgb,
+  hovered: { r: 1.0, g: 0.78, b: 0.15 } satisfies MeshEdgeRgb,
 } as const;
 
 export function meshEdgeKey(a: number, b: number): string {

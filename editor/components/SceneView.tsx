@@ -306,6 +306,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
 
     useEffect(() => {
         engineInstance.meshComponentMode = meshComponentMode;
+        engineInstance.selectionSystem.clearMeshComponentHover();
         engineInstance.softSelectionEnabled = softSelectionEnabled;
         engineInstance.softSelectionRadius = softSelectionRadius;
         engineInstance.softSelectionMode = softSelectionMode;
@@ -694,7 +695,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         engineInstance.gizmoSystem.update(0, mx, my, rect.width, rect.height, false, false);
 
         if (meshComponentMode !== 'OBJECT') {
-            if (meshComponentMode === 'VERTEX') engineInstance.selectionSystem.highlightVertexAt(mx, my, rect.width, rect.height);
+            engineInstance.selectionSystem.hoverMeshComponentAt(mx, my, rect.width, rect.height);
         }
 
         if (dragState && dragState.isDragging) {

@@ -177,6 +177,7 @@ export class Engine {
     // ... (rest of the file remains unchanged until tick)
 
     get meshSystem() { return this.renderer.meshSystem; }
+    get hoveredMeshComponent() { return this.selectionSystem.hoveredMeshComponent; }
     get hoveredVertex() { return this.selectionSystem.hoveredVertex; }
 
     setSelected(ids: string[]) {

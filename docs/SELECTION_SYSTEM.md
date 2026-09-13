@@ -69,3 +69,7 @@ A small pointer wobble may cross the marquee promotion threshold before mouse-up
 ## Selection vs. Focus
 
 Selection does not own viewport navigation. Changing `selectedIds` or mesh sub-selection must not reframe a camera. Explicit Focus commands query selection state through context adapters instead. Mesh component focus reuses `getSelectionAsVertices()` so VERTEX, EDGE, and FACE selection all resolve to a common set of vertex positions; the shared viewport framing implementation then handles camera distance/orthographic scale. See [`VIEWPORT_FOCUS.md`](./VIEWPORT_FOCUS.md).
+
+## Component hover contract
+
+Mesh component hover is resolved by `SelectionSystem.hoverMeshComponentAt(...)` for vertex, edge, and face modes. Viewports should call that single API and render `hoveredMeshComponent`; they should not implement mode-specific picking. `hoveredVertex` remains a compatibility view only. Hover changes visual feedback only and must never modify selection, transforms, or camera state.

@@ -114,6 +114,7 @@ export const MeshModule: EngineModule = {
         
         const isObjectMode = engine.meshComponentMode === 'OBJECT';
         const isVertexMode = engine.meshComponentMode === 'VERTEX';
+        const isEdgeMode = engine.meshComponentMode === 'EDGE';
         const isFaceMode = engine.meshComponentMode === 'FACE';
         
         if (isObjectMode && !engine.uiConfig.selectionEdgeHighlight) return;
@@ -126,6 +127,7 @@ export const MeshModule: EngineModule = {
         };
         
         const colSel = MESH_EDGE_COLORS.selected;
+        const colHover = MESH_EDGE_COLORS.hovered;
         const colObjectSelection = hexToRgb(engine.uiConfig.selectionEdgeColor || '#4f80f8');
         const vertexConfigColor = hexToRgb(engine.uiConfig.vertexColor || '#a855f7');
         const wireframeDim = MESH_EDGE_COLORS.dim;
@@ -145,6 +147,11 @@ export const MeshModule: EngineModule = {
             const topo = asset.topology;
             const selectedFaceEdges = isFaceMode
                 ? collectFaceEdgeKeys(topo.faces, engine.selectionSystem.subSelection.faceIds)
+                : null;
+            const hovered = engine.selectionSystem.hoveredMeshComponent;
+            const hoveredForEntity = hovered?.entityId === entityId ? hovered : null;
+            const hoveredFaceEdges = isFaceMode && hoveredForEntity?.mode === 'FACE'
+                ? collectFaceEdgeKeys(topo.faces, [hoveredForEntity.faceId])
                 : null;
 
             if (engine.debugRenderer.lineCount < engine.debugRenderer.maxLines) {
@@ -166,8 +173,13 @@ export const MeshModule: EngineModule = {
                     let color = isObjectMode ? colObjectSelection : wireframeDim;
                     const edgeSelected = engine.selectionSystem.subSelection.edgeIds.has(edgeKey);
                     const faceBoundarySelected = selectedFaceEdges?.has(edgeKey) ?? false;
+                    const edgeHovered = isEdgeMode && hoveredForEntity?.mode === 'EDGE' && hoveredForEntity.edgeKey === edgeKey;
+                    const faceBoundaryHovered = hoveredFaceEdges?.has(edgeKey) ?? false;
                     if (!isObjectMode && !isVertexMode && (edgeSelected || faceBoundarySelected)) {
                         color = colSel;
+                    }
+                    if (!isObjectMode && !isVertexMode && (edgeHovered || faceBoundaryHovered)) {
+                        color = colHover;
                     }
                     engine.debugRenderer.drawLine(pA, pB, color);
                 });
@@ -201,10 +213,15 @@ export const MeshModule: EngineModule = {
                         if (!(cr > 0.9 && cg > 0.9 && cb > 0.9)) { r *= cr; g *= cg; b *= cb; }
                     }
 
-                    if (isSelected || isHovered) {
+                    if (isSelected) {
                         r = colSel.r; g = colSel.g; b = colSel.b;
-                        size = pointSizes.selected; 
-                        border = 0.0; 
+                        size = pointSizes.selected;
+                        border = 0.0;
+                    }
+                    if (isHovered) {
+                        r = colHover.r; g = colHover.g; b = colHover.b;
+                        size = pointSizes.hovered;
+                        border = 0.0;
                     }
 
                     engine.debugRenderer.drawPointRaw(wx, wy, wz, r, g, b, size, border);

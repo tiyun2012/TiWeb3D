@@ -156,10 +156,12 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     ibo: WebGLBuffer | null;
     edgeOverlay: MeshEdgeOverlay;
     selectedEdgeOverlay: MeshEdgeOverlay;
+    hoveredEdgeOverlay: MeshEdgeOverlay;
     vertexOverlay: MeshVertexOverlay;
     materialPreview: MaterialPreviewRenderer;
     selectionEdgeRevision: number;
     selectionEdgeMode: MeshComponentMode | null;
+    hoveredEdgeSignature: string;
     selectionVertexRevision: number;
   }>({
     meshVao: null,
@@ -170,16 +172,21 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     ibo: null,
     edgeOverlay: new MeshEdgeOverlay(),
     selectedEdgeOverlay: new MeshEdgeOverlay(),
+    hoveredEdgeOverlay: new MeshEdgeOverlay(),
     vertexOverlay: new MeshVertexOverlay(),
     materialPreview: new MaterialPreviewRenderer(),
     selectionEdgeRevision: -1,
     selectionEdgeMode: null,
+    hoveredEdgeSignature: '',
     selectionVertexRevision: -1,
   });
 
   // Keep local engine in-sync with global tool + component mode
   useEffect(() => {
-    if (previewEngineRef.current) previewEngineRef.current.meshComponentMode = meshComponentMode;
+    if (previewEngineRef.current) {
+      previewEngineRef.current.meshComponentMode = meshComponentMode;
+      previewEngineRef.current.selectionSystem.clearMeshComponentHover();
+    }
   }, [meshComponentMode]);
 
   useEffect(() => {
@@ -325,6 +332,13 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       buildMeshEdgeIndicesFromKeys([], asset.geometry.indices instanceof Uint32Array),
       gl.DYNAMIC_DRAW,
     );
+    const hoveredEdgeOverlay = new MeshEdgeOverlay();
+    hoveredEdgeOverlay.init(
+      gl,
+      vbo,
+      buildMeshEdgeIndicesFromKeys([], asset.geometry.indices instanceof Uint32Array),
+      gl.DYNAMIC_DRAW,
+    );
     const vertexOverlay = new MeshVertexOverlay();
     vertexOverlay.init(gl, vbo);
     const materialPreview = new MaterialPreviewRenderer();
@@ -340,10 +354,12 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       ibo,
       edgeOverlay,
       selectedEdgeOverlay,
+      hoveredEdgeOverlay,
       vertexOverlay,
       materialPreview,
       selectionEdgeRevision: -1,
       selectionEdgeMode: null,
+      hoveredEdgeSignature: '',
       selectionVertexRevision: -1,
     };
   };
@@ -358,6 +374,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     if (res.ibo) gl.deleteBuffer(res.ibo);
     res.edgeOverlay.dispose(gl);
     res.selectedEdgeOverlay.dispose(gl);
+    res.hoveredEdgeOverlay.dispose(gl);
     res.vertexOverlay.dispose(gl);
     res.materialPreview.dispose(gl);
   };
@@ -387,6 +404,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           gl.DYNAMIC_DRAW,
         );
         res.selectionEdgeRevision = -1;
+        res.hoveredEdgeSignature = '__geometry_changed__';
         res.selectionVertexRevision = -1;
       }
       dirtyRef.current = 'NONE';
@@ -472,6 +490,37 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         res.selectionEdgeMode = componentMode;
       }
       res.selectedEdgeOverlay.draw(gl, lineProgram, mvp, { ...MESH_EDGE_COLORS.selected, a: 1.0 });
+
+      const hovered = engine?.selectionSystem.hoveredMeshComponent;
+      const hoveredKeys = new Set<string>();
+      let hoverSignature = '';
+      if (hovered && hovered.entityId === previewEntityId) {
+        switch (hovered.mode) {
+          case 'EDGE':
+            if (componentMode === 'EDGE') {
+              hoveredKeys.add(hovered.edgeKey);
+              hoverSignature = `EDGE:${hovered.edgeKey}`;
+            }
+            break;
+          case 'FACE':
+            if (componentMode === 'FACE') {
+              collectFaceEdgeKeys(asset.topology?.faces, [hovered.faceId]).forEach(key => hoveredKeys.add(key));
+              hoverSignature = `FACE:${hovered.faceId}`;
+            }
+            break;
+          case 'VERTEX':
+            break;
+        }
+      }
+      if (res.hoveredEdgeSignature !== hoverSignature) {
+        res.hoveredEdgeOverlay.update(
+          gl,
+          buildMeshEdgeIndicesFromKeys(hoveredKeys, asset.geometry.indices instanceof Uint32Array),
+          gl.DYNAMIC_DRAW,
+        );
+        res.hoveredEdgeSignature = hoverSignature;
+      }
+      res.hoveredEdgeOverlay.draw(gl, lineProgram, mvp, { ...MESH_EDGE_COLORS.hovered, a: 1.0 });
     }
 
     // Vertex mode uses the same position VBO through a reusable point overlay.
@@ -597,8 +646,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     const gs = gizmoSystemRef.current;
     if (engine && gs) {
       gs.update(0, coords.x, coords.y, coords.width, coords.height, false, false);
-      if (meshComponentModeRef.current === 'VERTEX') {
-        engine.selectionSystem.highlightVertexAt(coords.x, coords.y, coords.width, coords.height);
+      if (meshComponentModeRef.current !== 'OBJECT') {
+        engine.selectionSystem.hoverMeshComponentAt(coords.x, coords.y, coords.width, coords.height);
       }
     }
   };
