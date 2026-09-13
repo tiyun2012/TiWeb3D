@@ -53,3 +53,13 @@ Surface/geodesic distance is supported, but SLIDE + SURFACE is deliberately more
 5. SLIDE: drag far enough that low-weight vertices fall behind/outside the moving influence region. Those vertices must stop receiving additional movement rather than being pulled indefinitely.
 6. Change component selection or Vertex/Edge/Face mode. Any retained LIVE operation must no longer respond to subsequent radius changes.
 7. Repeat in Scene with a Static Mesh entity selected. Behavior should match Static Mesh Editor. Skeletal Mesh targets should not enter the new deformation session.
+
+## Static Mesh workspace UI and state scope
+
+Static Mesh Editor exposes the deformation policies through the collapsible left workspace dock documented in [`STATIC_MESH_WORKSPACE_DOCK.md`](./STATIC_MESH_WORKSPACE_DOCK.md).
+
+The deformation **implementation** and command IDs are shared with Scene, but transient edit state is viewport/context scoped. Static Mesh Editor owns its current tool, component mode, soft-selection settings, and heatmap visibility; Scene owns its own corresponding state. Reusing the command catalogue must never force Scene into Vertex/Edge/Face mode merely because the asset editor entered that mode.
+
+Both contexts still configure the same `meshEditing.configureSoftSelection(...)` API on their own engine host. This is implementation reuse without cross-viewport UI-state coupling.
+
+The Static Mesh asset viewport uploads the session's existing soft-selection weight buffer as vertex attribute 14 for heatmap display. The renderer observes weights; it does not calculate a second set of weights.

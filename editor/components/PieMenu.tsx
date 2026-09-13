@@ -2,6 +2,8 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { Icon } from './Icon';
 import { MeshComponentMode } from '@/types';
+import { editorCommandRegistry, type EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
+import { STATIC_MESH_PIE_COMMANDS } from '@/editor/commands/StaticMeshCommandCatalogue';
 
 interface PieMenuProps {
     x: number;
@@ -11,6 +13,7 @@ interface PieMenuProps {
     onClose: () => void;
     currentMode: MeshComponentMode;
     entityId?: string;
+    commandContext?: EditorCommandContext;
 }
 
 // Helper to get coords
@@ -19,7 +22,7 @@ const getPos = (deg: number, r: number) => {
     return { x: Math.cos(rad) * r, y: Math.sin(rad) * r };
 };
 
-export const PieMenu: React.FC<PieMenuProps> = ({ x, y, onSelectMode, onAction, onClose, currentMode }) => {
+export const PieMenu: React.FC<PieMenuProps> = ({ x, y, onSelectMode, onAction, onClose, currentMode, commandContext }) => {
     const [activeBranch, setActiveBranch] = useState<string | null>(null);
     const [hoverItem, setHoverItem] = useState<string | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
@@ -41,21 +44,45 @@ export const PieMenu: React.FC<PieMenuProps> = ({ x, y, onSelectMode, onAction, 
             { id: 'OBJECT', icon: 'Box', label: 'Object', type: 'MODE' }
         ];
 
-        const toolItems = [
+        const commandItems = (ids: readonly string[]) => commandContext
+            ? ids.flatMap(id => {
+                const command = editorCommandRegistry.resolve(id, commandContext);
+                if (!command) return [];
+                return [{
+                    id: command.id,
+                    icon: command.icon,
+                    label: command.label,
+                    type: 'COMMAND',
+                    disabled: !command.isEnabled,
+                    color: command.id === 'selection.delete' || command.id === 'staticMesh.deleteFace' ? '#ef4444' : undefined,
+                }];
+            })
+            : [];
+
+        const toolItems = commandContext ? commandItems(STATIC_MESH_PIE_COMMANDS.TOOLS) : [
             { id: 'tool_select', icon: 'MousePointer2', label: 'Select', type: 'ACTION' },
             { id: 'tool_move', icon: 'Move', label: 'Move', type: 'ACTION' },
             { id: 'tool_rotate', icon: 'RotateCw', label: 'Rotate', type: 'ACTION' },
             { id: 'tool_scale', icon: 'Maximize', label: 'Scale', type: 'ACTION' }
         ];
 
-        const viewItems = [
+        const viewItems = commandContext ? commandItems(STATIC_MESH_PIE_COMMANDS.VIEW) : [
             { id: 'toggle_grid', icon: 'Grid', label: 'Grid', type: 'ACTION' },
             { id: 'toggle_wire', icon: 'Codepen', label: 'Wireframe', type: 'ACTION' },
             { id: 'reset_cam', icon: 'Camera', label: 'Reset Cam', type: 'ACTION' }
         ];
 
         let actionItems: any[] = [];
-        if (currentMode === 'OBJECT') {
+        if (commandContext) {
+            const ids = currentMode === 'OBJECT'
+                ? STATIC_MESH_PIE_COMMANDS.OBJECT
+                : currentMode === 'FACE'
+                    ? STATIC_MESH_PIE_COMMANDS.FACE
+                    : currentMode === 'EDGE'
+                        ? STATIC_MESH_PIE_COMMANDS.EDGE
+                        : STATIC_MESH_PIE_COMMANDS.VERTEX;
+            actionItems = commandItems(ids);
+        } else if (currentMode === 'OBJECT') {
             actionItems = [
                 { id: 'focus', icon: 'Scan', label: 'Focus', type: 'ACTION' },
                 { id: 'duplicate', icon: 'Copy', label: 'Duplicate', type: 'ACTION' },
@@ -97,7 +124,7 @@ export const PieMenu: React.FC<PieMenuProps> = ({ x, y, onSelectMode, onAction, 
                 'VIEW': viewItems
             } as Record<string, any[]>
         };
-    }, [currentMode]);
+    }, [currentMode, commandContext]);
 
     useEffect(() => {
         const handleGlobalClick = () => onClose();
@@ -172,8 +199,13 @@ export const PieMenu: React.FC<PieMenuProps> = ({ x, y, onSelectMode, onAction, 
                  for (const items of Object.values(config.branches) as any[][]) {
                      const item = items.find((i: any) => i.id === hoverItem);
                      if (item) {
-                         if (item.type === 'MODE') onSelectMode(item.id as MeshComponentMode);
-                         else onAction(item.id);
+                         if (item.disabled) {
+                            found = true;
+                            continue;
+                        }
+                        if (item.type === 'MODE') onSelectMode(item.id as MeshComponentMode);
+                        else if (item.type === 'COMMAND' && commandContext) editorCommandRegistry.execute(item.id, commandContext);
+                        else onAction(item.id);
                          found = true;
                      }
                  }
@@ -194,7 +226,7 @@ export const PieMenu: React.FC<PieMenuProps> = ({ x, y, onSelectMode, onAction, 
             window.removeEventListener('mouseup', handleMouseUp);
             window.removeEventListener('contextmenu', preventContext);
         };
-    }, [onClose, onSelectMode, onAction, hoverItem, config]);
+    }, [onClose, onSelectMode, onAction, hoverItem, config, commandContext]);
 
     return (
         <div 

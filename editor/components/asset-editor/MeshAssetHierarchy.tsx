@@ -19,6 +19,7 @@ export interface MeshAssetHierarchyProps {
   meshComponentMode: MeshComponentMode;
   onSectionChange: (section: MeshHierarchySection) => void;
   onMeshComponentModeChange: (mode: MeshComponentMode) => void;
+  showHeader?: boolean;
 }
 
 function countUniqueEdges(asset: StaticMeshAsset | SkeletalMeshAsset): number {
@@ -51,6 +52,7 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
   meshComponentMode,
   onSectionChange,
   onMeshComponentModeChange,
+  showHeader = true,
 }) => {
   const [geometryExpanded, setGeometryExpanded] = useState(true);
   const [deformExpanded, setDeformExpanded] = useState(true);
@@ -72,10 +74,12 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
 
   return (
     <div className="h-full flex flex-col min-h-0">
-      <div className="h-8 px-2.5 border-b border-white/10 bg-black/15 flex items-center gap-2 shrink-0">
-        <Icon name="ListTree" size={12} className="text-accent" />
-        <span className="text-[10px] uppercase tracking-wider font-semibold text-text-secondary">Hierarchy</span>
-      </div>
+      {showHeader && (
+        <div className="h-8 px-2.5 border-b border-white/10 bg-black/15 flex items-center gap-2 shrink-0">
+          <Icon name="ListTree" size={12} className="text-accent" />
+          <span className="text-[10px] uppercase tracking-wider font-semibold text-text-secondary">Hierarchy</span>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto custom-scrollbar py-1">
         <HierarchyTreeItem

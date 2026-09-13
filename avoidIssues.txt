@@ -344,3 +344,33 @@ CAMERA RESOLUTION / PRESET RULES
 
 - **STATIC MESH DEFORMATION MUST BE BASELINE-REPRODUCIBLE:** Fixed and Live Falloff transforms must reconstruct preview geometry from the operation-start vertex snapshot plus current total gizmo delta. Never compound Live deformation from the previous preview. Slide Sculpt is the intentional exception: it owns an explicit accumulated per-vertex offset buffer and applies only incremental gizmo movement using current influence weights.
 - **SOFT-DEFORMATION CONTEXT OWNERSHIP:** Static Mesh owns soft-deformation behavior. Scene and asset viewports must use the shared `MeshDeformationSession`/solver rather than separate algorithms. For now the session accepts only `MESH` assets; do not silently apply it to `SKELETAL_MESH`.
+
+---
+
+### 28. STATIC MESH WORKSPACE DOCK / TOOL OWNERSHIP
+- **ONE STATIC-MESH TOOL STATE:** `StaticMeshToolDock` is only a UI projection of the existing `EditorContext` / mesh-editing API state. Never create separate dock-local copies of soft-selection enabled/radius/mode/falloff/heatmap state.
+- **LOCAL ASSET ENGINE ROUTING:** Static Mesh Editor Pie Menu and dock mesh-selection commands (including Vertex/Edge/Face Loop) must target `previewEngineRef.current.selectionSystem`, not the global `engineInstance` used by Scene View.
+- **DO NOT DUPLICATE LOOP ALGORITHMS:** Loop selection belongs to `SelectionSystem.selectLoop()` + `MeshTopologyUtils`. UI surfaces may invoke it, but must not reproduce topology traversal.
+- **SELECTION CHANGE INVALIDATES RETAINED DEFORMATION:** Expanding/changing component selection must clear the current deformation transaction before recalculating soft-selection weights. A Live Falloff baseline must never survive a different component selection.
+- **STATIC MESH DEFORMATION ONLY:** The Sculpt Tools dock is currently shown only for `MESH` assets. Do not silently enable Static Mesh deformation for `SKELETAL_MESH` until a separate ownership/skin-update contract is defined.
+- **COLLAPSE WITHOUT DUPLICATING LAYOUT:** The Static Mesh left dock may collapse to a narrow rail, while `AssetEditorTemplate` still owns whole-panel show/hide. Do not fork `AssetEditorTemplate` or duplicate the three-column editor shell for this behavior.
+- **API FIRST FOR NEW MODELING TOOLS:** Add real topology/deformation operations behind mesh-editing APIs/tool sessions first, then surface them in the dock and Pie Menu. React handlers must not own mesh mutation algorithms.
+
+---
+
+### 29. EDITOR COMMAND CATALOGUE / CAPABILITY ROUTING
+- **COMMAND IDS ARE THE STABLE UI/API CONTRACT:** Pie Menu, tool docks, hotkeys, command palettes, scripts, and future AI agents should call `editorCommandRegistry.execute(...)`; do not copy modeling behavior into each React surface.
+- **CONTEXT PROVIDES SERVICES, COMMAND PROVIDES POLICY:** Scene View and asset editors may adapt focus/grid/selection/tool services, but labels, capability requirements, enabled checks, and command identity belong in the catalogue.
+- **STATIC MESH TARGET MUST RESOLVE EXPLICITLY:** Scene Static Mesh editing is available only when the selection resolves to an actual `MESH` asset. Do not infer editable Static Mesh capability merely from "has vertices" or from a `SKELETAL_MESH` asset.
+- **SKELETAL MESH SOURCE EDITING MUST OPT IN:** A future Skeletal Mesh editor may expose Static Mesh commands through an explicit "Edit Source Mesh" adapter/target; never auto-enable destructive Static Mesh commands on skinned geometry.
+- **REGISTER ONCE AT BOOTSTRAP:** Built-in command catalogues must be imported/registered centrally. UI components may query/execute the registry but should not be responsible for registration order.
+
+---
+
+### 28. STATIC MESH ASSET EDIT SESSION / LIVE SCENE SYNC
+- **SHARE COMMANDS, NOT TRANSIENT VIEWPORT STATE:** Static Mesh Editor may reuse Scene command IDs and mesh-editing implementations, but it owns its own tool, component mode, soft-selection settings, and heatmap visibility. Never bind those asset-editor states directly to Scene `EditorContext`; otherwise Scene shows component cages/heatmaps and its gizmo reacts while another viewport is active.
+- **ONE GIZMO INPUT OWNER PER ASSET VIEWPORT:** `AssetViewport3D` owns `GizmoSystem.update()` for mouse down/move/up. Host editors may do picking/hover in forwarded callbacks, but must never call `GizmoSystem.update()` again. Double-driving the lifecycle can clear `activeAxis`, end a drag twice, or make the gizmo disappear until the editor is rebuilt.
+- **LIVE GEOMETRY PREVIEW != ASSET COMMIT:** During direct Static Mesh deformation, emit `MESH_GEOMETRY_PREVIEW_UPDATED` to refresh Scene position/normal GPU buffers. Emit the normal `ASSET_UPDATED` event once when the gesture/finalization boundary is reached. Do not run the full asset pipeline on every mouse move.
+- **CPU CAGE AND GPU SOLID MUST INVALIDATE TOGETHER:** Scene component overlays read asset CPU vertices directly while solid meshes use GPU VBOs. If asset geometry mutates without a GPU preview invalidation, the viewport shows a new cage over an old solid mesh.
+- **REUSE GPU BUFFERS FOR LIVE EDITING:** `MeshRenderSystem.registerMesh`/preview update paths must reuse VBO/NBO/IBO objects where possible. Never allocate fresh geometry buffers on each drag event; that leaks GPU resources and destabilizes VAO state.
+- **ASSET HEATMAP OBSERVES SESSION WEIGHTS:** Static Mesh Editor heatmap uses the same `AssetViewportEngine.softSelectionWeights` produced by deformation. Upload it as the shared soft-weight vertex attribute; do not recompute a second heatmap weight set in rendering code.

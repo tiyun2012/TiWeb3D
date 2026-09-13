@@ -680,6 +680,7 @@ export class SelectionSystem {
                 consoleService.success(`Selected Edge Loop (${loop.length} edges)`, "SelectionSystem");
             }
 
+            if (loop.length > 0) this.engine.clearDeformation();
             loop.forEach(e => {
                 const key = meshEdgeKey(e[0], e[1]);
                 this.subSelection.edgeIds.add(key);
@@ -698,6 +699,7 @@ export class SelectionSystem {
             const key = meshEdgeKey(v1, v2);
             
             if (topo.graph && topo.graph.edgeKeyToHalfEdge.has(key)) {
+                this.engine.clearDeformation();
                 const loop = MeshTopologyUtils.getVertexLoop(topo, v1, v2);
                 loop.forEach(v => this.subSelection.vertexIds.add(v));
                 consoleService.success(`Selected Vertex Loop`, "SelectionSystem");
@@ -719,6 +721,7 @@ export class SelectionSystem {
             const shared = verts1.filter(v => verts2.includes(v));
             
             if (shared.length >= 2) { // 2 shared vertices = shared edge
+                this.engine.clearDeformation();
                 const loop = MeshTopologyUtils.getFaceLoop(topo, shared[0], shared[1]);
                 loop.forEach(f => this.subSelection.faceIds.add(f));
                 consoleService.success(`Selected Face Loop`, "SelectionSystem");

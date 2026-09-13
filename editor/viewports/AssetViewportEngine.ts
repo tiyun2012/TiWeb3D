@@ -50,6 +50,8 @@ export class AssetViewportEngine implements IEngine {
     softSelectionFalloff: SoftSelectionFalloff = 'VOLUME';
     softSelectionHeatmapVisible = true;
     softSelectionWeights: Float32Array | null = null;
+    /** Monotonic render invalidation for the asset viewport heatmap buffer. */
+    softSelectionRevision = 0;
 
     // GizmoSystem expects renderer facade
     renderer: GizmoRendererFacade = {
@@ -138,7 +140,7 @@ export class AssetViewportEngine implements IEngine {
     recalculateSoftSelection() {
         const context = this.getSoftSelectionContext();
         if (!context || !this.softSelectionEnabled || this.meshComponentMode === 'OBJECT') {
-            this.softSelectionWeights = null;
+            this.publishSoftSelectionWeights(null);
             this.meshDeformationSession.clear();
             this.vertexSnapshot = null;
             this.activeDeformationEntity = null;
@@ -151,7 +153,7 @@ export class AssetViewportEngine implements IEngine {
             context.selectedVertices,
             this.getSoftSelectionSettings(context.localRadius),
         );
-        this.softSelectionWeights = result.weights;
+        this.publishSoftSelectionWeights(result.weights);
         this.vertexSnapshot = this.meshDeformationSession.baseline;
         this.currentDeformationDelta = this.meshDeformationSession.currentDelta;
 
@@ -181,11 +183,11 @@ export class AssetViewportEngine implements IEngine {
         const context = this.getSoftSelectionContext(entityId);
         if (!context || context.selectedVertices.size === 0) return;
 
-        this.softSelectionWeights = this.meshDeformationSession.begin(
+        this.publishSoftSelectionWeights(this.meshDeformationSession.begin(
             { vertices: context.asset.geometry.vertices, indices: context.asset.geometry.indices },
             context.selectedVertices,
             this.getSoftSelectionSettings(context.localRadius),
-        );
+        ));
         this.vertexSnapshot = this.meshDeformationSession.baseline;
         this.activeDeformationEntity = entityId;
         this.currentDeformationDelta = { x: 0, y: 0, z: 0 };
@@ -204,7 +206,7 @@ export class AssetViewportEngine implements IEngine {
             delta,
             this.getSoftSelectionSettings(context.localRadius),
         );
-        this.softSelectionWeights = result.weights;
+        this.publishSoftSelectionWeights(result.weights);
         this.vertexSnapshot = this.meshDeformationSession.baseline;
         this.currentDeformationDelta = this.meshDeformationSession.currentDelta;
 
@@ -229,6 +231,11 @@ export class AssetViewportEngine implements IEngine {
         this.vertexSnapshot = null;
         this.activeDeformationEntity = null;
         this.currentDeformationDelta = { x: 0, y: 0, z: 0 };
+    }
+
+    private publishSoftSelectionWeights(weights: Float32Array | null) {
+        this.softSelectionWeights = weights;
+        this.softSelectionRevision += 1;
     }
 
     private getSoftSelectionContext(entityId?: string | null) {

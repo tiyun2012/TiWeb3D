@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { ComponentType, ToolType } from '@/types';
 import { SceneGraph } from '@/engine/SceneGraph';
 import { engineInstance } from '@/engine/engine';
+import { createEngineAPI } from '@/engine/api/createEngineAPI';
 import { assetManager } from '@/engine/AssetManager';
 import { Mat4Utils, Vec3Utils, RayUtils } from '@/engine/math';
 import { VIEW_MODES } from '@/engine/constants';
@@ -37,8 +38,12 @@ import {
 import { resolveSceneCameraViewportProfile, resolveViewportProfile } from '@/editor/viewports/ViewportProfileResolver';
 import { resolveSceneSelectionFocusTarget } from '@/editor/viewports/focusTargetResolvers';
 import { frameCameraOnFocusTarget } from '@/editor/viewports/viewportFocus';
+import type { EditorCommandCapability, EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
+import '@/editor/commands/StaticMeshCommandCatalogue';
+import { resolveSceneStaticMeshEditTarget } from '@/engine/mesh-editing/StaticMeshEditTarget';
 
 const MARQUEE_DRAG_THRESHOLD_PX = 4;
+const sceneEngineApi = createEngineAPI(engineInstance);
 
 interface SceneViewProps {
   sceneGraph: SceneGraph;
@@ -55,6 +60,11 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         softSelectionMode, 
         softSelectionFalloff,
         softSelectionHeatmapVisible,
+        setSoftSelectionEnabled,
+        setSoftSelectionRadius,
+        setSoftSelectionMode,
+        setSoftSelectionFalloff,
+        setSoftSelectionHeatmapVisible,
         setTool
     } = useContext(EditorContext)!;
     
@@ -889,6 +899,71 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
 
     const activeViewMode = VIEW_MODES.find(mode => mode.id === renderMode) || VIEW_MODES[0];
 
+    const commandContext: EditorCommandContext = (() => {
+        const staticMeshTarget = resolveSceneStaticMeshEditTarget(engineInstance, selectedIds);
+        const capabilities = new Set<EditorCommandCapability>([
+            'VIEW_FOCUS',
+            'VIEW_RESET',
+            'VIEW_GRID',
+            'MESH_WIREFRAME',
+            'OBJECT_EDIT',
+        ]);
+        if (staticMeshTarget) {
+            capabilities.add('STATIC_MESH_EDIT');
+            capabilities.add('STATIC_MESH_COMPONENT_EDIT');
+        }
+        const subSelection = engineInstance.selectionSystem.subSelection;
+        return {
+            capabilities,
+            meshComponentMode,
+            selectionCounts: {
+                object: selectedIds.length,
+                vertices: subSelection.vertexIds.size,
+                edges: subSelection.edgeIds.size,
+                faces: subSelection.faceIds.size,
+            },
+            staticMeshTarget,
+            softSelection: {
+                enabled: softSelectionEnabled,
+                mode: softSelectionMode,
+                heatmapVisible: softSelectionHeatmapVisible,
+            },
+            services: {
+                setTool,
+                setComponentMode: setMeshComponentMode,
+                focus: handleFocus,
+                resetCamera: handleFocus,
+                toggleGrid: () => engineInstance.toggleGrid(),
+                toggleWireframe: () => handleModeSelect(3),
+                duplicateSelection: () => selectedIds.forEach(id => engineInstance.duplicateEntity(id)),
+                deleteSelection: () => {
+                    selectedIds.forEach(id => engineInstance.deleteEntity(id, sceneGraph));
+                    onSelect([]);
+                },
+                selectLoop: mode => {
+                    engineInstance.meshComponentMode = mode;
+                    setMeshComponentMode(mode);
+                    engineInstance.selectLoop(mode);
+                },
+                topologyCommand: command => {
+                    if (command === 'EXTRUDE') engineInstance.extrudeFaces();
+                    if (command === 'BEVEL') engineInstance.bevelEdges();
+                    if (command === 'WELD') engineInstance.weldVertices();
+                    if (command === 'CONNECT') engineInstance.connectComponents();
+                    if (command === 'DELETE_FACE') engineInstance.deleteSelectedFaces();
+                },
+                configureSoftSelection: settings => {
+                    if (settings.enabled !== undefined) setSoftSelectionEnabled(settings.enabled);
+                    if (settings.radius !== undefined) setSoftSelectionRadius(settings.radius);
+                    if (settings.mode !== undefined) setSoftSelectionMode(settings.mode);
+                    if (settings.falloff !== undefined) setSoftSelectionFalloff(settings.falloff);
+                    if (settings.heatmapVisible !== undefined) setSoftSelectionHeatmapVisible(settings.heatmapVisible);
+                    sceneEngineApi.commands.meshEditing.configureSoftSelection(settings);
+                },
+            },
+        };
+    })();
+
     return (
         <ViewportTemplate
             containerRef={containerRef}
@@ -1044,6 +1119,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
                                 closePieMenu();
                             }}
                             onAction={handlePieAction}
+                            commandContext={commandContext}
                             onClose={closePieMenu}
                         />,
                         document.body,

@@ -8,11 +8,19 @@ interface MeshBatch {
     vao: WebGLVertexArrayObject;
     count: number;
     instanceBuffer: WebGLBuffer;
-    cpuBuffer: Float32Array; 
-    instanceCount: number; 
+    cpuBuffer: Float32Array;
+    instanceCount: number;
     hasSkin: boolean;
-    softWeightBuffer: WebGLBuffer; // New buffer for explicit weights
-    vertexCount: number; // Track vertex count to detect topology changes
+    positionBuffer: WebGLBuffer;
+    normalBuffer: WebGLBuffer;
+    uvBuffer: WebGLBuffer;
+    colorBuffer: WebGLBuffer;
+    indexBuffer: WebGLBuffer;
+    indexType: number;
+    jointIndexBuffer: WebGLBuffer;
+    jointWeightBuffer: WebGLBuffer;
+    softWeightBuffer: WebGLBuffer;
+    vertexCount: number;
 }
 
 const VS_TEMPLATE = `#version 300 es
@@ -284,69 +292,104 @@ export class MeshRenderSystem {
     registerMesh(id: number, geometry: any) {
         if (!this.gl) return;
         const gl = this.gl;
-        
         const existingMesh = this.meshes.get(id);
-        let vao = existingMesh?.vao;
-        if (!vao) vao = gl.createVertexArray()!;
-        
+        const vao = existingMesh?.vao ?? gl.createVertexArray();
+        if (!vao) return;
+
         gl.bindVertexArray(vao);
-        
-        const createBuf = (data: any, type: number) => {
-            const b = gl.createBuffer(); gl.bindBuffer(type, b);
-            gl.bufferData(type, data instanceof Float32Array || data instanceof Uint16Array ? data : new (type===gl.ELEMENT_ARRAY_BUFFER?Uint16Array:Float32Array)(data), gl.STATIC_DRAW);
-            return b;
+
+        const uploadBuffer = (
+            existing: WebGLBuffer | undefined,
+            target: number,
+            data: ArrayBufferView | number[] | undefined,
+            usage: number,
+            fallbackLength = 0,
+        ) => {
+            const buffer = existing ?? gl.createBuffer();
+            if (!buffer) throw new Error('Failed to allocate mesh buffer');
+            gl.bindBuffer(target, buffer);
+            let upload: ArrayBufferView;
+            if (data && ArrayBuffer.isView(data)) {
+                upload = data;
+            } else {
+                const values = data as number[] | undefined;
+                if (target === gl.ELEMENT_ARRAY_BUFFER) {
+                    upload = values ? new Uint16Array(values) : new Uint16Array(fallbackLength);
+                } else {
+                    upload = values ? new Float32Array(values) : new Float32Array(fallbackLength);
+                }
+            }
+            gl.bufferData(target, upload, usage);
+            return buffer;
         };
-        createBuf(geometry.vertices, gl.ARRAY_BUFFER); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
-        createBuf(geometry.normals, gl.ARRAY_BUFFER); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
-        createBuf(geometry.uvs, gl.ARRAY_BUFFER); gl.enableVertexAttribArray(8); gl.vertexAttribPointer(8, 2, gl.FLOAT, false, 0, 0);
-        
-        // Vertex Colors
-        if (geometry.colors && geometry.colors.length > 0) {
-            createBuf(geometry.colors, gl.ARRAY_BUFFER); 
-            gl.enableVertexAttribArray(13); 
-            gl.vertexAttribPointer(13, 3, gl.FLOAT, false, 0, 0);
-        } else {
-            gl.disableVertexAttribArray(13);
-        }
 
-        // Soft Selection Weights
+        // Reuse the existing GPU objects when an Asset Editor changes geometry.
+        // Re-registering by allocating a fresh VBO every mouse-move leaks buffers
+        // and lets Scene solid geometry fall behind the CPU-side component cage.
+        const positionBuffer = uploadBuffer(existingMesh?.positionBuffer, gl.ARRAY_BUFFER, geometry.vertices, gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+
+        const normalBuffer = uploadBuffer(existingMesh?.normalBuffer, gl.ARRAY_BUFFER, geometry.normals, gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(1);
+        gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+
         const vertexCount = geometry.vertices.length / 3;
-        let swBuf: WebGLBuffer;
-        
-        // Preserve existing buffer ONLY if vertex count matches (topology unchanged)
-        if (existingMesh && existingMesh.softWeightBuffer && existingMesh.vertexCount === vertexCount) {
-             swBuf = existingMesh.softWeightBuffer;
-             gl.bindBuffer(gl.ARRAY_BUFFER, swBuf);
-             gl.enableVertexAttribArray(14);
-             gl.vertexAttribPointer(14, 1, gl.FLOAT, false, 0, 0);
-        } else {
-             // If topology changed or new mesh, create new buffer
-             if (existingMesh && existingMesh.softWeightBuffer) {
-                 gl.deleteBuffer(existingMesh.softWeightBuffer);
-             }
-             const softWeights = new Float32Array(vertexCount).fill(0);
-             swBuf = createBuf(softWeights, gl.ARRAY_BUFFER);
-             gl.enableVertexAttribArray(14);
-             gl.vertexAttribPointer(14, 1, gl.FLOAT, false, 0, 0);
-        }
+        const uvData = geometry.uvs && geometry.uvs.length >= vertexCount * 2
+            ? geometry.uvs
+            : new Float32Array(vertexCount * 2);
+        const uvBuffer = uploadBuffer(existingMesh?.uvBuffer, gl.ARRAY_BUFFER, uvData, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(8);
+        gl.vertexAttribPointer(8, 2, gl.FLOAT, false, 0, 0);
 
-        // Skinning
+        const colorData = geometry.colors && geometry.colors.length >= vertexCount * 3
+            ? geometry.colors
+            : new Float32Array(vertexCount * 3).fill(1);
+        const colorBuffer = uploadBuffer(existingMesh?.colorBuffer, gl.ARRAY_BUFFER, colorData, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(13);
+        gl.vertexAttribPointer(13, 3, gl.FLOAT, false, 0, 0);
+
+        let softWeightBuffer = existingMesh?.softWeightBuffer;
+        if (!softWeightBuffer) {
+            softWeightBuffer = gl.createBuffer();
+            if (!softWeightBuffer) throw new Error('Failed to allocate soft-selection buffer');
+            gl.bindBuffer(gl.ARRAY_BUFFER, softWeightBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCount), gl.DYNAMIC_DRAW);
+        } else {
+            gl.bindBuffer(gl.ARRAY_BUFFER, softWeightBuffer);
+            if (existingMesh?.vertexCount !== vertexCount) {
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCount), gl.DYNAMIC_DRAW);
+            }
+        }
+        gl.enableVertexAttribArray(14);
+        gl.vertexAttribPointer(14, 1, gl.FLOAT, false, 0, 0);
+
         const hasSkin = !!(geometry.jointIndices && geometry.jointWeights);
+        const jointIndexData = hasSkin ? geometry.jointIndices : new Float32Array(vertexCount * 4);
+        const jointWeightData = hasSkin ? geometry.jointWeights : new Float32Array(vertexCount * 4);
+        const jointIndexBuffer = uploadBuffer(existingMesh?.jointIndexBuffer, gl.ARRAY_BUFFER, jointIndexData, gl.STATIC_DRAW);
+        const jointWeightBuffer = uploadBuffer(existingMesh?.jointWeightBuffer, gl.ARRAY_BUFFER, jointWeightData, gl.STATIC_DRAW);
         if (hasSkin) {
-            createBuf(geometry.jointIndices, gl.ARRAY_BUFFER); gl.enableVertexAttribArray(11); gl.vertexAttribPointer(11, 4, gl.FLOAT, false, 0, 0);
-            createBuf(geometry.jointWeights, gl.ARRAY_BUFFER); gl.enableVertexAttribArray(12); gl.vertexAttribPointer(12, 4, gl.FLOAT, false, 0, 0);
+            gl.bindBuffer(gl.ARRAY_BUFFER, jointIndexBuffer);
+            gl.enableVertexAttribArray(11);
+            gl.vertexAttribPointer(11, 4, gl.FLOAT, false, 0, 0);
+            gl.bindBuffer(gl.ARRAY_BUFFER, jointWeightBuffer);
+            gl.enableVertexAttribArray(12);
+            gl.vertexAttribPointer(12, 4, gl.FLOAT, false, 0, 0);
         } else {
             gl.disableVertexAttribArray(11);
             gl.disableVertexAttribArray(12);
         }
 
-        createBuf(geometry.indices, gl.ELEMENT_ARRAY_BUFFER);
-        
-        // Instance Data (only create if new)
-        let inst = this.meshes.get(id)?.instanceBuffer;
+        const indexBuffer = uploadBuffer(existingMesh?.indexBuffer, gl.ELEMENT_ARRAY_BUFFER, geometry.indices, gl.DYNAMIC_DRAW);
+        const indexType = geometry.indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+
+        // Instance Data (only create if new).
+        let inst = existingMesh?.instanceBuffer;
         if (!inst) {
-            const stride = 22 * 4; 
-            inst = gl.createBuffer()!; gl.bindBuffer(gl.ARRAY_BUFFER, inst);
+            const stride = 22 * 4;
+            inst = gl.createBuffer()!;
+            gl.bindBuffer(gl.ARRAY_BUFFER, inst);
             gl.bufferData(gl.ARRAY_BUFFER, INITIAL_CAPACITY * stride, gl.DYNAMIC_DRAW);
             for(let k=0; k<4; k++) { gl.enableVertexAttribArray(2+k); gl.vertexAttribPointer(2+k, 4, gl.FLOAT, false, stride, k*16); gl.vertexAttribDivisor(2+k, 1); }
             gl.enableVertexAttribArray(6); gl.vertexAttribPointer(6, 3, gl.FLOAT, false, stride, 16*4); gl.vertexAttribDivisor(6, 1);
@@ -354,19 +397,47 @@ export class MeshRenderSystem {
             gl.enableVertexAttribArray(9); gl.vertexAttribPointer(9, 1, gl.FLOAT, false, stride, 20*4); gl.vertexAttribDivisor(9, 1);
             gl.enableVertexAttribArray(10); gl.vertexAttribPointer(10, 1, gl.FLOAT, false, stride, 21*4); gl.vertexAttribDivisor(10, 1);
         }
-        
+
         gl.bindVertexArray(null);
-        
-        this.meshes.set(id, { 
-            vao, 
-            count: geometry.indices.length, 
-            instanceBuffer: inst, 
-            cpuBuffer: this.meshes.get(id)?.cpuBuffer || new Float32Array(INITIAL_CAPACITY * 22), 
-            instanceCount: 0, 
+
+        this.meshes.set(id, {
+            vao,
+            count: geometry.indices.length,
+            instanceBuffer: inst,
+            cpuBuffer: existingMesh?.cpuBuffer || new Float32Array(INITIAL_CAPACITY * 22),
+            instanceCount: 0,
             hasSkin,
-            softWeightBuffer: swBuf,
-            vertexCount: vertexCount 
+            positionBuffer,
+            normalBuffer,
+            uvBuffer,
+            colorBuffer,
+            indexBuffer,
+            indexType,
+            jointIndexBuffer,
+            jointWeightBuffer,
+            softWeightBuffer,
+            vertexCount,
         });
+    }
+
+    /**
+     * Live Asset Editor deformation path. Vertex/normal data changes frequently,
+     * while topology/material streams stay stable until the edit is finalized.
+     */
+    updateMeshVertexData(id: number, geometry: any) {
+        if (!this.gl) return;
+        const gl = this.gl;
+        const mesh = this.meshes.get(id);
+        const vertexCount = geometry.vertices.length / 3;
+        if (!mesh || mesh.vertexCount !== vertexCount || mesh.count !== geometry.indices.length) {
+            this.registerMesh(id, geometry);
+            return;
+        }
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, mesh.positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, geometry.vertices, gl.DYNAMIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, mesh.normalBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, geometry.normals, gl.DYNAMIC_DRAW);
     }
 
     updateSoftSelectionBuffer(meshId: number, weights: Float32Array) {
@@ -495,7 +566,7 @@ export class MeshRenderSystem {
                 gl.bindVertexArray(mesh.vao);
                 gl.bindBuffer(gl.ARRAY_BUFFER, mesh.instanceBuffer);
                 gl.bufferSubData(gl.ARRAY_BUFFER, 0, data.subarray(0, instanceIdx * stride));
-                gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0, instanceIdx);
+                gl.drawElementsInstanced(gl.TRIANGLES, mesh.count, mesh.indexType, 0, instanceIdx);
             }
         });
     }

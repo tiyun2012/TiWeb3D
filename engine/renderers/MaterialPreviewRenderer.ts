@@ -63,6 +63,7 @@ layout(location=0) in vec3 a_position;
 layout(location=1) in vec3 a_normal;
 layout(location=8) in vec2 a_uv;
 layout(location=13) in vec3 a_vertexColor;
+layout(location=14) in float a_softWeight;
 uniform mat4 u_mvp;
 uniform mat4 u_model;
 uniform float u_time;
@@ -74,6 +75,7 @@ void main() {
 ${defaults}
     v_uv = a_uv;
     v_color = a_vertexColor;
+    v_softWeight = a_softWeight;
     v_normal = normalize(mat3(u_model) * a_normal);
     v_objectPos = a_position;
     v_worldPos = (u_model * vec4(a_position, 1.0)).xyz;
@@ -207,6 +209,7 @@ export class MaterialPreviewRenderer {
       lightDirection: readonly [number, number, number];
       lightColor: readonly [number, number, number];
       lightIntensity: number;
+      softSelectionHeatmapVisible?: boolean;
     },
   ): void {
     gl.uniformMatrix4fv(gl.getUniformLocation(program, 'u_mvp'), false, options.mvp);
@@ -222,7 +225,7 @@ export class MaterialPreviewRenderer {
     gl.uniform3f(gl.getUniformLocation(program, 'u_lightDir'), ...options.lightDirection);
     gl.uniform3f(gl.getUniformLocation(program, 'u_lightColor'), ...options.lightColor);
     gl.uniform1f(gl.getUniformLocation(program, 'u_lightIntensity'), options.lightIntensity);
-    gl.uniform1f(gl.getUniformLocation(program, 'u_showHeatmap'), 0.0);
+    gl.uniform1f(gl.getUniformLocation(program, 'u_showHeatmap'), options.softSelectionHeatmapVisible ? 1.0 : 0.0);
     gl.uniform1i(gl.getUniformLocation(program, 'u_isParticle'), 0);
 
     if (this.textureArray) {

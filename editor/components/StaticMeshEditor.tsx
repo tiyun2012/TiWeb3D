@@ -4,6 +4,9 @@ import { createPortal } from 'react-dom';
 import { EditorContext } from '@/editor/state/EditorContext';
 import { AssetViewportEngine } from '@/editor/viewports/AssetViewportEngine';
 import { resolveMeshFocusTarget } from '@/editor/viewports/focusTargetResolvers';
+import type { EditorCommandCapability, EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
+import '@/editor/commands/StaticMeshCommandCatalogue';
+import { resolveAssetStaticMeshEditTarget } from '@/engine/mesh-editing/StaticMeshEditTarget';
 import type { ViewportFocusProvider } from '@/editor/viewports/viewportFocus';
 import { assetManager } from '@/engine/AssetManager';
 import { eventBus } from '@/engine/EventBus';
@@ -33,7 +36,8 @@ import { Icon } from './Icon';
 import { PieMenu } from './PieMenu';
 import { AssetViewport3D, type AssetViewport3DHandle, AssetViewportRenderArgs, CameraState } from './AssetViewport3D';
 import { AssetEditorTemplate } from './asset-editor/AssetEditorTemplate';
-import { MeshAssetHierarchy, MeshHierarchySection } from './asset-editor/MeshAssetHierarchy';
+import { MeshAssetHierarchy, type MeshHierarchySection } from './asset-editor/MeshAssetHierarchy';
+import { StaticMeshToolDock } from './mesh-editing/StaticMeshToolDock';
 import { MeshAssetInspector } from './asset-editor/MeshAssetInspector';
 import { AssetViewportToolbarAction, assetViewportAllows, meshModeActionId } from './asset-editor/assetViewportCapabilities';
 
@@ -65,18 +69,18 @@ export interface StaticMeshEditorProps {
 }
 
 export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, editorHeaderExtra }) => {
-  // Context shared with Scene viewport (tool + component mode)
+  // Static Mesh editing owns transient tool/component/soft-selection state.
+  // Reusing the same command catalogue and mesh-editing implementation must not
+  // put the Scene viewport into component-edit mode or show its heatmap/cage.
   const editorCtx = useContext(EditorContext);
-  const tool: ToolType = editorCtx?.tool ?? 'SELECT';
-  const setTool = editorCtx?.setTool ?? (() => {});
-  const meshComponentMode: MeshComponentMode = editorCtx?.meshComponentMode ?? 'OBJECT';
   const vertexSize = editorCtx?.uiConfig.vertexSize ?? 1.0;
-  const setMeshComponentMode = editorCtx?.setMeshComponentMode ?? (() => {});
-  const softSelectionEnabled = editorCtx?.softSelectionEnabled ?? false;
-  const softSelectionRadius = editorCtx?.softSelectionRadius ?? 2.0;
-  const softSelectionMode = editorCtx?.softSelectionMode ?? 'FIXED';
-  const softSelectionFalloff = editorCtx?.softSelectionFalloff ?? 'VOLUME';
-  const softSelectionHeatmapVisible = editorCtx?.softSelectionHeatmapVisible ?? true;
+  const [tool, setTool] = useState<ToolType>('SELECT');
+  const [meshComponentMode, setMeshComponentMode] = useState<MeshComponentMode>('OBJECT');
+  const [softSelectionEnabled, setSoftSelectionEnabled] = useState(false);
+  const [softSelectionRadius, setSoftSelectionRadius] = useState(2.0);
+  const [softSelectionMode, setSoftSelectionMode] = useState<'FIXED' | 'LIVE_FALLOFF' | 'SLIDE'>('FIXED');
+  const [softSelectionFalloff, setSoftSelectionFalloff] = useState<'VOLUME' | 'SURFACE'>('VOLUME');
+  const [softSelectionHeatmapVisible, setSoftSelectionHeatmapVisible] = useState(true);
 
   const meshComponentModeRef = useRef<MeshComponentMode>(meshComponentMode);
   useEffect(() => {
@@ -99,6 +103,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const [stats, setStats] = useState<{ verts: number; tris: number }>({ verts: 0, tris: 0 });
   const [pieMenu, setPieMenu] = useState<{ x: number; y: number } | null>(null);
   const [hierarchySection, setHierarchySection] = useState<MeshHierarchySection>('ASSET');
+  const [leftDockCollapsed, setLeftDockCollapsed] = useState(false);
   const [materialId, setMaterialId] = useState<string>('');
   const materialIdRef = useRef<string>('');
   const materialRevisionRef = useRef(0);
@@ -158,6 +163,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     nbo: WebGLBuffer | null;
     uvbo: WebGLBuffer | null;
     colorbo: WebGLBuffer | null;
+    softWeightBo: WebGLBuffer | null;
     ibo: WebGLBuffer | null;
     edgeOverlay: MeshEdgeOverlay;
     selectedEdgeOverlay: MeshEdgeOverlay;
@@ -168,12 +174,14 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     selectionEdgeMode: MeshComponentMode | null;
     hoveredEdgeSignature: string;
     selectionVertexRevision: number;
+    softWeightRevision: number;
   }>({
     meshVao: null,
     vbo: null,
     nbo: null,
     uvbo: null,
     colorbo: null,
+    softWeightBo: null,
     ibo: null,
     edgeOverlay: new MeshEdgeOverlay(),
     selectedEdgeOverlay: new MeshEdgeOverlay(),
@@ -184,9 +192,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     selectionEdgeMode: null,
     hoveredEdgeSignature: '',
     selectionVertexRevision: -1,
+    softWeightRevision: -1,
   });
 
-  // Keep local engine in-sync with global tool + component mode
+  // Keep the local preview engine in-sync with this asset editor session.
   useEffect(() => {
     if (previewEngineRef.current) {
       previewEngineRef.current.clearDeformation();
@@ -261,15 +270,26 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       setSelectionTick(selectionTickRef.current);
     };
 
-    const onGeometryUpdated = () => {
+    const onGeometryUpdated = (updatedAssetId: string) => {
       if (dirtyRef.current === 'NONE') dirtyRef.current = 'VERTS';
+      // Live preview is a render invalidation, not a persisted Asset update.
+      // Scene instances of this asset can refresh their solid GPU geometry
+      // without making Scene enter the Static Mesh Editor's component mode.
+      eventBus.emit('MESH_GEOMETRY_PREVIEW_UPDATED', { id: updatedAssetId, type: 'MESH' });
     };
 
-    const onGeometryFinalized = () => {
+    const onGeometryFinalized = (updatedAssetId: string) => {
       dirtyRef.current = 'FULL';
       setStats({
         verts: asset.geometry.vertices.length / 3,
         tris: asset.geometry.indices.length / 3,
+      });
+      // Geometry is already mutated in the edit session; route the transaction
+      // boundary through AssetManager so every normal asset subscriber sees one
+      // canonical update without receiving one on every mouse move.
+      assetManager.updateAsset(updatedAssetId, {
+        geometry: asset.geometry,
+        topology: asset.topology,
       });
     };
 
@@ -314,8 +334,9 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     const nbo = gl.createBuffer();
     const uvbo = gl.createBuffer();
     const colorbo = gl.createBuffer();
+    const softWeightBo = gl.createBuffer();
     const ibo = gl.createBuffer();
-    if (!meshVao || !vbo || !nbo || !uvbo || !colorbo || !ibo) return;
+    if (!meshVao || !vbo || !nbo || !uvbo || !colorbo || !softWeightBo || !ibo) return;
 
     gl.bindVertexArray(meshVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
@@ -346,6 +367,11 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
     gl.enableVertexAttribArray(13);
     gl.vertexAttribPointer(13, 3, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, softWeightBo);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCount), gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(14);
+    gl.vertexAttribPointer(14, 1, gl.FLOAT, false, 0, 0);
 
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, asset.geometry.indices, gl.DYNAMIC_DRAW);
@@ -383,6 +409,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       nbo,
       uvbo,
       colorbo,
+      softWeightBo,
       ibo,
       edgeOverlay,
       selectedEdgeOverlay,
@@ -393,6 +420,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       selectionEdgeMode: null,
       hoveredEdgeSignature: '',
       selectionVertexRevision: -1,
+      softWeightRevision: -1,
     };
   };
 
@@ -403,6 +431,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     if (res.nbo) gl.deleteBuffer(res.nbo);
     if (res.uvbo) gl.deleteBuffer(res.uvbo);
     if (res.colorbo) gl.deleteBuffer(res.colorbo);
+    if (res.softWeightBo) gl.deleteBuffer(res.softWeightBo);
     if (res.ibo) gl.deleteBuffer(res.ibo);
     res.edgeOverlay.dispose(gl);
     res.selectedEdgeOverlay.dispose(gl);
@@ -417,7 +446,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     if (!asset || (asset.type !== 'MESH' && asset.type !== 'SKELETAL_MESH')) return;
 
     const res = glResourcesRef.current;
-    if (!res.meshVao || !res.vbo || !res.nbo || !res.uvbo || !res.colorbo || !res.ibo) return;
+    if (!res.meshVao || !res.vbo || !res.nbo || !res.uvbo || !res.colorbo || !res.softWeightBo || !res.ibo) return;
 
     // Apply geometry updates from modeling/vertex edits
     const dirty = dirtyRef.current;
@@ -438,11 +467,22 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         res.selectionEdgeRevision = -1;
         res.hoveredEdgeSignature = '__geometry_changed__';
         res.selectionVertexRevision = -1;
+        res.softWeightRevision = -1;
       }
       dirtyRef.current = 'NONE';
     }
 
     const engine = previewEngineRef.current;
+    if (engine && res.softWeightRevision !== engine.softSelectionRevision) {
+      const vertexCount = asset.geometry.vertices.length / 3;
+      const weights = engine.softSelectionWeights && engine.softSelectionWeights.length === vertexCount
+        ? engine.softSelectionWeights
+        : new Float32Array(vertexCount);
+      gl.bindBuffer(gl.ARRAY_BUFFER, res.softWeightBo);
+      gl.bufferData(gl.ARRAY_BUFFER, weights, gl.DYNAMIC_DRAW);
+      res.softWeightRevision = engine.softSelectionRevision;
+    }
+
     const previewEntityId = engine?.entityId;
     const model = previewEntityId
       ? engine.sceneGraph.getWorldMatrix(previewEntityId) ?? Mat4Utils.create()
@@ -470,6 +510,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         lightDirection: DEFAULT_MESH_PREVIEW_LIGHT.direction,
         lightColor: DEFAULT_MESH_PREVIEW_LIGHT.color,
         lightIntensity: DEFAULT_MESH_PREVIEW_LIGHT.intensity,
+        softSelectionHeatmapVisible:
+          !!engine?.softSelectionEnabled &&
+          engine.meshComponentMode !== 'OBJECT' &&
+          engine.softSelectionHeatmapVisible,
       });
     } else {
       gl.uniformMatrix4fv(gl.getUniformLocation(activeMeshProgram, 'u_mvp'), false, mvp);
@@ -480,6 +524,15 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         light: DEFAULT_MESH_PREVIEW_LIGHT,
         material: DEFAULT_MESH_SURFACE_MATERIAL,
       });
+      gl.uniform1f(gl.getUniformLocation(activeMeshProgram, 'u_time'), performance.now() / 1000);
+      gl.uniform1f(
+        gl.getUniformLocation(activeMeshProgram, 'u_showHeatmap'),
+        engine?.softSelectionEnabled &&
+        engine.meshComponentMode !== 'OBJECT' &&
+        engine.softSelectionHeatmapVisible
+          ? 1.0
+          : 0.0,
+      );
     }
     gl.bindVertexArray(res.meshVao);
     if (assignedMaterialProgram) {
@@ -608,8 +661,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     if (pieMenu) return;
 
     const engine = previewEngineRef.current;
-    const gs = gizmoSystemRef.current;
-    if (!engine || !gs) return;
+    if (!engine) return;
 
     // RMB opens Pie Menu (Alt+RMB reserved for zoom in AssetViewport3D)
     if (e.button === 2 && !e.altKey) {
@@ -619,11 +671,9 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       return;
     }
 
-    // Gizmo interaction (LMB)
+    // AssetViewport3D owns gizmo input. This callback is reached only when
+    // the shared viewport did not capture the press for an active gizmo axis.
     if (e.button === 0 && !e.altKey) {
-      gs.update(0, coords.x, coords.y, coords.width, coords.height, true, false);
-      if (gs.activeAxis) return;
-
       // Component picking in edit modes
       if (meshComponentMode !== 'OBJECT') {
         const previewEntityId = engine.entityId;
@@ -679,20 +729,13 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     coords: { x: number; y: number; width: number; height: number }
   ) => {
     const engine = previewEngineRef.current;
-    const gs = gizmoSystemRef.current;
-    if (engine && gs) {
-      gs.update(0, coords.x, coords.y, coords.width, coords.height, false, false);
-      if (meshComponentModeRef.current !== 'OBJECT') {
-        engine.selectionSystem.hoverMeshComponentAt(coords.x, coords.y, coords.width, coords.height);
-      }
+    if (!engine) return;
+    // AssetViewport3D already advanced the GizmoSystem for this mouse move.
+    // Do not double-drive the drag state; only update component hover when the
+    // gizmo is not actively dragging.
+    if (!gizmoSystemRef.current?.activeAxis && meshComponentModeRef.current !== 'OBJECT') {
+      engine.selectionSystem.hoverMeshComponentAt(coords.x, coords.y, coords.width, coords.height);
     }
-  };
-
-  const handleMouseUp = (
-    _e: MouseEvent,
-    coords: { x: number; y: number; width: number; height: number }
-  ) => {
-    gizmoSystemRef.current?.update(0, coords.x, coords.y, coords.width, coords.height, false, true);
   };
 
   const handleContextMenu = (
@@ -738,6 +781,79 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     return !!engine && engine.selectionSystem.selectedIndices.size > 0;
   }, [selectionTick]);
 
+  const handleSelectLoop = (mode: MeshComponentMode = meshComponentMode) => {
+    if (mode === 'OBJECT') return;
+    const engine = previewEngineRef.current;
+    if (!engine) return;
+    engine.meshComponentMode = mode;
+    engine.selectionSystem.selectLoop(mode);
+  };
+
+  const commandContext = useMemo<EditorCommandContext>(() => {
+    const staticMeshTarget = currentAsset && currentAsset.type === 'MESH'
+      ? resolveAssetStaticMeshEditTarget(currentAsset as StaticMeshAsset)
+      : null;
+    const capabilities = new Set<EditorCommandCapability>([
+      'VIEW_FOCUS',
+      'VIEW_RESET',
+      'VIEW_GRID',
+      'MESH_WIREFRAME',
+      'OBJECT_EDIT',
+    ]);
+    if (staticMeshTarget) {
+      capabilities.add('STATIC_MESH_EDIT');
+      capabilities.add('STATIC_MESH_COMPONENT_EDIT');
+    }
+
+    return {
+      capabilities,
+      meshComponentMode,
+      selectionCounts,
+      staticMeshTarget,
+      softSelection: {
+        enabled: softSelectionEnabled,
+        mode: softSelectionMode,
+        heatmapVisible: softSelectionHeatmapVisible,
+      },
+      services: {
+        setTool,
+        setComponentMode: setMeshComponentMode,
+        focus: () => viewportRef.current?.focus(),
+        resetCamera: focusCamera,
+        toggleGrid: () => setShowGrid(value => !value),
+        toggleWireframe: () => setShowWireframe(value => !value),
+        duplicateSelection: resetTransform,
+        deleteSelection: () => {
+          resetTransform();
+          focusCamera();
+        },
+        selectLoop: handleSelectLoop,
+        configureSoftSelection: settings => {
+          if (settings.enabled !== undefined) setSoftSelectionEnabled(settings.enabled);
+          if (settings.radius !== undefined) setSoftSelectionRadius(settings.radius);
+          if (settings.mode !== undefined) setSoftSelectionMode(settings.mode);
+          if (settings.falloff !== undefined) setSoftSelectionFalloff(settings.falloff);
+          if (settings.heatmapVisible !== undefined) setSoftSelectionHeatmapVisible(settings.heatmapVisible);
+          previewEngineRef.current?.api.commands.meshEditing.configureSoftSelection(settings);
+        },
+      },
+    };
+  }, [
+    currentAsset,
+    meshComponentMode,
+    selectionCounts,
+    softSelectionEnabled,
+    softSelectionMode,
+    softSelectionHeatmapVisible,
+    setTool,
+    setMeshComponentMode,
+    setSoftSelectionEnabled,
+    setSoftSelectionRadius,
+    setSoftSelectionMode,
+    setSoftSelectionFalloff,
+    setSoftSelectionHeatmapVisible,
+  ]);
+
   const handlePieAction = (action: string) => {
     if (!currentAsset) return;
     if (action === 'tool_select' && assetViewportAllows(currentAsset.type, 'tool.select')) setTool('SELECT');
@@ -755,6 +871,14 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       resetTransform();
       focusCamera();
     }
+
+    // Loop selection already lives in SelectionSystem; the asset editor must
+    // route its local Pie Menu actions to the local preview engine rather than
+    // the main Scene engine.
+    if (action === 'loop_vert' && meshComponentMode === 'VERTEX') handleSelectLoop('VERTEX');
+    if (action === 'loop_edge' && meshComponentMode === 'EDGE') handleSelectLoop('EDGE');
+    if (action === 'loop_face' && meshComponentMode === 'FACE') handleSelectLoop('FACE');
+
     setPieMenu(null);
   };
 
@@ -810,14 +934,36 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       assetType={currentAsset.type}
       assetName={currentAsset.name}
       headerExtra={editorHeaderExtra}
+      hierarchyWidth={leftDockCollapsed && currentAsset.type === 'MESH' ? 36 : 252}
       hierarchy={
-        <MeshAssetHierarchy
-          asset={currentAsset}
-          activeSection={hierarchySection}
-          meshComponentMode={meshComponentMode}
-          onSectionChange={setHierarchySection}
-          onMeshComponentModeChange={setMeshComponentMode}
-        />
+        currentAsset.type === 'MESH' ? (
+          <StaticMeshToolDock
+            asset={currentAsset}
+            collapsed={leftDockCollapsed}
+            onCollapsedChange={setLeftDockCollapsed}
+            activeSection={hierarchySection}
+            meshComponentMode={meshComponentMode}
+            onSectionChange={setHierarchySection}
+            onMeshComponentModeChange={setMeshComponentMode}
+            selectionCounts={selectionCounts}
+            softSelectionEnabled={softSelectionEnabled}
+            softSelectionRadius={softSelectionRadius}
+            softSelectionMode={softSelectionMode}
+            softSelectionFalloff={softSelectionFalloff}
+            softSelectionHeatmapVisible={softSelectionHeatmapVisible}
+            onSoftSelectionRadiusChange={setSoftSelectionRadius}
+            onSoftSelectionFalloffChange={setSoftSelectionFalloff}
+            commandContext={commandContext}
+          />
+        ) : (
+          <MeshAssetHierarchy
+            asset={currentAsset}
+            activeSection={hierarchySection}
+            meshComponentMode={meshComponentMode}
+            onSectionChange={setHierarchySection}
+            onMeshComponentModeChange={setMeshComponentMode}
+          />
+        )
       }
       inspector={
         <MeshAssetInspector
@@ -861,7 +1007,6 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         onRender={handleRender}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
         onContextMenu={handleContextMenu}
         onResetView={() => {
           resetTransform();
@@ -885,6 +1030,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
                 setPieMenu(null);
               }}
               onAction={handlePieAction}
+              commandContext={commandContext}
               onClose={() => setPieMenu(null)}
             />,
             document.body

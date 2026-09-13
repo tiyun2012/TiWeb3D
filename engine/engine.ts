@@ -131,6 +131,10 @@ export class Engine {
              }
         });
 
+        eventBus.on('MESH_GEOMETRY_PREVIEW_UPDATED', (payload: any) => {
+             if (payload?.id) this.notifyMeshPreviewChanged(payload.id);
+        });
+
         eventBus.on('ASSET_UPDATED', (asset: any) => {
              const a = assetManager.getAsset(asset.id);
              if (a) {
@@ -322,6 +326,16 @@ export class Engine {
                 this.meshSystem.registerMesh(id, asset.geometry);
             }
         }
+    }
+
+    notifyMeshPreviewChanged(assetId: string) {
+        const id = assetManager.getMeshID(assetId);
+        if (id <= 0) return;
+        const asset = assetManager.getAsset(assetId);
+        if (!asset || (asset.type !== 'MESH' && asset.type !== 'SKELETAL_MESH')) return;
+        const meshAsset = asset as StaticMeshAsset | SkeletalMeshAsset;
+        this.updateMeshBounds(meshAsset);
+        this.meshSystem.updateMeshVertexData(id, meshAsset.geometry);
     }
 
     notifyMeshChanged(assetId: string) {

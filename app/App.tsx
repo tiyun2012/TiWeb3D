@@ -6,6 +6,7 @@ import { Entity, ToolType, TransformSpace, SelectionType, GraphNode, GraphConnec
 import { EditorContext, EditorContextType, DEFAULT_UI_CONFIG, UIConfiguration, GridConfiguration, DEFAULT_GRID_CONFIG, SnapSettings, DEFAULT_SNAP_CONFIG, DEFAULT_SKELETON_VIZ, SkeletonVizSettings } from '@/editor/state/EditorContext';
 import { assetManager } from '@/engine/AssetManager';
 import { consoleService } from '@/engine/Console';
+import '@/editor/commands/StaticMeshCommandCatalogue';
 
 // Components
 import { Toolbar } from '@/editor/components/Toolbar';
