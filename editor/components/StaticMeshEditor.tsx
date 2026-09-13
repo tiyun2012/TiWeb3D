@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 
 import { EditorContext } from '@/editor/state/EditorContext';
 import { AssetViewportEngine } from '@/editor/viewports/AssetViewportEngine';
+import { resolveMeshFocusTarget } from '@/editor/viewports/focusTargetResolvers';
+import type { ViewportFocusProvider } from '@/editor/viewports/viewportFocus';
 import { assetManager } from '@/engine/AssetManager';
 import { eventBus } from '@/engine/EventBus';
 import { GizmoSystem } from '@/engine/GizmoSystem';
@@ -29,7 +31,7 @@ import { MeshComponentMode, StaticMeshAsset, SkeletalMeshAsset, ToolType } from 
 
 import { Icon } from './Icon';
 import { PieMenu } from './PieMenu';
-import { AssetViewport3D, AssetViewportRenderArgs, CameraState } from './AssetViewport3D';
+import { AssetViewport3D, type AssetViewport3DHandle, AssetViewportRenderArgs, CameraState } from './AssetViewport3D';
 import { AssetEditorTemplate } from './asset-editor/AssetEditorTemplate';
 import { MeshAssetHierarchy, MeshHierarchySection } from './asset-editor/MeshAssetHierarchy';
 import { MeshAssetInspector } from './asset-editor/MeshAssetInspector';
@@ -142,6 +144,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     target: { x: number; y: number; z: number };
   } | null>(null);
 
+  const viewportRef = useRef<AssetViewport3DHandle | null>(null);
+
   // Buffers
   const glResourcesRef = useRef<{
     meshVao: WebGLVertexArrayObject | null;
@@ -181,6 +185,30 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   useEffect(() => {
     gizmoSystemRef.current?.setTool(tool);
   }, [tool]);
+
+  // Static Mesh focus adapter: object mode frames the whole asset; component
+  // modes frame only the selected vertices/edge endpoints/face vertices. The
+  // provider reads live refs so F always resolves the current selection without
+  // coupling AssetViewport3D to mesh topology.
+  const focusProvider = useMemo<ViewportFocusProvider>(() => ({
+    getFocusTarget: () => {
+      const asset = assetManager.getAsset(assetId) as StaticMeshAsset | SkeletalMeshAsset | undefined;
+      if (!asset || (asset.type !== 'MESH' && asset.type !== 'SKELETAL_MESH')) return null;
+
+      const engine = previewEngineRef.current;
+      const entityId = engine?.entityId ?? null;
+      const world = entityId ? engine?.sceneGraph.getWorldMatrix(entityId) ?? null : null;
+      const componentVertices = meshComponentModeRef.current !== 'OBJECT'
+        ? engine?.selectionSystem.getSelectionAsVertices() ?? null
+        : null;
+
+      return resolveMeshFocusTarget(
+        asset,
+        componentVertices && componentVertices.size > 0 ? componentVertices : null,
+        world,
+      );
+    },
+  }), [assetId]);
 
   // Create / dispose local preview engine
   useEffect(() => {
@@ -634,7 +662,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
 
     if (action === 'toggle_grid' && assetViewportAllows(currentAsset.type, 'view.grid')) setShowGrid(v => !v);
     if (action === 'toggle_wire' && assetViewportAllows(currentAsset.type, 'mesh.wireframe')) setShowWireframe(v => !v);
-    if ((action === 'reset_cam' || action === 'focus') && assetViewportAllows(currentAsset.type, 'view.focus')) focusCamera();
+    if (action === 'focus' && assetViewportAllows(currentAsset.type, 'view.focus')) viewportRef.current?.focus();
+    if (action === 'reset_cam' && assetViewportAllows(currentAsset.type, 'view.focus')) focusCamera();
 
     if (action === 'duplicate' && assetViewportAllows(currentAsset.type, 'mesh.object')) resetTransform();
     if (action === 'delete' && assetViewportAllows(currentAsset.type, 'mesh.object')) {
@@ -719,12 +748,14 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       }
     >
       <AssetViewport3D
+        ref={viewportRef}
         assetType={currentAsset.type}
         tool={tool}
         setTool={setTool}
         camera={camera}
         onCameraChange={setCamera}
         fitCamera={fitCamera}
+        focusProvider={focusProvider}
         showGrid={showGrid}
         onToggleGrid={() => setShowGrid(v => !v)}
         stats={[

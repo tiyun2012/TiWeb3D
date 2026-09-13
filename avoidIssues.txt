@@ -331,3 +331,13 @@ CAMERA RESOLUTION / PRESET RULES
 - **TRANSPORT ROLL, DO NOT FREEZE WORLD UP:** Orbit state must represent Camera roll as a scalar around the live forward direction. Keeping the original world-space `up` vector while forward changes causes flips/corkscrew rotation. Use `getCameraUp()` / `cameraStateFromWorldPose()`.
 - **BATCH CAMERA NAVIGATION:** During a bound-camera gesture, keep the latest pose in `cameraRef`, coalesce React `setCamera` publication to at most one animation frame, and do not write the Camera Transform on every pointer sample. Mouse-up / wheel-idle flushes the final React pose, writes Transform once, calls `notifyUI()` while the self-resync guard is still active, then releases ownership.
 - **CAMERA PRESET PREVIEW TRANSFORM IS EDITOR-ONLY:** A Camera Preset does not own a Scene Transform, but its editor should expose `Transform [Preview]` as component-like editor state. Never serialize that preview pose into runtime CameraPreset settings.
+
+---
+
+### 32. VIEWPORT FOCUS / CONTEXT SEPARATION
+- **FOCUS IS EXPLICIT NAVIGATION:** Selection changes must never move or reframe a viewport automatically. Only an explicit Focus/Reset/navigation command may change camera state.
+- **USE `FocusTarget`:** Scene/asset-specific code resolves WHAT should be framed; `editor/viewports/viewportFocus.ts` decides HOW to frame it. Do not duplicate FOV/aspect/orthographic fitting math inside editors.
+- **DO NOT TEACH `AssetViewport3D` DOMAIN TYPES:** Mesh vertices, edges, faces, bones, etc. belong in focus providers/resolvers. `AssetViewport3D` accepts `ViewportFocusProvider` and stays domain-neutral.
+- **REUSE COMPONENT SELECTION CONVERSION:** Mesh component focus must reuse `SelectionSystem.getSelectionAsVertices()` so vertex/edge/face modes share one topology conversion contract.
+- **BOUND CAMERA COMMITS:** Scene View Through Camera focus must commit through `writeSceneCameraViewportState(...)`; never write Camera Transform fields directly from focus code.
+- **API-FIRST:** External UI commands should call `AssetViewport3DHandle.focus()` / `focusTarget(...)` (or future editor API wrappers) instead of simulating keyboard input or copying navigation math.

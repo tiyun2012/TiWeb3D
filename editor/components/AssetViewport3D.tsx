@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { useViewportSize } from '@/editor/hooks/useViewportSize';
 import { AssetViewportEngine } from '@/editor/viewports/AssetViewportEngine';
+import { frameCameraOnFocusTarget, type FocusTarget, type ViewportFocusProvider } from '@/editor/viewports/viewportFocus';
 import { GizmoSystem } from '@/engine/GizmoSystem';
 import { GizmoRenderer } from '@/engine/renderers/GizmoRenderer';
 import { Mat4Utils } from '@/engine/math';
@@ -119,6 +120,13 @@ export type AssetViewportRenderArgs = {
   project: (x: number, y: number, z: number) => { x: number; y: number } | null;
 };
 
+export interface AssetViewport3DHandle {
+  /** Focus the current provider-resolved selection/context target. */
+  focus(): void;
+  /** Frame an explicit target through the same shared navigation path. */
+  focusTarget(target: FocusTarget): void;
+}
+
 export interface AssetViewport3DProps {
   assetType?: AssetType;
   tool: ToolType;
@@ -141,7 +149,10 @@ export interface AssetViewport3DProps {
   navigationPolicy?: Partial<ViewportNavigationSettings>;
   /** Optional direct-to-canvas clear color in display space. */
   backgroundColor?: readonly [number, number, number, number];
+  /** Legacy/default whole-asset fit camera. Kept for editors not yet migrated to FocusTarget providers. */
   fitCamera?: { radius: number; target: { x: number; y: number; z: number }; orthoScale?: number } | null;
+  /** Context adapter for component/object/bone/etc. focus targets. */
+  focusProvider?: ViewportFocusProvider;
   showGrid?: boolean;
   onToggleGrid?: () => void;
   stats?: Array<{ label: string; value: string | number; color?: string }>;
@@ -165,7 +176,7 @@ export interface AssetViewport3DProps {
   onKeyDown?: (e: KeyboardEvent) => void;
 }
 
-export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
+export const AssetViewport3D = React.forwardRef<AssetViewport3DHandle, AssetViewport3DProps>(({
   assetType,
   tool,
   setTool,
@@ -179,6 +190,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
   navigationPolicy,
   backgroundColor,
   fitCamera,
+  focusProvider,
   showGrid,
   onToggleGrid,
   stats = [],
@@ -200,7 +212,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
   onContextMenu,
   onResetView,
   onKeyDown: onCustomKeyDown,
-}) => {
+}, ref) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const profileNavigation = viewportProfile?.navigation;
@@ -302,6 +314,43 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
     gizmoSystemRef.current = gizmoSystem;
   }, [gizmoSystem]);
 
+  const applyFocus = (explicitTarget?: FocusTarget) => {
+    if (!navigation.focus) return;
+
+    const focusTarget = explicitTarget ?? focusProvider?.getFocusTarget() ?? focusProvider?.getDefaultFocusTarget?.() ?? null;
+    if (focusTarget) {
+      updateCamera(previous => frameCameraOnFocusTarget(previous, focusTarget, {
+        width: viewportSizeRef.current.cssWidth,
+        height: viewportSizeRef.current.cssHeight,
+        projectionSettings: projectionSettingsRef.current,
+      }));
+      return;
+    }
+
+    // Compatibility path for asset editors that have not provided a contextual
+    // FocusTarget adapter yet. Their existing whole-asset F behavior is preserved.
+    if (fitCamera) {
+      updateCamera(previous => ({
+        ...previous,
+        radius: fitCamera.radius,
+        target: { ...fitCamera.target },
+        orthoScale: fitCamera.orthoScale ?? previous.orthoScale,
+      }));
+    } else {
+      updateCamera(previous => ({
+        ...previous,
+        radius: defaultCamera.radius,
+        target: { ...defaultCamera.target },
+        orthoScale: defaultCamera.orthoScale ?? previous.orthoScale,
+      }));
+    }
+  };
+
+  useImperativeHandle(ref, () => ({
+    focus: () => applyFocus(),
+    focusTarget: target => applyFocus(target),
+  }));
+
   // Keybindings
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -324,16 +373,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
 
       if (navigation.focus && (e.key === 'f' || e.key === 'F') && assetViewportAllows(assetType, 'view.focus')) {
         e.preventDefault();
-        if (fitCamera) {
-          updateCamera(p => ({
-            ...p,
-            radius: fitCamera.radius,
-            target: { ...fitCamera.target },
-            orthoScale: fitCamera.orthoScale ?? p.orthoScale,
-          }));
-        } else {
-          updateCamera(p => ({ ...p, radius: defaultCamera.radius, target: { ...defaultCamera.target } }));
-        }
+        applyFocus();
       }
 
       if (onCustomKeyDown) {
@@ -342,7 +382,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [assetType, allowedTools, setTool, onToggleGrid, fitCamera, defaultCamera, onCustomKeyDown, navigation.focus]);
+  }, [assetType, allowedTools, setTool, onToggleGrid, fitCamera, focusProvider, defaultCamera, onCustomKeyDown, navigation.focus, projectionSettings]);
 
   // Main WebGL Loop
   useEffect(() => {
@@ -679,22 +719,7 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
   };
 
   const handleFocus = () => {
-    if (!navigation.focus) return;
-    if (fitCamera) {
-      updateCamera(p => ({
-        ...p,
-        radius: fitCamera.radius,
-        target: { ...fitCamera.target },
-        orthoScale: fitCamera.orthoScale ?? p.orthoScale,
-      }));
-    } else {
-      updateCamera(p => ({
-        ...p,
-        radius: defaultCamera.radius,
-        target: { ...defaultCamera.target },
-        orthoScale: defaultCamera.orthoScale ?? p.orthoScale,
-      }));
-    }
+    applyFocus();
   };
 
   const toolAllowed = (candidate: ToolType) =>
@@ -845,4 +870,4 @@ export const AssetViewport3D: React.FC<AssetViewport3DProps> = ({
     />
   );
 
-};
+});

@@ -134,3 +134,6 @@ Entity
 7. Open a Camera Preset: Inspector visibly contains Transform [Preview], Camera, and Editor Viewport; changing Preview Transform changes only preview pose and does not mutate Camera Preset runtime settings.
 8. While View Through is active, select several unrelated entities: the rendered camera view, focal target, and Camera Transform remain unchanged.
 9. Edit the bound Camera Transform or any of its parents from Inspector/gizmo: the viewport resyncs exactly once to the new world pose.
+
+10. While View Through is active, single-click visible scene objects: the bound Camera must not intercept the pick ray, while other cameras and scene entities remain selectable.
+11. Verify a tiny 3–4 px pointer wobble still resolves as a click; larger drags continue to perform marquee selection.

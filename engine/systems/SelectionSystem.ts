@@ -178,6 +178,10 @@ const meshOverlapsScreenRect = (
 export class SelectionSystem {
     engine: IEngine;
     selectedIndices = new Set<number>();
+    // Viewport-local helpers/entities that must not participate in object picking.
+    // Example: the Scene Camera currently being viewed through sits at the ray origin
+    // and would otherwise win every click through its camera pick sphere.
+    private suppressedEntityIds = new Set<string>();
     subSelection = {
         vertexIds: new Set<number>(),
         edgeIds: new Set<string>(),
@@ -201,6 +205,10 @@ export class SelectionSystem {
 
     constructor(engine: IEngine) {
         this.engine = engine;
+    }
+
+    setSuppressedEntityIds(entityIds: Iterable<string>) {
+        this.suppressedEntityIds = new Set(entityIds);
     }
 
     setSelected(ids: string[], notify: boolean = true) {
@@ -240,6 +248,7 @@ export class SelectionSystem {
             if (!hasMesh && !((mask & COMPONENT_MASKS.LIGHT) || (mask & COMPONENT_MASKS.PARTICLE_SYSTEM) || (mask & COMPONENT_MASKS.VIRTUAL_PIVOT) || (mask & COMPONENT_MASKS.CAMERA))) continue;
 
             const id = this.engine.ecs.store.ids[i];
+            if (this.suppressedEntityIds.has(id)) continue;
             const wmOffset = i * 16;
             const worldMat = this.engine.ecs.store.worldMatrix.subarray(wmOffset, wmOffset + 16);
             
@@ -363,6 +372,7 @@ export class SelectionSystem {
             if (!this.engine.ecs.store.isActive[i]) continue;
             
             const id = this.engine.ecs.store.ids[i];
+            if (this.suppressedEntityIds.has(id)) continue;
             const mask = this.engine.ecs.store.componentMask[i];
             const hasMesh = !!(mask & COMPONENT_MASKS.MESH);
             

@@ -68,7 +68,7 @@ All asset-level 3D inspection and editing tools (e.g. Static Mesh Editor, Skelet
 
 Viewport layout/chrome is now separated from renderer lifecycle. `editor/components/viewport/ViewportTemplate.tsx` is the engine-agnostic canvas shell used by both `SceneView` and `AssetViewport3D`. It owns only placement/composition for the canvas, toolbars, HUDs, and overlays. Renderer setup, render loops, picking, gizmos, and asset/scene behavior stay in the owning viewport host.
 
-Shared orbit/pan/zoom math lives in `editor/viewports/viewportCamera.ts`. New viewport hosts must reuse these camera helpers rather than copy spherical-camera/vector math. New **asset** editors still inherit from `AssetViewport3D`; they should not bypass it and use `ViewportTemplate` directly.
+Shared orbit/pan/zoom math lives in `editor/viewports/viewportCamera.ts`. New viewport hosts must reuse these camera helpers rather than copy spherical-camera/vector math. New **asset** editors still inherit from `AssetViewport3D`; they should not bypass it and use `ViewportTemplate` directly. Shared focus contracts and camera framing live in `editor/viewports/viewportFocus.ts`; context-specific target adapters live outside the viewport host (currently `focusTargetResolvers.ts`). Selection owns what is selected, focus providers resolve spatial targets, and navigation owns camera changes. See `docs/VIEWPORT_FOCUS.md`.
 
 See `/docs/VIEWPORT_TEMPLATE.md` for the component contract and extension pattern.
 

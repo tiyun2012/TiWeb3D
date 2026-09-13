@@ -17,7 +17,7 @@ Both **`StaticMeshEditor`** and **`SkeletonEditor`** inherit from this base comp
    - **Alt + LMB Drag:** Smooth spherical orbit (`theta`, `phi`) with pole-clamping.
    - **Alt + MMB Drag:** Local camera-space panning (calculates forward, right, and camera up vectors).
    - **Alt + RMB Drag / Scroll Wheel:** Distance zooming (`radius`) with minimum bounds to prevent clipping.
-   - **F Key / Focus:** Smoothly focuses the camera on the asset's bounding box (`fitCamera`).
+   - **F Key / Focus:** Resolves a contextual `FocusTarget` through an optional `ViewportFocusProvider` and frames it with shared perspective/orthographic math. Editors not yet migrated retain the legacy whole-asset `fitCamera` fallback.
    - **Auto-Rotate:** Interactive turntable rotation toggle for asset inspection.
 
 3. **Ground Grid & Coordinates:**
@@ -36,6 +36,13 @@ Both **`StaticMeshEditor`** and **`SkeletonEditor`** inherit from this base comp
 
 ---
 
+
+### Contextual Focus API
+
+`AssetViewport3D` is domain-neutral. Asset editors may provide `focusProvider: ViewportFocusProvider`; the viewport never branches on vertices, edges, faces, bones, or asset-specific selection types. Static Mesh Editor is the reference implementation: component modes convert selection through `SelectionSystem.getSelectionAsVertices()` and frame only those points, while object/no-component selection frames the complete mesh.
+
+The component also exposes `AssetViewport3DHandle.focus()` and `focusTarget(target)`, allowing Pie Menu actions, tests, scripts, and future agent-facing editor APIs to invoke the same navigation path without synthesizing key events. See [`VIEWPORT_FOCUS.md`](./VIEWPORT_FOCUS.md).
+
 ## Component Interface (`AssetViewport3DProps`)
 
 ```typescript
@@ -49,6 +56,7 @@ export interface AssetViewport3DProps {
   onCameraChange?: (camera: CameraState) => void;
   defaultCamera?: CameraState;
   fitCamera?: { radius: number; target: { x: number; y: number; z: number } } | null;
+  focusProvider?: ViewportFocusProvider;
 
   // Grid & Display
   showGrid?: boolean;

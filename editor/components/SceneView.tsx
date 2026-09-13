@@ -6,7 +6,7 @@ import { ComponentType, ToolType } from '@/types';
 import { SceneGraph } from '@/engine/SceneGraph';
 import { engineInstance } from '@/engine/engine';
 import { assetManager } from '@/engine/AssetManager';
-import { Mat4Utils, Vec3Utils, RayUtils, AABBUtils } from '@/engine/math';
+import { Mat4Utils, Vec3Utils, RayUtils } from '@/engine/math';
 import { VIEW_MODES } from '@/engine/constants';
 import { meshEdgeKey } from '@/engine/MeshEdgeGeometry';
 import { Icon } from './Icon';
@@ -35,6 +35,8 @@ import {
     writeSceneCameraViewportState,
 } from '@/editor/viewports/SceneCameraViewportBinding';
 import { resolveSceneCameraViewportProfile, resolveViewportProfile } from '@/editor/viewports/ViewportProfileResolver';
+import { resolveSceneSelectionFocusTarget } from '@/editor/viewports/focusTargetResolvers';
+import { frameCameraOnFocusTarget } from '@/editor/viewports/viewportFocus';
 
 const MARQUEE_DRAG_THRESHOLD_PX = 4;
 
@@ -241,40 +243,50 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         editorCameraBeforeBindingRef.current = null;
     }, [commitBoundCameraViewportState, publishCameraState]);
 
-    // Camera Focus Logic (Needed by Pie Menu Hook)
+    const containerRef = useRef<HTMLDivElement>(null);
+    const viewportSize = useViewportSize(containerRef, { dprCap: 2 });
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const viewMenuRef = useRef<HTMLDivElement>(null);
+
+    const selectedCameraId = selectedIds.find(id => engineInstance.ecs.hasComponent(id, ComponentType.CAMERA)) ?? null;
+    const resolvedViewCamera = viewCameraEntityId ? engineInstance.getResolvedCamera(viewCameraEntityId) : null;
+    const viewCameraLens = resolvedViewCamera?.settings ?? null;
+
+    // Camera Focus Logic (Needed by Pie Menu Hook). Selection resolves a domain
+    // target; shared viewport navigation decides how to frame it. Selection itself
+    // never moves the camera -- only this explicit command does.
     const handleFocus = useCallback(() => {
         if (!activeViewportProfile.navigation.focus) return;
-        if (selectedIds.length > 0) {
-            const bounds = AABBUtils.create();
-            let valid = false;
-            selectedIds.forEach(id => {
-                const pos = sceneGraph.getWorldPosition(id);
-                if (pos) {
-                    valid = true;
-                    const idx = engineInstance.ecs.idToIndex.get(id);
-                    let radius = 0.5;
-                    if (idx !== undefined) {
-                        const sx = Math.abs(engineInstance.ecs.store.scaleX[idx]);
-                        const sy = Math.abs(engineInstance.ecs.store.scaleY[idx]);
-                        const sz = Math.abs(engineInstance.ecs.store.scaleZ[idx]);
-                        radius = Math.max(sx, Math.max(sy, sz)) * 0.5; 
-                    }
-                    AABBUtils.expandPoint(bounds, { x: pos.x - radius, y: pos.y - radius, z: pos.z - radius });
-                    AABBUtils.expandPoint(bounds, { x: pos.x + radius, y: pos.y + radius, z: pos.z + radius });
-                }
-            });
-            if (valid) {
-                const center = AABBUtils.center(bounds, Vec3Utils.create());
-                const size = AABBUtils.size(bounds, Vec3Utils.create());
-                const maxDim = Math.max(size.x, Math.max(size.y, size.z));
-                updateViewportCamera(prev => ({ ...prev, target: center, radius: Math.max(maxDim * 1.5, 2.0) }));
-                if (viewCameraEntityIdRef.current) commitBoundCameraViewportState();
-            }
-        } else {
-            updateViewportCamera(prev => ({ ...prev, target: {x:0, y:0, z:0}, radius: 10 }));
+
+        const focusTarget = resolveSceneSelectionFocusTarget(engineInstance, selectedIds, meshComponentMode);
+        if (focusTarget) {
+            updateViewportCamera(previous => frameCameraOnFocusTarget(previous, focusTarget, {
+                width: viewportSize.cssWidth,
+                height: viewportSize.cssHeight,
+                projectionSettings: viewCameraLens ?? undefined,
+            }));
             if (viewCameraEntityIdRef.current) commitBoundCameraViewportState();
+            return;
         }
-    }, [selectedIds, sceneGraph, updateViewportCamera, commitBoundCameraViewportState, activeViewportProfile.navigation.focus]);
+
+        // Preserve the established no-selection behavior: F returns the editor
+        // camera to a useful world overview instead of inventing a selection.
+        updateViewportCamera(previous => ({
+            ...previous,
+            target: { x: 0, y: 0, z: 0 },
+            radius: 10,
+        }));
+        if (viewCameraEntityIdRef.current) commitBoundCameraViewportState();
+    }, [
+        selectedIds,
+        meshComponentMode,
+        updateViewportCamera,
+        commitBoundCameraViewportState,
+        activeViewportProfile.navigation.focus,
+        viewportSize.cssWidth,
+        viewportSize.cssHeight,
+        viewCameraLens,
+    ]);
 
     // Use Pie Menu Hook
     const { 
@@ -311,24 +323,21 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         selectedIds
     ]);
 
-    const containerRef = useRef<HTMLDivElement>(null);
-    const viewportSize = useViewportSize(containerRef, { dprCap: 2 });
-    const canvasRef = useRef<HTMLCanvasElement>(null);
-    const viewMenuRef = useRef<HTMLDivElement>(null);
-
-    const selectedCameraId = selectedIds.find(id => engineInstance.ecs.hasComponent(id, ComponentType.CAMERA)) ?? null;
-    const resolvedViewCamera = viewCameraEntityId ? engineInstance.getResolvedCamera(viewCameraEntityId) : null;
-    const viewCameraLens = resolvedViewCamera?.settings ?? null;
-
     useEffect(() => {
         const gizmoSystem = engineInstance.gizmoSystem;
         gizmoSystem.setViewportEnabled(activeViewportProfile.overlays.gizmos);
-        // Invariant: a bound camera never renders/picks its own transform helper in its own view.
+        // Invariant: a bound camera never renders or picks itself in its own view.
+        // Its world position is the picking-ray origin, so leaving its Camera pick sphere
+        // active would make it the nearest hit for almost every object click.
+        const suppressedEntityIds = viewCameraEntityId ? [viewCameraEntityId] : [];
+        // Keep the direct expression as an architecture-audit contract for the gizmo path.
         gizmoSystem.setSuppressedEntityIds(viewCameraEntityId ? [viewCameraEntityId] : []);
+        engineInstance.selectionSystem.setSuppressedEntityIds(suppressedEntityIds);
 
         return () => {
             gizmoSystem.setViewportEnabled(true);
             gizmoSystem.setSuppressedEntityIds([]);
+            engineInstance.selectionSystem.setSuppressedEntityIds([]);
         };
     }, [viewCameraEntityId, activeViewportProfile.overlays.gizmos]);
 
@@ -672,7 +681,6 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
             if ((dx * dx) + (dy * dy) >= MARQUEE_DRAG_THRESHOLD_PX * MARQUEE_DRAG_THRESHOLD_PX) {
                 const selectionX = Math.max(0, Math.min(rect.width, mx));
                 const selectionY = Math.max(0, Math.min(rect.height, my));
-                pendingObjectPressRef.current = null;
                 commitSelectionBoxState({
                     startX: pendingObjectPress.startX,
                     startY: pendingObjectPress.startY,
@@ -761,8 +769,23 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
                     } else {
                         onSelect(hitIds);
                     }
-                } else if (!e.shiftKey && e.button === 0) {
-                    onSelect([]);
+                } else if (e.button === 0) {
+                    // Pointer jitter can barely cross the drag threshold (especially on
+                    // high-DPI/touchpad input) and create a tiny marquee. Preserve the
+                    // original mouse-down hit so that tiny gestures still behave as clicks.
+                    const pendingObjectPress = pendingObjectPressRef.current;
+                    if (pendingObjectPress?.hitId) {
+                        if (pendingObjectPress.shiftKey) {
+                            const newSelection = selectedIds.includes(pendingObjectPress.hitId)
+                                ? selectedIds.filter(id => id !== pendingObjectPress.hitId)
+                                : [...selectedIds, pendingObjectPress.hitId];
+                            onSelect(newSelection);
+                        } else {
+                            onSelect([pendingObjectPress.hitId]);
+                        }
+                    } else if (!pendingObjectPress?.shiftKey) {
+                        onSelect([]);
+                    }
                 }
 
                 commitSelectionBoxState(null);

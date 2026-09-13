@@ -58,3 +58,14 @@ Object-mode left mouse selection uses a deferred press gesture. `selectEntityAt(
 If the pointer moves at least 4 CSS pixels from the press position, the pending click is discarded and the gesture becomes a marquee selection starting at the original press point. This is required even when the press begins over selectable projected geometry. Without the deferred gesture, mesh silhouettes and bone hit corridors become narrow dead zones where a rectangle can never start because raycast selection returns first.
 
 The BVH remains responsible for mesh click/component raycasts; it does not own marquee gesture activation. Rectangle selection uses projected AABB broad phase plus projected mesh-triangle refinement after the UI gesture has already been classified as a marquee.
+
+### View-through Camera picking suppression
+
+When a Scene Camera is bound as the active viewport camera, that camera entity is suppressed from both gizmo picking and object selection. The picking ray starts at the active camera position, so treating the bound Camera helper as a normal sphere pick target would make it the nearest hit for nearly every click. Other Camera entities remain selectable.
+
+A small pointer wobble may cross the marquee promotion threshold before mouse-up. The original mouse-down hit is retained until the gesture finishes so a tiny marquee resolves back to a normal click instead of clearing selection.
+
+
+## Selection vs. Focus
+
+Selection does not own viewport navigation. Changing `selectedIds` or mesh sub-selection must not reframe a camera. Explicit Focus commands query selection state through context adapters instead. Mesh component focus reuses `getSelectionAsVertices()` so VERTEX, EDGE, and FACE selection all resolve to a common set of vertex positions; the shared viewport framing implementation then handles camera distance/orthographic scale. See [`VIEWPORT_FOCUS.md`](./VIEWPORT_FOCUS.md).
