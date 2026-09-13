@@ -38,6 +38,21 @@ export function createEngineAPI(engine: any = engineInstance): EngineAPI {
           engine.notifyUI();
         },
       },
+      meshEditing: {
+        configureSoftSelection(settings) {
+          if (settings.enabled !== undefined) engine.softSelectionEnabled = settings.enabled;
+          if (settings.radius !== undefined) engine.softSelectionRadius = Math.max(0.0001, settings.radius);
+          if (settings.mode !== undefined) engine.softSelectionMode = settings.mode;
+          if (settings.falloff !== undefined) engine.softSelectionFalloff = settings.falloff;
+          if (settings.heatmapVisible !== undefined) engine.softSelectionHeatmapVisible = settings.heatmapVisible;
+          engine.recalculateSoftSelection?.();
+          engine.notifyUI?.();
+        },
+        recalculateSoftSelection() {
+          engine.recalculateSoftSelection?.();
+          engine.notifyUI?.();
+        },
+      },
       transform: {
         setPosition(id: string, x: number, y: number, z: number) {
           const idx = engine.ecs?.getEntityIndex ? engine.ecs.getEntityIndex(id) : engine.ecs?.idToIndex?.get(id);

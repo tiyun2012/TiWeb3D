@@ -72,6 +72,11 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const meshComponentMode: MeshComponentMode = editorCtx?.meshComponentMode ?? 'OBJECT';
   const vertexSize = editorCtx?.uiConfig.vertexSize ?? 1.0;
   const setMeshComponentMode = editorCtx?.setMeshComponentMode ?? (() => {});
+  const softSelectionEnabled = editorCtx?.softSelectionEnabled ?? false;
+  const softSelectionRadius = editorCtx?.softSelectionRadius ?? 2.0;
+  const softSelectionMode = editorCtx?.softSelectionMode ?? 'FIXED';
+  const softSelectionFalloff = editorCtx?.softSelectionFalloff ?? 'VOLUME';
+  const softSelectionHeatmapVisible = editorCtx?.softSelectionHeatmapVisible ?? true;
 
   const meshComponentModeRef = useRef<MeshComponentMode>(meshComponentMode);
   useEffect(() => {
@@ -184,10 +189,30 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   // Keep local engine in-sync with global tool + component mode
   useEffect(() => {
     if (previewEngineRef.current) {
+      previewEngineRef.current.clearDeformation();
       previewEngineRef.current.meshComponentMode = meshComponentMode;
       previewEngineRef.current.selectionSystem.clearMeshComponentHover();
+      previewEngineRef.current.recalculateSoftSelection();
     }
   }, [meshComponentMode]);
+
+  useEffect(() => {
+    const engine = previewEngineRef.current;
+    if (!engine) return;
+    engine.api.commands.meshEditing.configureSoftSelection({
+      enabled: softSelectionEnabled,
+      radius: softSelectionRadius,
+      mode: softSelectionMode,
+      falloff: softSelectionFalloff,
+      heatmapVisible: softSelectionHeatmapVisible,
+    });
+  }, [
+    softSelectionEnabled,
+    softSelectionRadius,
+    softSelectionMode,
+    softSelectionFalloff,
+    softSelectionHeatmapVisible,
+  ]);
 
   useEffect(() => {
     gizmoSystemRef.current?.setTool(tool);
@@ -255,6 +280,13 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       previewEngine.selectionSystem.setSelected([entityId]);
     }
     previewEngine.meshComponentMode = meshComponentMode;
+    previewEngine.api.commands.meshEditing.configureSoftSelection({
+      enabled: softSelectionEnabled,
+      radius: softSelectionRadius,
+      mode: softSelectionMode,
+      falloff: softSelectionFalloff,
+      heatmapVisible: softSelectionHeatmapVisible,
+    });
 
     previewEngineRef.current = previewEngine;
     const gs = new GizmoSystem(previewEngine);
@@ -604,6 +636,9 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           coords.height
         );
         if (picked) {
+          // Changing component selection commits/invalidates any retained Live
+          // Falloff operation before a new selection becomes the tool target.
+          engine.clearDeformation();
           if (!e.shiftKey) {
             engine.selectionSystem.subSelection.vertexIds.clear();
             engine.selectionSystem.subSelection.edgeIds.clear();
@@ -625,6 +660,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
               engine.selectionSystem.subSelection.faceIds.delete(id);
             else engine.selectionSystem.subSelection.faceIds.add(id);
           }
+          engine.recalculateSoftSelection();
           engine.notifyUI();
           return;
         }

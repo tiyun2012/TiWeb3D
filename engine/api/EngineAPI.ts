@@ -1,4 +1,5 @@
-import type { CameraSettings, ComponentType, MeshComponentMode, ResolvedCameraState, SimulationMode, ToolType } from '@/types';
+import type { CameraSettings, ComponentType, MeshComponentMode, ResolvedCameraState, SimulationMode, SoftSelectionFalloff, ToolType } from '@/types';
+import type { SoftSelectionMode } from '@/engine/mesh-editing/SoftSelection';
 
 export type EngineAPI = {
   // Commands: stable surface that UI should call
@@ -12,6 +13,16 @@ export type EngineAPI = {
     };
     mesh: {
       setComponentMode(mode: MeshComponentMode): void;
+    };
+    meshEditing: {
+      configureSoftSelection(settings: Partial<{
+        enabled: boolean;
+        radius: number;
+        mode: SoftSelectionMode;
+        falloff: SoftSelectionFalloff;
+        heatmapVisible: boolean;
+      }>): void;
+      recalculateSoftSelection(): void;
     };
     transform: {
       setPosition(id: string, x: number, y: number, z: number): void;

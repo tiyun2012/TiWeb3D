@@ -341,3 +341,6 @@ CAMERA RESOLUTION / PRESET RULES
 - **REUSE COMPONENT SELECTION CONVERSION:** Mesh component focus must reuse `SelectionSystem.getSelectionAsVertices()` so vertex/edge/face modes share one topology conversion contract.
 - **BOUND CAMERA COMMITS:** Scene View Through Camera focus must commit through `writeSceneCameraViewportState(...)`; never write Camera Transform fields directly from focus code.
 - **API-FIRST:** External UI commands should call `AssetViewport3DHandle.focus()` / `focusTarget(...)` (or future editor API wrappers) instead of simulating keyboard input or copying navigation math.
+
+- **STATIC MESH DEFORMATION MUST BE BASELINE-REPRODUCIBLE:** Fixed and Live Falloff transforms must reconstruct preview geometry from the operation-start vertex snapshot plus current total gizmo delta. Never compound Live deformation from the previous preview. Slide Sculpt is the intentional exception: it owns an explicit accumulated per-vertex offset buffer and applies only incremental gizmo movement using current influence weights.
+- **SOFT-DEFORMATION CONTEXT OWNERSHIP:** Static Mesh owns soft-deformation behavior. Scene and asset viewports must use the shared `MeshDeformationSession`/solver rather than separate algorithms. For now the session accepts only `MESH` assets; do not silently apply it to `SKELETAL_MESH`.

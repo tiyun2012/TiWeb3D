@@ -305,23 +305,28 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
     });
 
     useEffect(() => {
+        // Component context changes commit any retained Live Falloff operation.
+        // Radius/falloff changes are handled separately so they can recompose the
+        // same operation while the component selection remains unchanged.
+        engineInstance.clearDeformation();
         engineInstance.meshComponentMode = meshComponentMode;
         engineInstance.selectionSystem.clearMeshComponentHover();
+        engineInstance.recalculateSoftSelection();
+    }, [meshComponentMode]);
+
+    useEffect(() => {
         engineInstance.softSelectionEnabled = softSelectionEnabled;
         engineInstance.softSelectionRadius = softSelectionRadius;
         engineInstance.softSelectionMode = softSelectionMode;
         engineInstance.softSelectionFalloff = softSelectionFalloff;
         engineInstance.softSelectionHeatmapVisible = softSelectionHeatmapVisible;
-        
-        engineInstance.recalculateSoftSelection(); 
+        engineInstance.recalculateSoftSelection();
     }, [
-        meshComponentMode, 
-        softSelectionEnabled, 
-        softSelectionRadius, 
-        softSelectionMode, 
-        softSelectionFalloff, 
+        softSelectionEnabled,
+        softSelectionRadius,
+        softSelectionMode,
+        softSelectionFalloff,
         softSelectionHeatmapVisible,
-        selectedIds
     ]);
 
     useEffect(() => {
@@ -1015,7 +1020,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
                     </span>
                     {softSelectionEnabled && meshComponentMode !== 'OBJECT' && (
                         <span className="text-accent">
-                            Soft Sel ({softSelectionMode === 'FIXED' ? 'Fixed' : 'Dynamic'}): {softSelectionRadius.toFixed(1)}m
+                            Soft Sel ({softSelectionMode === 'FIXED' ? 'Fixed' : softSelectionMode === 'LIVE_FALLOFF' ? 'Live' : 'Slide'}): {softSelectionRadius.toFixed(1)}m
                         </span>
                     )}
                 </ViewportHud>

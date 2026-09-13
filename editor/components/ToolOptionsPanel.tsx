@@ -23,8 +23,9 @@ const SCALE_OPTIONS = [
 ];
 
 const SOFT_SEL_MODES = [
-    { label: 'Fixed (Surface)', value: 'FIXED' },
-    { label: 'Dynamic (Volume)', value: 'DYNAMIC' }
+    { label: 'Fixed Soft Transform', value: 'FIXED' },
+    { label: 'Live Falloff Transform', value: 'LIVE_FALLOFF' },
+    { label: 'Slide Sculpt', value: 'SLIDE' }
 ];
 
 const SOFT_SEL_FALLOFF = [
@@ -189,8 +190,8 @@ export const ToolOptionsPanel: React.FC = () => {
                     </div>
                 </div>
 
-                {/* --- SOFT SELECTION (Vertex Mode) --- */}
-                {meshComponentMode === 'VERTEX' && (
+                {/* --- STATIC MESH SOFT DEFORMATION --- */}
+                {meshComponentMode !== 'OBJECT' && (
                     <div className="space-y-2 pt-2 border-t border-white/5">
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2 text-[10px] font-bold text-text-secondary uppercase tracking-wider">
@@ -226,7 +227,7 @@ export const ToolOptionsPanel: React.FC = () => {
                                         />
                                     </div>
                                     <div className="space-y-1 pt-1">
-                                        <span className="text-[10px] text-text-secondary">Calculation Mode</span>
+                                        <span className="text-[10px] text-text-secondary">Deformation Behavior</span>
                                         <Select 
                                             value={softSelectionMode} 
                                             options={SOFT_SEL_MODES} 

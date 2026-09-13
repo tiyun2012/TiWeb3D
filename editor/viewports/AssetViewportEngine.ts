@@ -1,4 +1,4 @@
-import { IEngine, MeshComponentMode, Vector3 } from '@/types';
+import { IEngine, MeshComponentMode, SoftSelectionFalloff, Vector3 } from '@/types';
 import { SoAEntitySystem } from '@/engine/ecs/EntitySystem';
 import { SceneGraph } from '@/engine/SceneGraph';
 import { SelectionSystem } from '@/engine/systems/SelectionSystem';
@@ -7,6 +7,8 @@ import { COMPONENT_MASKS } from '@/engine/constants';
 import { StaticMeshAsset } from '@/types';
 import { EngineAPI } from '@/engine/api/EngineAPI';
 import { createEngineAPI } from '@/engine/api/createEngineAPI';
+import { MeshDeformationSession } from '@/engine/mesh-editing/MeshDeformationSession';
+import type { SoftSelectionMode, SoftSelectionSettings } from '@/engine/mesh-editing/SoftSelection';
 
 type GizmoRendererFacade = {
     renderGizmos: (
@@ -44,6 +46,10 @@ export class AssetViewportEngine implements IEngine {
     // SelectionSystem expects these
     softSelectionEnabled = false;
     softSelectionRadius = 1.0;
+    softSelectionMode: SoftSelectionMode = 'FIXED';
+    softSelectionFalloff: SoftSelectionFalloff = 'VOLUME';
+    softSelectionHeatmapVisible = true;
+    softSelectionWeights: Float32Array | null = null;
 
     // GizmoSystem expects renderer facade
     renderer: GizmoRendererFacade = {
@@ -59,6 +65,7 @@ export class AssetViewportEngine implements IEngine {
     private vertexSnapshot: Float32Array | null = null;
     private activeDeformationEntity: string | null = null;
     private currentDeformationDelta: Vector3 = { x: 0, y: 0, z: 0 };
+    private meshDeformationSession = new MeshDeformationSession();
 
     constructor(
         private onNotifyUI?: () => void,
@@ -129,7 +136,31 @@ export class AssetViewportEngine implements IEngine {
 
     // --- SelectionSystem hooks ---
     recalculateSoftSelection() {
-        // Asset viewports keep soft selection off for now.
+        const context = this.getSoftSelectionContext();
+        if (!context || !this.softSelectionEnabled || this.meshComponentMode === 'OBJECT') {
+            this.softSelectionWeights = null;
+            this.meshDeformationSession.clear();
+            this.vertexSnapshot = null;
+            this.activeDeformationEntity = null;
+            this.currentDeformationDelta = { x: 0, y: 0, z: 0 };
+            return;
+        }
+
+        const result = this.meshDeformationSession.updateSettings(
+            { vertices: context.asset.geometry.vertices, indices: context.asset.geometry.indices },
+            context.selectedVertices,
+            this.getSoftSelectionSettings(context.localRadius),
+        );
+        this.softSelectionWeights = result.weights;
+        this.vertexSnapshot = this.meshDeformationSession.baseline;
+        this.currentDeformationDelta = this.meshDeformationSession.currentDelta;
+
+        if (result.geometryChanged) {
+            this.recomputeNormals(context.asset);
+            this.updateMeshBounds(context.asset);
+            this.onGeometryUpdated?.(context.assetId);
+        }
+        this.notifyUI();
     }
 
     // --- GizmoSystem hooks ---
@@ -147,63 +178,91 @@ export class AssetViewportEngine implements IEngine {
     }
 
     startVertexDrag(entityId: string) {
-        if (!entityId) return;
-        const idx = this.ecs.idToIndex.get(entityId);
-        if (idx == null) return;
+        const context = this.getSoftSelectionContext(entityId);
+        if (!context || context.selectedVertices.size === 0) return;
 
-        const meshUuid = assetManager.getMeshUUID(this.ecs.store.meshType[idx]);
-        if (!meshUuid) return;
-        const asset = assetManager.getAsset(meshUuid) as StaticMeshAsset;
-        if (!asset?.geometry?.vertices) return;
-
-        this.vertexSnapshot = new Float32Array(asset.geometry.vertices);
+        this.softSelectionWeights = this.meshDeformationSession.begin(
+            { vertices: context.asset.geometry.vertices, indices: context.asset.geometry.indices },
+            context.selectedVertices,
+            this.getSoftSelectionSettings(context.localRadius),
+        );
+        this.vertexSnapshot = this.meshDeformationSession.baseline;
         this.activeDeformationEntity = entityId;
         this.currentDeformationDelta = { x: 0, y: 0, z: 0 };
+        this.notifyUI();
     }
 
     updateVertexDrag(entityId: string, delta: Vector3) {
-        if (!this.vertexSnapshot) this.startVertexDrag(entityId);
-        if (!this.vertexSnapshot || !this.activeDeformationEntity) return;
-
-        const idx = this.ecs.idToIndex.get(this.activeDeformationEntity);
-        if (idx == null) return;
-
-        const meshUuid = assetManager.getMeshUUID(this.ecs.store.meshType[idx]);
-        if (!meshUuid) return;
-        const asset = assetManager.getAsset(meshUuid) as StaticMeshAsset;
-        if (!asset?.geometry?.vertices) return;
-
-        // Prevent compounding drift while dragging.
-        const snap = this.vertexSnapshot;
-        this.currentDeformationDelta = { x: delta.x, y: delta.y, z: delta.z };
-
-        const sel = this.selectionSystem.getSelectionAsVertices();
-        const v = asset.geometry.vertices;
-        for (const vi of sel) {
-            const o = vi * 3;
-            v[o] = snap[o] + delta.x;
-            v[o + 1] = snap[o + 1] + delta.y;
-            v[o + 2] = snap[o + 2] + delta.z;
+        if (!this.meshDeformationSession.hasOperation || this.activeDeformationEntity !== entityId) {
+            this.startVertexDrag(entityId);
         }
+        const context = this.getSoftSelectionContext(entityId);
+        if (!context || !this.meshDeformationSession.hasOperation) return;
 
-        this.recomputeNormals(asset);
-        this.updateMeshBounds(asset);
-        this.onGeometryUpdated?.(meshUuid);
+        const result = this.meshDeformationSession.update(
+            { vertices: context.asset.geometry.vertices, indices: context.asset.geometry.indices },
+            delta,
+            this.getSoftSelectionSettings(context.localRadius),
+        );
+        this.softSelectionWeights = result.weights;
+        this.vertexSnapshot = this.meshDeformationSession.baseline;
+        this.currentDeformationDelta = this.meshDeformationSession.currentDelta;
+
+        if (result.geometryChanged) {
+            this.recomputeNormals(context.asset);
+            this.updateMeshBounds(context.asset);
+            this.onGeometryUpdated?.(context.assetId);
+        }
+        this.notifyUI();
     }
 
     endVertexDrag() {
+        this.meshDeformationSession.end();
         if (!this.activeDeformationEntity) return;
-        const idx = this.ecs.idToIndex.get(this.activeDeformationEntity);
-        if (idx == null) return;
-        const meshUuid = assetManager.getMeshUUID(this.ecs.store.meshType[idx]);
-        if (!meshUuid) return;
-        this.onGeometryFinalized?.(meshUuid);
+        const context = this.getSoftSelectionContext(this.activeDeformationEntity);
+        if (!context) return;
+        this.onGeometryFinalized?.(context.assetId);
     }
 
     clearDeformation() {
+        this.meshDeformationSession.clear();
         this.vertexSnapshot = null;
         this.activeDeformationEntity = null;
         this.currentDeformationDelta = { x: 0, y: 0, z: 0 };
+    }
+
+    private getSoftSelectionContext(entityId?: string | null) {
+        const resolvedEntityId = entityId ?? this.activeDeformationEntity ?? this.previewEntityId;
+        if (!resolvedEntityId) return null;
+        const idx = this.ecs.idToIndex.get(resolvedEntityId);
+        if (idx == null) return null;
+        const assetId = assetManager.getMeshUUID(this.ecs.store.meshType[idx]);
+        if (!assetId) return null;
+        const asset = assetManager.getAsset(assetId) as StaticMeshAsset;
+        if (!asset || asset.type !== 'MESH' || !asset.geometry?.vertices || !asset.geometry.indices) return null;
+
+        const scale = Math.max(
+            Math.abs(this.ecs.store.scaleX[idx]),
+            Math.abs(this.ecs.store.scaleY[idx]),
+            Math.abs(this.ecs.store.scaleZ[idx]),
+            1e-6,
+        );
+        return {
+            entityId: resolvedEntityId,
+            assetId,
+            asset,
+            selectedVertices: this.selectionSystem.getSelectionAsVertices(),
+            localRadius: this.softSelectionRadius / scale,
+        };
+    }
+
+    private getSoftSelectionSettings(localRadius: number): SoftSelectionSettings {
+        return {
+            enabled: this.softSelectionEnabled && this.meshComponentMode !== 'OBJECT',
+            radius: localRadius,
+            mode: this.softSelectionMode,
+            falloff: this.softSelectionFalloff,
+        };
     }
 
     // --- Helpers ---
