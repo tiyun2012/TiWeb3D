@@ -203,7 +203,7 @@ export class SelectionSystem {
         this.engine = engine;
     }
 
-    setSelected(ids: string[]) {
+    setSelected(ids: string[], notify: boolean = true) {
         this.engine.clearDeformation(); 
         this.selectedIndices.clear();
         ids.forEach(id => {
@@ -215,7 +215,7 @@ export class SelectionSystem {
         this.subSelection.faceIds.clear();
         this.hoveredVertex = null;
         this.engine.recalculateSoftSelection(); 
-        this.engine.notifyUI();
+        if (notify) this.engine.notifyUI();
     }
 
     selectEntityAt(mx: number, my: number, width: number, height: number): string | null {

@@ -89,6 +89,10 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
     // that would otherwise round-trip Transform -> CameraState back into the same drag.
     const boundCameraNavigationActiveRef = useRef(false);
     const boundCameraUiCommitTimerRef = useRef<number | null>(null);
+    // Engine UI notifications are intentionally broad (selection, assets, tools, etc.).
+    // Keep a snapshot of the bound camera's actual world transform so unrelated UI
+    // notifications cannot round-trip Transform -> CameraState and perturb the view.
+    const boundCameraWorldMatrixRef = useRef<Float32Array | null>(null);
 
     useEffect(() => { viewCameraEntityIdRef.current = viewCameraEntityId; }, [viewCameraEntityId]);
     useEffect(() => () => {
@@ -108,6 +112,28 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         ? resolveSceneCameraViewportProfile(engineInstance, viewCameraEntityId)
         : resolveViewportProfile();
     const gridBeforeCameraBindingRef = useRef<boolean | null>(null);
+
+    const captureBoundCameraWorldMatrix = useCallback((entityId: string) => {
+        const world = engineInstance.sceneGraph.getWorldMatrix(entityId);
+        return world ? new Float32Array(world) : null;
+    }, []);
+
+    const boundCameraWorldMatrixChanged = useCallback((entityId: string) => {
+        const current = captureBoundCameraWorldMatrix(entityId);
+        if (!current) return { changed: true, current: null as Float32Array | null };
+
+        const previous = boundCameraWorldMatrixRef.current;
+        if (!previous || previous.length !== current.length) {
+            return { changed: true, current };
+        }
+
+        for (let i = 0; i < current.length; i += 1) {
+            if (Math.abs(current[i] - previous[i]) > 1e-5) {
+                return { changed: true, current };
+            }
+        }
+        return { changed: false, current };
+    }, [captureBoundCameraWorldMatrix]);
 
     const publishCameraState = useCallback((next: CameraState, immediate = false) => {
         pendingCameraPublishRef.current = next;
@@ -159,10 +185,16 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         // transaction rather than as an external Transform edit.
         boundCameraNavigationActiveRef.current = true;
         const committed = writeSceneCameraViewportState(engineInstance, boundCameraId, cameraRef.current);
-        if (committed && notify) engineInstance.notifyUI();
+        if (committed) {
+            // Resolve only this camera's parent chain and remember the transform produced by
+            // our own navigation transaction. A later selection notification must not be
+            // mistaken for an external Camera Transform edit.
+            boundCameraWorldMatrixRef.current = captureBoundCameraWorldMatrix(boundCameraId);
+            if (notify) engineInstance.notifyUI();
+        }
         boundCameraNavigationActiveRef.current = false;
         return committed;
-    }, [publishCameraState]);
+    }, [captureBoundCameraWorldMatrix, publishCameraState]);
 
     const enterSceneCameraView = useCallback((entityId: string) => {
         // Finish any pending navigation transaction on the previously bound camera
@@ -182,10 +214,11 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
             editorCameraBeforeBindingRef.current = cloneCamera(cameraRef.current);
         }
         viewCameraEntityIdRef.current = entityId;
+        boundCameraWorldMatrixRef.current = captureBoundCameraWorldMatrix(entityId);
         setViewCameraEntityId(entityId);
         cameraRef.current = next;
         publishCameraState(next, true);
-    }, [commitBoundCameraViewportState, publishCameraState]);
+    }, [captureBoundCameraWorldMatrix, commitBoundCameraViewportState, publishCameraState]);
 
     const exitSceneCameraView = useCallback(() => {
         if (viewCameraEntityIdRef.current && boundCameraNavigationActiveRef.current) {
@@ -197,6 +230,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         }
 
         viewCameraEntityIdRef.current = null;
+        boundCameraWorldMatrixRef.current = null;
         setViewCameraEntityId(null);
         const previousEditorCamera = editorCameraBeforeBindingRef.current;
         if (previousEditorCamera) {
@@ -322,13 +356,28 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         }
     }, []);
 
-    // Inspector/gizmo edits to the bound Camera Transform should immediately
-    // update the viewport. Navigation writes the Transform synchronously, so the
-    // notification received on mouse-up resolves back to the same pose.
+    // Inspector/gizmo/parent edits to the bound Camera Transform should immediately
+    // update the viewport. Engine notifications are broad, however, so selection or
+    // unrelated asset/UI changes must not reconstruct the viewport pose from Transform.
     useEffect(() => {
         if (!viewCameraEntityId) return;
         return engineInstance.subscribe(() => {
             if (boundCameraNavigationActiveRef.current) return;
+            if (!engineInstance.ecs.hasComponent(viewCameraEntityId, ComponentType.CAMERA)) {
+                exitSceneCameraView();
+                return;
+            }
+
+            const worldState = boundCameraWorldMatrixChanged(viewCameraEntityId);
+            if (!worldState.current) {
+                exitSceneCameraView();
+                return;
+            }
+            if (!worldState.changed) return;
+
+            // Record before publishing CameraState so any synchronous UI work caused by
+            // that publication sees the same transform snapshot.
+            boundCameraWorldMatrixRef.current = worldState.current;
             const next = readSceneCameraViewportState(
                 engineInstance,
                 viewCameraEntityId,
@@ -344,7 +393,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
                 publishCameraState(next, true);
             }
         });
-    }, [viewCameraEntityId, exitSceneCameraView, publishCameraState]);
+    }, [viewCameraEntityId, boundCameraWorldMatrixChanged, exitSceneCameraView, publishCameraState]);
 
     const [dragState, setDragState] = useState<{
         isDragging: boolean;

@@ -180,9 +180,11 @@ export class Engine {
     get hoveredVertex() { return this.selectionSystem.hoveredVertex; }
 
     setSelected(ids: string[]) {
-        this.selectionSystem.setSelected(ids);
+        // Selection is UI/editor state; it must not force a whole-scene Transform
+        // evaluation. In particular, a bound Scene Camera must not be dirtied/resynced
+        // merely because another entity became selected.
+        this.selectionSystem.setSelected(ids, false);
         this.updateSkeletonToolActive(ids);
-        this.syncTransforms(false);
         this.notifyUI();
     }
 

@@ -13,9 +13,9 @@ export function createEngineAPI(engine: any = engineInstance): EngineAPI {
           if (engine.setSelected) {
             engine.setSelected(ids);
           } else if (engine.selectionSystem) {
+            // Selection does not own transforms. SelectionSystem publishes its own
+            // notification by default, so avoid a redundant scene sync/notification.
             engine.selectionSystem.setSelected(ids);
-            engine.syncTransforms?.(false);
-            engine.notifyUI?.();
           }
         },
         clear() {
@@ -23,8 +23,6 @@ export function createEngineAPI(engine: any = engineInstance): EngineAPI {
             engine.setSelected([]);
           } else if (engine.selectionSystem) {
             engine.selectionSystem.setSelected([]);
-            engine.syncTransforms?.(false);
-            engine.notifyUI?.();
           }
         },
       },

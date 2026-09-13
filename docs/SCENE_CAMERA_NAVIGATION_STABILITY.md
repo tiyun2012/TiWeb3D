@@ -98,7 +98,10 @@ This preserves authored roll without keeping a stale world-space up vector durin
 - `notifyUI()` is emitted once when the drag finishes.
 - Wheel navigation batches UI refresh until wheel input has been idle briefly.
 - While navigation owns the Camera, Transform-to-viewport subscription callbacks are ignored.
-- Inspector/gizmo edits made outside viewport navigation still resync the viewport immediately.
+- The viewport stores the last known **bound Camera world matrix**. Broad engine UI notifications (selection, tool state, asset refreshes) do not rebuild `CameraState` unless that world matrix actually changed.
+- After a viewport-owned camera commit, refresh the stored world-matrix snapshot before `notifyUI()` so the next unrelated notification cannot replay the same Transform back into the viewport.
+- Inspector/gizmo edits and parent Transform edits made outside viewport navigation still resync the viewport immediately because they change the bound Camera world matrix.
+- Entity selection is not a Transform operation and must not force `SceneGraph.update()` merely to publish selection state.
 
 ## Camera Preset Transform component
 
@@ -129,3 +132,5 @@ Entity
 5. Test a Camera parented under a transformed parent: local Transform conversion remains correct.
 6. Test an authored rolled Camera, then orbit: roll is transported around live forward instead of using a stale world-space up vector.
 7. Open a Camera Preset: Inspector visibly contains Transform [Preview], Camera, and Editor Viewport; changing Preview Transform changes only preview pose and does not mutate Camera Preset runtime settings.
+8. While View Through is active, select several unrelated entities: the rendered camera view, focal target, and Camera Transform remain unchanged.
+9. Edit the bound Camera Transform or any of its parents from Inspector/gizmo: the viewport resyncs exactly once to the new world pose.
