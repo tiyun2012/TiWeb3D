@@ -8,6 +8,7 @@ import { resolveMeshFocusTarget } from '@/editor/viewports/focusTargetResolvers'
 import type { EditorCommandCapability, EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
 import '@/editor/commands/StaticMeshCommandCatalogue';
 import { resolveAssetStaticMeshEditTarget } from '@/engine/mesh-editing/StaticMeshEditTarget';
+import { resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
 import {
   executeMarqueeSelection,
   resolveMarqueeOperation,
@@ -180,6 +181,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const [stats, setStats] = useState<{ verts: number; tris: number }>({ verts: 0, tris: 0 });
   const [pieMenu, setPieMenu] = useState<{ x: number; y: number } | null>(null);
   const [hierarchySection, setHierarchySection] = useState<MeshHierarchySection>('ASSET');
+  const [selectedShellId, setSelectedShellId] = useState<string | null>(null);
   const [leftDockCollapsed, setLeftDockCollapsed] = useState(false);
   const [materialId, setMaterialId] = useState<string>('');
   const materialIdRef = useRef<string>('');
@@ -1173,6 +1175,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const handleAppendMesh = useCallback((sourceAssetId: string) => {
     const target = assetManager.getAsset(assetId);
     if (!target || target.type !== 'MESH') return;
+    const previousShellIds = new Set(resolveStaticMeshShells(target as StaticMeshAsset).map(shell => shell.id));
 
     const result = staticMeshAssetAPI.appendMesh({
       targetAssetId: target.id,
@@ -1181,6 +1184,13 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     if (result.verticesAdded <= 0) return;
 
     const updated = assetManager.getAsset(target.id) as StaticMeshAsset;
+    const appendedShells = resolveStaticMeshShells(updated).filter(shell => !previousShellIds.has(shell.id));
+    const appendedShell = appendedShells[appendedShells.length - 1] ?? null;
+    if (appendedShell) {
+      setSelectedShellId(appendedShell.id);
+      setHierarchySection('SHELL');
+      setMeshComponentMode('OBJECT');
+    }
     dirtyRef.current = 'FULL';
     previewEngineRef.current?.clearDeformation();
     const previewEntityId = previewEngineRef.current?.entityId;
@@ -1435,8 +1445,14 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             onCollapsedChange={setLeftDockCollapsed}
             activeSection={hierarchySection}
             meshComponentMode={meshComponentMode}
-            onSectionChange={setHierarchySection}
+            onSectionChange={section => {
+              setHierarchySection(section);
+              if (section !== 'SHELL') setSelectedShellId(null);
+            }}
             onMeshComponentModeChange={setMeshComponentMode}
+            selectedShellId={selectedShellId}
+            onShellSelect={setSelectedShellId}
+            assetRevision={assetRevision}
             selectionCounts={selectionCounts}
             softSelectionEnabled={softSelectionEnabled}
             softSelectionRadius={softSelectionRadius}
@@ -1460,6 +1476,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             meshComponentMode={meshComponentMode}
             onSectionChange={setHierarchySection}
             onMeshComponentModeChange={setMeshComponentMode}
+            assetRevision={assetRevision}
           />
         )
       }
@@ -1477,6 +1494,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           referenceMeshes={referenceMeshes}
           onAddReferenceMesh={handleAddReferenceMesh}
           onRemoveReferenceMesh={handleRemoveReferenceMesh}
+          selectedShellId={selectedShellId}
+          assetRevision={assetRevision}
         />
       }
     >

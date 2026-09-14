@@ -184,6 +184,7 @@ class AssetManagerService {
                 aabb: undefined,
             },
             topology,
+            shells: [],
         };
 
         this.registerAsset(asset);
@@ -628,7 +629,17 @@ eventBus.emit('ASSET_CREATED', { id: skeletonAsset.id, type: 'SKELETON' });
              return skelAsset;
         }
 
-        const staticAsset: StaticMeshAsset = { ...assetBase, type: 'MESH' };
+        const staticAsset: StaticMeshAsset = {
+            ...assetBase,
+            type: 'MESH',
+            shells: vertexCount > 0 ? [{
+                id: crypto.randomUUID(),
+                name,
+                vertexIds: { start: 0, endExclusive: vertexCount },
+                triangleIds: { start: 0, endExclusive: Math.floor(geometryData.idx.length / 3) },
+                faceIds: { start: 0, endExclusive: topology.faces.length > 0 ? topology.faces.length : Math.floor(geometryData.idx.length / 3) },
+            }] : [],
+        };
         this.registerAsset(staticAsset);
         eventBus.emit('ASSET_CREATED', { id: staticAsset.id, type: 'MESH' });
         return staticAsset;
@@ -1158,7 +1169,14 @@ private reconstructQuads(
                 indices: new Uint16Array(data.idx),
                 aabb
             },
-            topology
+            topology,
+            shells: data.v.length > 0 ? [{
+                id: crypto.randomUUID(),
+                name: `SM_${name}`,
+                vertexIds: { start: 0, endExclusive: Math.floor(data.v.length / 3) },
+                triangleIds: { start: 0, endExclusive: Math.floor(data.idx.length / 3) },
+                faceIds: { start: 0, endExclusive: data.faces?.length ? data.faces.length : Math.floor(data.idx.length / 3) },
+            }] : [],
         };
     }
 

@@ -4,6 +4,7 @@ import { Icon } from '@/editor/components/Icon';
 import { MeshHierarchySection } from './MeshAssetHierarchy';
 import { MaterialSlotField } from '@/editor/components/inspector/MaterialSlotField';
 import type { StaticMeshCompositionSource } from '@/engine/api/StaticMeshAssetAPI';
+import { getStaticMeshShellCounts, resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
 import { StaticMeshAssetField } from '@/editor/components/inspector/StaticMeshAssetField';
 
 export interface MeshAssetInspectorProps {
@@ -19,6 +20,9 @@ export interface MeshAssetInspectorProps {
   referenceMeshes?: Array<{ id: string; name: string }>;
   onAddReferenceMesh?: (assetId: string) => void;
   onRemoveReferenceMesh?: (assetId: string) => void;
+  selectedShellId?: string | null;
+  /** Reactive revision for AssetManager assets, which are mutated in place. */
+  assetRevision?: number;
 }
 
 const Row: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
@@ -59,8 +63,21 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
   referenceMeshes = [],
   onAddReferenceMesh,
   onRemoveReferenceMesh,
+  selectedShellId = null,
+  assetRevision = 0,
 }) => {
-  const counts = useMemo(() => geometryCounts(asset), [asset]);
+  const counts = useMemo(() => geometryCounts(asset), [asset, assetRevision]);
+  const selectedShell = useMemo(() => {
+    if (asset.type !== 'MESH' || !selectedShellId) return null;
+    return resolveStaticMeshShells(asset).find(shell => shell.id === selectedShellId) ?? null;
+  }, [asset, selectedShellId, assetRevision]);
+  const selectedShellCounts = useMemo(
+    () => asset.type === 'MESH' && selectedShell ? getStaticMeshShellCounts(asset, selectedShell) : null,
+    [asset, selectedShell, assetRevision],
+  );
+  const selectedShellSource = selectedShell?.sourceAssetId
+    ? availableMeshSources.find(source => source.id === selectedShell.sourceAssetId) ?? null
+    : null;
   const aabb = asset.geometry.aabb;
   const referenceCandidates = useMemo(
     () => availableMeshSources.filter(source => !referenceMeshes.some(reference => reference.id === source.id)),
@@ -98,6 +115,22 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
           {asset.path && <Row label="Path" value={asset.path} />}
         </Card>
 
+        {asset.type === 'MESH' && section === 'SHELL' && selectedShell && selectedShellCounts && (
+          <Card title="Shell" icon="Box">
+            <Row label="Name" value={selectedShell.name} />
+            <Row label="Source" value={selectedShellSource?.name ?? (selectedShell.sourceAssetId ? 'Appended Mesh' : 'Base Geometry')} />
+            <Row label="Vertices" value={selectedShellCounts.vertices} />
+            <Row label="Edges" value={selectedShellCounts.edges} />
+            <Row label="Faces" value={selectedShellCounts.faces} />
+            <Row label="Triangles" value={selectedShellCounts.triangles} />
+            <Row label="Vertex IDs" value={`${selectedShell.vertexIds.start}–${Math.max(selectedShell.vertexIds.start, selectedShell.vertexIds.endExclusive - 1)}`} />
+            <Row label="Face IDs" value={`${selectedShell.faceIds.start}–${Math.max(selectedShell.faceIds.start, selectedShell.faceIds.endExclusive - 1)}`} />
+            <div className="py-1.5 text-[9px] leading-relaxed text-text-secondary/70">
+              Shells organize authored geometry parts. Vertex / Edge / Face edit modes remain asset-wide until shell-scoped component selection is added.
+            </div>
+          </Card>
+        )}
+
         {asset.type === 'MESH' && (section === 'ASSET' || section === 'GEOMETRY') && (
           <Card title="Reference Meshes" icon="Eye">
             <div className="py-1.5 space-y-2">
@@ -121,7 +154,7 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
                   />
                   {referenceSource && (
                     <div className="px-0.5 text-[8px] leading-3 text-text-secondary/70">
-                      {referenceSource.vertexCount} vertices • {referenceSource.triangleCount} triangles • {referenceSource.faceCount} faces
+                      {referenceSource.shellCount} shell{referenceSource.shellCount === 1 ? '' : 's'} • {referenceSource.vertexCount} vertices • {referenceSource.triangleCount} triangles • {referenceSource.faceCount} faces
                     </div>
                   )}
                   <button

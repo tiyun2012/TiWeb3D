@@ -94,3 +94,64 @@ geometry. References intentionally do not draw a topology cage by default.
 
 This keeps the UI replaceable: future search, drag/drop, transforms, context menus, automation, or
 agent workflows should call the same stable asset API.
+
+## Shell composition metadata
+
+Static Mesh composition now tracks authored parts through `StaticMeshAsset.shells`.
+A shell is metadata over existing dense component IDs; it does **not** copy geometry or topology.
+Each shell stores vertex, triangle, and logical-face ID ranges plus optional append provenance.
+
+```ts
+interface StaticMeshShell {
+  id: string;
+  name: string;
+  vertexIds: { start: number; endExclusive: number };
+  triangleIds: { start: number; endExclusive: number };
+  faceIds: { start: number; endExclusive: number };
+  sourceAssetId?: string;
+}
+```
+
+Empty Static Mesh assets start with no shells. Imported/generated Static Mesh assets start with one
+base shell. `appendMesh()` preserves source shell boundaries and offsets their component ranges by the
+same allocation used for appended geometry. A source with one shell therefore contributes one new
+shell; a source that is already composed from several shells keeps those authored parts separate.
+
+Older assets that predate shell metadata remain valid. `resolveStaticMeshShells()` exposes their
+existing geometry as one virtual legacy shell, and the next append materializes that shell metadata.
+
+### Hierarchy contract
+
+The Static Mesh hierarchy separates organization from edit mode:
+
+```text
+Static Mesh
+└─ Geometry                      [shell count]
+   ├─ Shells
+   │  ├─ Shell 0 · BaseMesh
+   │  │  ├─ Vertices               [shell-local count]
+   │  │  ├─ Edges                  [shell-local count]
+   │  │  ├─ Faces                  [shell-local count]
+   │  │  └─ Triangles              [shell-local count]
+   │  └─ Shell 1 · AppendedMesh
+   └─ Components
+      ├─ Vertices                [global]
+      ├─ Edges                   [global]
+      └─ Faces                   [global]
+```
+
+Shell children are descriptive component summaries. Selecting/appending a shell expands `Geometry -> Shells`
+and the selected shell automatically so its local counts are visible immediately. `Components` remains the
+authoritative entry point for the current asset-wide Vertex / Edge / Face edit modes. Shell selection is intentionally **not** a new
+`MeshComponentMode` yet; adding shell-scoped picking/deformation requires a separate selection-scope
+contract so the hierarchy never implies filtering that the viewport does not enforce.
+
+### React invalidation for composed assets
+
+`AssetManager.updateAsset()` mutates the registered asset object in place with `Object.assign()`. React therefore
+cannot use the asset object identity alone as a memo invalidation signal. `StaticMeshEditor` owns an
+`assetRevision` tick driven by mesh asset events and passes it into `StaticMeshToolDock`, `MeshAssetHierarchy`,
+and `MeshAssetInspector`. Any memo that derives geometry counts, shell lists, shell-local counts, or selected-shell
+metadata must include that revision (or an equivalent changed field reference). This is what makes the hierarchy
+advance from 0 -> 1 -> 2 shells after successive append operations even though the asset object reference itself
+does not change.

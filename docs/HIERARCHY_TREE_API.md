@@ -154,3 +154,21 @@ export const MyTreePanel: React.FC = () => {
 
 3. **`ProjectPanel.tsx` (Asset Browser):**
    - Enforces key event isolation and accessible labels on asset renaming inputs.
+
+## Static Mesh shell hierarchy
+
+`MeshAssetHierarchy` uses the shared `HierarchyTreeItem` rows for Static Mesh composition parts.
+`Geometry` contains two distinct branches: `Shells` for authored mesh-part organization and
+`Components` for the existing global Vertex / Edge / Face modes. Do not nest the live component-mode
+commands under a shell unless the selection system also enforces that shell as the active selection
+scope.
+
+Selecting a shell sets the hierarchy section to `SHELL` and keeps mesh component mode at `OBJECT`.
+The selected shell is automatically expanded so its `Vertices / Edges / Faces / Triangles` summary rows are
+visible. The Inspector may show shell provenance and component ID ranges, while viewport object selection and
+component picking keep their existing contracts.
+
+`AssetManager.updateAsset()` currently mutates an asset object in place. Hierarchy/Inspector memoization must
+therefore not rely on `[asset]` alone. Asset editors pass a reactive `assetRevision` into these views and include it
+in asset-derived memo dependencies. Without this explicit invalidation, append succeeds in the engine/viewport
+while the hierarchy remains stuck on the pre-append shell/component counts.
