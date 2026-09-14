@@ -2,7 +2,7 @@
 import React, { useContext } from 'react';
 import { EditorContext } from '@/editor/state/EditorContext';
 import { Icon } from './Icon';
-import { TransformSpace, SoftSelectionFalloff } from '@/types';
+import { TransformSpace, SoftSelectionConnectivity, SoftSelectionFalloff } from '@/types';
 import { Select } from './ui/Select';
 import { SkeletonDisplayOptions } from './inspector/SkeletonDisplayOptions';
 
@@ -30,7 +30,14 @@ const SOFT_SEL_MODES = [
 
 const SOFT_SEL_FALLOFF = [
     { label: 'Volume (Euclidean)', value: 'VOLUME' },
-    { label: 'Surface (Geodesic)', value: 'SURFACE' }
+    { label: 'Surface (Face-aware)', value: 'SURFACE' },
+    { label: 'Hybrid (Blend)', value: 'HYBRID' }
+];
+
+const SOFT_SEL_CONNECTIVITY = [
+    { label: 'None', value: 'NONE' },
+    { label: 'Same Island', value: 'SAME_ISLAND' },
+    { label: 'Flood Within Radius', value: 'FLOOD_WITHIN_RADIUS' }
 ];
 
 export const ToolOptionsPanel: React.FC = () => {
@@ -42,6 +49,8 @@ export const ToolOptionsPanel: React.FC = () => {
         softSelectionRadius, setSoftSelectionRadius,
         softSelectionMode, setSoftSelectionMode,
         softSelectionFalloff, setSoftSelectionFalloff,
+        softSelectionSurfaceBlend, setSoftSelectionSurfaceBlend,
+        softSelectionConnectivity, setSoftSelectionConnectivity,
         softSelectionHeatmapVisible, setSoftSelectionHeatmapVisible,
         snapSettings, setSnapSettings,
         skeletonViz, setSkeletonViz
@@ -240,7 +249,31 @@ export const ToolOptionsPanel: React.FC = () => {
                                         <Select 
                                             value={softSelectionFalloff} 
                                             options={SOFT_SEL_FALLOFF} 
-                                            onChange={(v) => setSoftSelectionFalloff(v as any)} 
+                                            onChange={(v) => setSoftSelectionFalloff(v as SoftSelectionFalloff)}
+                                            className="w-full"
+                                        />
+                                    </div>
+                                    {softSelectionFalloff === 'HYBRID' && (
+                                        <div className="space-y-1 pt-1">
+                                            <div className="flex justify-between text-[10px] text-text-secondary">
+                                                <span>Surface Blend</span>
+                                                <span>{Math.round(softSelectionSurfaceBlend * 100)}%</span>
+                                            </div>
+                                            <input
+                                                type="range"
+                                                min="0" max="1" step="0.05"
+                                                value={softSelectionSurfaceBlend}
+                                                onChange={e => setSoftSelectionSurfaceBlend(parseFloat(e.target.value))}
+                                                className="w-full"
+                                            />
+                                        </div>
+                                    )}
+                                    <div className="space-y-1 pt-1">
+                                        <span className="text-[10px] text-text-secondary">Connectivity</span>
+                                        <Select
+                                            value={softSelectionConnectivity}
+                                            options={SOFT_SEL_CONNECTIVITY}
+                                            onChange={(v) => setSoftSelectionConnectivity(v as SoftSelectionConnectivity)}
                                             className="w-full"
                                         />
                                     </div>

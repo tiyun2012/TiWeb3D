@@ -8,7 +8,7 @@ import { AnimationSystem } from './systems/AnimationSystem';
 import { SelectionSystem } from './systems/SelectionSystem';
 import { WebGLRenderer, PostProcessConfig } from './renderers/WebGLRenderer';
 import { DebugRenderer } from './renderers/DebugRenderer';
-import { TimelineState, ComponentType, MeshComponentMode, SimulationMode, PerformanceMetrics, Vector3, SoftSelectionFalloff, UIConfiguration, GridConfiguration, SnapSettings, StaticMeshAsset, SkeletalMeshAsset, SkeletonAsset, SceneAsset, CameraComponentData, CameraSettings, PostProcessProfileAsset, ResolvedCameraState } from '@/types';
+import { TimelineState, ComponentType, MeshComponentMode, SimulationMode, PerformanceMetrics, Vector3, SoftSelectionConnectivity, SoftSelectionFalloff, UIConfiguration, GridConfiguration, SnapSettings, StaticMeshAsset, SkeletalMeshAsset, SkeletonAsset, SceneAsset, CameraComponentData, CameraSettings, PostProcessProfileAsset, ResolvedCameraState } from '@/types';
 import { assetManager } from './AssetManager';
 import { consoleService } from './Console';
 import { GizmoSystem } from './GizmoSystem';
@@ -57,6 +57,8 @@ export class Engine {
     softSelectionRadius: number = 2.0;
     softSelectionMode: SoftSelectionMode = 'FIXED';
     softSelectionFalloff: SoftSelectionFalloff = 'VOLUME';
+    softSelectionSurfaceBlend: number = 0.5;
+    softSelectionConnectivity: SoftSelectionConnectivity = 'NONE';
     softSelectionHeatmapVisible: boolean = true;
     softSelectionWeights: Map<number, Float32Array> = new Map(); // MeshID -> Weights
 
@@ -298,6 +300,18 @@ export class Engine {
 
     selectLoop(mode: MeshComponentMode) {
         this.selectionSystem.selectLoop(mode);
+    }
+
+    expandSelection(mode: MeshComponentMode) {
+        this.selectionSystem.expandSelection(mode);
+    }
+
+    shrinkSelection(mode: MeshComponentMode) {
+        this.selectionSystem.shrinkSelection(mode);
+    }
+
+    selectRing(mode: MeshComponentMode) {
+        this.selectionSystem.selectRing(mode);
     }
     
     getSelectionAsVertices() {
@@ -1217,6 +1231,8 @@ export class Engine {
             radius: localRadius,
             mode: this.softSelectionMode,
             falloff: this.softSelectionFalloff,
+            surfaceBlend: this.softSelectionSurfaceBlend,
+            connectivity: this.softSelectionConnectivity,
         };
     }
 
@@ -1246,6 +1262,7 @@ export class Engine {
             {
                 vertices: context.asset.geometry.vertices,
                 indices: context.asset.geometry.indices,
+                topology: context.asset.topology,
             },
             context.selectedVertices,
             this.getSoftSelectionSettings(context.localRadius),
@@ -1268,6 +1285,7 @@ export class Engine {
             {
                 vertices: context.asset.geometry.vertices,
                 indices: context.asset.geometry.indices,
+                topology: context.asset.topology,
             },
             context.selectedVertices,
             this.getSoftSelectionSettings(context.localRadius),
@@ -1291,6 +1309,7 @@ export class Engine {
             {
                 vertices: context.asset.geometry.vertices,
                 indices: context.asset.geometry.indices,
+                topology: context.asset.topology,
             },
             deltaLocal,
             this.getSoftSelectionSettings(context.localRadius),

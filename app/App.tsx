@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useContext, useRef, useMemo } from 'react';
 import { engineInstance, SoftSelectionMode } from '@/engine/engine';
 import { skeletonTool } from '@/engine/tools/SkeletonTool';
-import { Entity, ToolType, TransformSpace, SelectionType, GraphNode, GraphConnection, MeshComponentMode, SimulationMode, SoftSelectionFalloff } from '@/types';
+import { Entity, ToolType, TransformSpace, SelectionType, GraphNode, GraphConnection, MeshComponentMode, SimulationMode, SoftSelectionConnectivity, SoftSelectionFalloff } from '@/types';
 import { EditorContext, EditorContextType, DEFAULT_UI_CONFIG, UIConfiguration, GridConfiguration, DEFAULT_GRID_CONFIG, SnapSettings, DEFAULT_SNAP_CONFIG, DEFAULT_SKELETON_VIZ, SkeletonVizSettings } from '@/editor/state/EditorContext';
 import { assetManager } from '@/engine/AssetManager';
 import { consoleService } from '@/engine/Console';
@@ -351,6 +351,8 @@ const App: React.FC = () => {
     const [softSelectionRadius, setSoftSelectionRadius] = useState(2.0);
     const [softSelectionMode, setSoftSelectionMode] = useState<SoftSelectionMode>('FIXED');
     const [softSelectionFalloff, setSoftSelectionFalloff] = useState<SoftSelectionFalloff>('VOLUME');
+    const [softSelectionSurfaceBlend, setSoftSelectionSurfaceBlend] = useState(0.5);
+    const [softSelectionConnectivity, setSoftSelectionConnectivity] = useState<SoftSelectionConnectivity>('NONE');
     const [softSelectionHeatmapVisible, setSoftSelectionHeatmapVisible] = useState(true);
 
     // New State for Simulation
@@ -455,6 +457,10 @@ const App: React.FC = () => {
         setSoftSelectionMode,
         softSelectionFalloff,
         setSoftSelectionFalloff,
+        softSelectionSurfaceBlend,
+        setSoftSelectionSurfaceBlend,
+        softSelectionConnectivity,
+        setSoftSelectionConnectivity,
         softSelectionHeatmapVisible,
         setSoftSelectionHeatmapVisible,
         tool,
@@ -477,7 +483,7 @@ const App: React.FC = () => {
         entities, selectedIds, selectedAssetIds, inspectedNode, activeGraphConnections, 
         selectionType, meshComponentMode, tool, transformSpace, uiConfig, gridConfig, 
         snapSettings, skeletonViz, engineInstance.isPlaying, simulationMode, softSelectionEnabled, softSelectionRadius, softSelectionMode,
-        softSelectionFalloff, softSelectionHeatmapVisible, handleSetSelectedIds, handleSetMeshComponentMode
+        softSelectionFalloff, softSelectionSurfaceBlend, softSelectionConnectivity, softSelectionHeatmapVisible, handleSetSelectedIds, handleSetMeshComponentMode
     ]);
 
     return (

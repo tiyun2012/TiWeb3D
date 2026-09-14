@@ -36,6 +36,10 @@ export const resolveMeshFocusTarget = (
   vertexIds?: Iterable<number> | null,
   worldMatrix?: Float32Array | null,
 ): FocusTarget | null => {
+  // Empty meshes have no geometric focus target. Returning null lets the
+  // viewport use its editor/workspace fit instead of framing a legacy zero AABB.
+  if (asset.geometry.vertices.length === 0) return null;
+
   const minWorldRadius = getMeshReferenceRadius(asset, worldMatrix);
   if (vertexIds) {
     const vertices = asset.geometry.vertices;

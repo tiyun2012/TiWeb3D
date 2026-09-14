@@ -25,6 +25,20 @@ export function createEngineAPI(engine: any = engineInstance): EngineAPI {
             engine.selectionSystem.setSelected([]);
           }
         },
+        selectMeshComponentsInRect(args) {
+          if (!engine.selectionSystem?.selectMeshComponentsInRect) return 0;
+          return engine.selectionSystem.selectMeshComponentsInRect(
+            args.entityId,
+            args.mode,
+            args.x,
+            args.y,
+            args.width,
+            args.height,
+            args.viewportWidth,
+            args.viewportHeight,
+            args.operation ?? 'REPLACE',
+          );
+        },
       },
       simulation: {
         setMode(mode: SimulationMode) {
@@ -43,7 +57,10 @@ export function createEngineAPI(engine: any = engineInstance): EngineAPI {
           if (settings.enabled !== undefined) engine.softSelectionEnabled = settings.enabled;
           if (settings.radius !== undefined) engine.softSelectionRadius = Math.max(0.0001, settings.radius);
           if (settings.mode !== undefined) engine.softSelectionMode = settings.mode;
-          if (settings.falloff !== undefined) engine.softSelectionFalloff = settings.falloff;
+          const distanceMetric = settings.distanceMetric ?? settings.falloff;
+          if (distanceMetric !== undefined) engine.softSelectionFalloff = distanceMetric;
+          if (settings.surfaceBlend !== undefined) engine.softSelectionSurfaceBlend = Math.max(0, Math.min(1, settings.surfaceBlend));
+          if (settings.connectivity !== undefined) engine.softSelectionConnectivity = settings.connectivity;
           if (settings.heatmapVisible !== undefined) engine.softSelectionHeatmapVisible = settings.heatmapVisible;
           engine.recalculateSoftSelection?.();
           engine.notifyUI?.();
@@ -170,6 +187,18 @@ export function createEngineAPI(engine: any = engineInstance): EngineAPI {
 
     getTool(): ToolType {
       return (engine.gizmoSystem as any)?.tool || 'SELECT';
+    },
+
+    getSoftSelectionSettings() {
+      return {
+        enabled: Boolean(engine.softSelectionEnabled),
+        radius: Number(engine.softSelectionRadius ?? 0),
+        mode: engine.softSelectionMode ?? 'FIXED',
+        distanceMetric: engine.softSelectionFalloff ?? 'VOLUME',
+        surfaceBlend: Number(engine.softSelectionSurfaceBlend ?? 0.5),
+        connectivity: engine.softSelectionConnectivity ?? 'NONE',
+        heatmapVisible: Boolean(engine.softSelectionHeatmapVisible),
+      };
     },
 
     getResolvedCamera(id: string) {

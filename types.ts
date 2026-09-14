@@ -20,7 +20,8 @@ export type TransformSpace = 'World' | 'Local';
 export type SelectionType = 'ENTITY' | 'ASSET' | 'VERTEX' | 'EDGE' | 'FACE' | 'NODE';
 export type MeshComponentMode = 'OBJECT' | 'VERTEX' | 'EDGE' | 'FACE';
 export type SimulationMode = 'STOPPED' | 'SIMULATE' | 'GAME';
-export type SoftSelectionFalloff = 'VOLUME' | 'SURFACE';
+export type SoftSelectionFalloff = 'VOLUME' | 'SURFACE' | 'HYBRID';
+export type SoftSelectionConnectivity = 'NONE' | 'SAME_ISLAND' | 'FLOOD_WITHIN_RADIUS';
 export type RotationOrder = 'XYZ' | 'YXZ' | 'ZXY' | 'ZYX' | 'YZX' | 'XZY';
 
 export type AssetType =

@@ -158,6 +158,39 @@ class AssetManagerService {
         }
     }
 
+    createStaticMesh(name: string, path: string = '/Content/Meshes'): StaticMeshAsset {
+        const topology: LogicalMesh = {
+            faces: [],
+            triangleToFaceIndex: new Int32Array(0),
+            vertexToFaces: new Map<number, number[]>(),
+            siblings: new Map<number, number[]>(),
+        };
+        topology.graph = MeshTopologyUtils.buildTopology(topology, 0);
+
+        const asset: StaticMeshAsset = {
+            id: crypto.randomUUID(),
+            name,
+            type: 'MESH',
+            path,
+            geometry: {
+                vertices: new Float32Array(0),
+                normals: new Float32Array(0),
+                uvs: new Float32Array(0),
+                colors: new Float32Array(0),
+                indices: new Uint16Array(0),
+                // Empty geometry has no spatial bounds yet. The Static Mesh
+                // editor supplies its normal authoring-workspace camera/grid
+                // until geometry is appended or imported.
+                aabb: undefined,
+            },
+            topology,
+        };
+
+        this.registerAsset(asset);
+        eventBus.emit('ASSET_CREATED', { id: asset.id, type: 'MESH' });
+        return asset;
+    }
+
     createFolder(name: string, path: string): FolderAsset {
         const id = crypto.randomUUID();
         const folder: FolderAsset = {

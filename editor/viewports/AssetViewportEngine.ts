@@ -1,4 +1,4 @@
-import { IEngine, MeshComponentMode, SoftSelectionFalloff, Vector3 } from '@/types';
+import { IEngine, MeshComponentMode, SoftSelectionConnectivity, SoftSelectionFalloff, Vector3 } from '@/types';
 import { SoAEntitySystem } from '@/engine/ecs/EntitySystem';
 import { SceneGraph } from '@/engine/SceneGraph';
 import { SelectionSystem } from '@/engine/systems/SelectionSystem';
@@ -48,6 +48,8 @@ export class AssetViewportEngine implements IEngine {
     softSelectionRadius = 1.0;
     softSelectionMode: SoftSelectionMode = 'FIXED';
     softSelectionFalloff: SoftSelectionFalloff = 'VOLUME';
+    softSelectionSurfaceBlend = 0.5;
+    softSelectionConnectivity: SoftSelectionConnectivity = 'NONE';
     softSelectionHeatmapVisible = true;
     softSelectionWeights: Float32Array | null = null;
     /** Monotonic render invalidation for the asset viewport heatmap buffer. */
@@ -149,7 +151,7 @@ export class AssetViewportEngine implements IEngine {
         }
 
         const result = this.meshDeformationSession.updateSettings(
-            { vertices: context.asset.geometry.vertices, indices: context.asset.geometry.indices },
+            { vertices: context.asset.geometry.vertices, indices: context.asset.geometry.indices, topology: context.asset.topology },
             context.selectedVertices,
             this.getSoftSelectionSettings(context.localRadius),
         );
@@ -184,7 +186,7 @@ export class AssetViewportEngine implements IEngine {
         if (!context || context.selectedVertices.size === 0) return;
 
         this.publishSoftSelectionWeights(this.meshDeformationSession.begin(
-            { vertices: context.asset.geometry.vertices, indices: context.asset.geometry.indices },
+            { vertices: context.asset.geometry.vertices, indices: context.asset.geometry.indices, topology: context.asset.topology },
             context.selectedVertices,
             this.getSoftSelectionSettings(context.localRadius),
         ));
@@ -202,7 +204,7 @@ export class AssetViewportEngine implements IEngine {
         if (!context || !this.meshDeformationSession.hasOperation) return;
 
         const result = this.meshDeformationSession.update(
-            { vertices: context.asset.geometry.vertices, indices: context.asset.geometry.indices },
+            { vertices: context.asset.geometry.vertices, indices: context.asset.geometry.indices, topology: context.asset.topology },
             delta,
             this.getSoftSelectionSettings(context.localRadius),
         );
@@ -215,7 +217,9 @@ export class AssetViewportEngine implements IEngine {
             this.updateMeshBounds(context.asset);
             this.onGeometryUpdated?.(context.assetId);
         }
-        this.notifyUI();
+        // Rendering consumes geometry/softSelectionRevision directly and the
+        // preview event refreshes Scene GPU geometry. Selection did not change,
+        // so avoid a React UI invalidation on every pointer sample.
     }
 
     endVertexDrag() {
@@ -269,6 +273,8 @@ export class AssetViewportEngine implements IEngine {
             radius: localRadius,
             mode: this.softSelectionMode,
             falloff: this.softSelectionFalloff,
+            surfaceBlend: this.softSelectionSurfaceBlend,
+            connectivity: this.softSelectionConnectivity,
         };
     }
 

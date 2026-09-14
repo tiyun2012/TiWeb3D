@@ -8,10 +8,19 @@ import { resolveMeshFocusTarget } from '@/editor/viewports/focusTargetResolvers'
 import type { EditorCommandCapability, EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
 import '@/editor/commands/StaticMeshCommandCatalogue';
 import { resolveAssetStaticMeshEditTarget } from '@/engine/mesh-editing/StaticMeshEditTarget';
+import {
+  executeMarqueeSelection,
+  resolveMarqueeOperation,
+  resolveStaticMeshEditorSelectionPolicy,
+  selectionPoliciesMatch,
+  type SelectionPolicy,
+} from '@/editor/selection/SelectionPolicy';
 import type { ViewportFocusProvider } from '@/editor/viewports/viewportFocus';
 import { assetManager } from '@/engine/AssetManager';
+import { staticMeshAssetAPI } from '@/engine/api/StaticMeshAssetAPI';
 import { eventBus } from '@/engine/EventBus';
 import { GizmoSystem } from '@/engine/GizmoSystem';
+import type { MeshPickingResult } from '@/engine/MeshTopologyUtils';
 import { Mat4Utils, Vec3Utils } from '@/engine/math';
 import { getMeshVertexPointSizes, getViewportPixelRatio } from '@/engine/MeshComponentVisualStyle';
 import { VIEW_MODES } from '@/engine/constants';
@@ -31,7 +40,7 @@ import {
 } from '@/engine/MeshEdgeGeometry';
 import { MeshEdgeOverlay } from '@/editor/viewports/MeshEdgeOverlay';
 import { MESH_VERTEX_COLORS, MeshVertexOverlay } from '@/editor/viewports/MeshVertexOverlay';
-import { MeshComponentMode, StaticMeshAsset, SkeletalMeshAsset, ToolType } from '@/types';
+import { MeshComponentMode, SoftSelectionConnectivity, SoftSelectionFalloff, StaticMeshAsset, SkeletalMeshAsset, ToolType } from '@/types';
 
 import { Icon } from './Icon';
 import { PieMenu } from './PieMenu';
@@ -48,13 +57,77 @@ const RENDER_MODE_ITEMS: Array<{ id: number; label: string; icon: string }> = VI
   .map(mode => ({ ...mode }));
 
 type DirtyKind = 'NONE' | 'VERTS' | 'FULL';
+const MARQUEE_DRAG_THRESHOLD_PX = 4;
+
+const REFERENCE_MESH_SURFACE_MATERIAL = {
+  albedo: [0.46, 0.58, 0.68] as const,
+  metallic: 0.0,
+  smoothness: 0.42,
+};
+
+type ReferenceMeshGpuResource = {
+  vao: WebGLVertexArrayObject;
+  vbo: WebGLBuffer;
+  nbo: WebGLBuffer;
+  softWeightBo: WebGLBuffer;
+  ibo: WebGLBuffer;
+  indexCount: number;
+  indexType: number;
+};
+
+type SelectionBoxState = {
+  startX: number;
+  startY: number;
+  currentX: number;
+  currentY: number;
+  isSelecting: boolean;
+};
+
+type PendingComponentPress = {
+  policy: SelectionPolicy;
+  entityId: string;
+  mode: Exclude<MeshComponentMode, 'OBJECT'>;
+  startX: number;
+  startY: number;
+  shiftKey: boolean;
+  picked: MeshPickingResult | null;
+};
+type PendingObjectPress = {
+  policy: SelectionPolicy;
+  startX: number;
+  startY: number;
+  shiftKey: boolean;
+  hitId: string | null;
+};
 type SoftSelectionCommandSettings = Parameters<NonNullable<EditorCommandContext['services']['configureSoftSelection']>>[0];
+
+const EMPTY_STATIC_MESH_CAMERA = {
+  radius: 3.5,
+  target: { x: 0, y: 0, z: 0 },
+} as const;
 
 function computeFitCamera(
   asset: StaticMeshAsset | SkeletalMeshAsset
 ): { radius: number; target: { x: number; y: number; z: number } } {
+  // An empty Static Mesh is a valid authoring workspace, not a zero-size mesh.
+  // Do not frame its synthetic/legacy zero AABB: that puts the camera only
+  // centimeters from the origin and makes the normal 1m editor grid appear
+  // to have disappeared. Keep a useful default workspace view until geometry
+  // is appended/imported.
+  if (asset.geometry.vertices.length === 0) {
+    return {
+      radius: EMPTY_STATIC_MESH_CAMERA.radius,
+      target: { ...EMPTY_STATIC_MESH_CAMERA.target },
+    };
+  }
+
   const aabb = asset.geometry.aabb;
-  if (!aabb) return { radius: 3.0, target: { x: 0, y: 0, z: 0 } };
+  if (!aabb) {
+    return {
+      radius: EMPTY_STATIC_MESH_CAMERA.radius,
+      target: { ...EMPTY_STATIC_MESH_CAMERA.target },
+    };
+  }
   const size = Vec3Utils.subtract(aabb.max, aabb.min, { x: 0, y: 0, z: 0 });
   const maxDim = Math.max(size.x, Math.max(size.y, size.z));
   const center = Vec3Utils.scale(Vec3Utils.add(aabb.min, aabb.max, { x: 0, y: 0, z: 0 }), 0.5, {
@@ -81,7 +154,9 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const [softSelectionEnabled, setSoftSelectionEnabled] = useState(false);
   const [softSelectionRadius, setSoftSelectionRadius] = useState(2.0);
   const [softSelectionMode, setSoftSelectionMode] = useState<'FIXED' | 'LIVE_FALLOFF' | 'SLIDE'>('FIXED');
-  const [softSelectionFalloff, setSoftSelectionFalloff] = useState<'VOLUME' | 'SURFACE'>('VOLUME');
+  const [softSelectionFalloff, setSoftSelectionFalloff] = useState<SoftSelectionFalloff>('VOLUME');
+  const [softSelectionSurfaceBlend, setSoftSelectionSurfaceBlend] = useState(0.5);
+  const [softSelectionConnectivity, setSoftSelectionConnectivity] = useState<SoftSelectionConnectivity>('NONE');
   const [softSelectionHeatmapVisible, setSoftSelectionHeatmapVisible] = useState(true);
 
   const meshComponentModeRef = useRef<MeshComponentMode>(meshComponentMode);
@@ -143,6 +218,40 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const selectionTickRef = useRef<number>(0);
   const [selectionTick, setSelectionTick] = useState<number>(0); // UI refresh only
   const dirtyRef = useRef<DirtyKind>('NONE');
+  const referenceRevisionRef = useRef(0);
+  const [assetRevision, setAssetRevision] = useState(0);
+  const [selectionBox, setSelectionBox] = useState<SelectionBoxState | null>(null);
+  const selectionBoxRef = useRef<SelectionBoxState | null>(null);
+  const pendingComponentPressRef = useRef<PendingComponentPress | null>(null);
+  const pendingObjectPressRef = useRef<PendingObjectPress | null>(null);
+
+  useEffect(() => {
+    const refreshMeshAssets = (payload: { id?: string; type?: string } | undefined) => {
+      if (payload?.type !== 'MESH') return;
+      referenceRevisionRef.current += 1;
+      setAssetRevision(value => value + 1);
+      if (payload.id === assetId) dirtyRef.current = 'FULL';
+    };
+    const offUpdated = eventBus.on('ASSET_UPDATED', refreshMeshAssets);
+    const offCreated = eventBus.on('ASSET_CREATED', refreshMeshAssets);
+    const offDeleted = eventBus.on('ASSET_DELETED', refreshMeshAssets);
+    return () => {
+      offUpdated?.();
+      offCreated?.();
+      offDeleted?.();
+    };
+  }, [assetId]);
+
+  const commitSelectionBoxState = useCallback((next: SelectionBoxState | null) => {
+    selectionBoxRef.current = next;
+    setSelectionBox(next);
+  }, []);
+
+  useEffect(() => {
+    pendingComponentPressRef.current = null;
+    pendingObjectPressRef.current = null;
+    commitSelectionBoxState(null);
+  }, [assetId, meshComponentMode, commitSelectionBoxState]);
 
   // Camera state
   const [camera, setCamera] = useState<CameraState>({
@@ -178,6 +287,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     hoveredEdgeSignature: string;
     selectionVertexRevision: number;
     softWeightRevision: number;
+    referenceMeshes: Map<string, ReferenceMeshGpuResource>;
+    referenceRevision: number;
   }>({
     meshVao: null,
     vbo: null,
@@ -196,15 +307,29 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     hoveredEdgeSignature: '',
     selectionVertexRevision: -1,
     softWeightRevision: -1,
+    referenceMeshes: new Map(),
+    referenceRevision: -1,
   });
 
   // Keep the local preview engine in-sync with this asset editor session.
   useEffect(() => {
-    if (previewEngineRef.current) {
-      previewEngineRef.current.clearDeformation();
-      previewEngineRef.current.meshComponentMode = meshComponentMode;
-      previewEngineRef.current.selectionSystem.clearMeshComponentHover();
-      previewEngineRef.current.recalculateSoftSelection();
+    const engine = previewEngineRef.current;
+    if (engine) {
+      engine.clearDeformation();
+      engine.meshComponentMode = meshComponentMode;
+      engine.selectionSystem.clearMeshComponentHover();
+
+      // Component editing has one fixed preview-entity target. Repair that
+      // invariant when entering/switching component modes instead of allowing a
+      // stale object-selection miss to leave the gizmo permanently unavailable.
+      const previewEntityId = engine.entityId;
+      if (meshComponentMode !== 'OBJECT' && previewEntityId) {
+        const entityIndex = engine.ecs.idToIndex.get(previewEntityId);
+        if (entityIndex !== undefined && !engine.selectionSystem.selectedIndices.has(entityIndex)) {
+          engine.selectionSystem.setSelected([previewEntityId], false);
+        }
+      }
+      engine.recalculateSoftSelection();
     }
   }, [meshComponentMode]);
 
@@ -290,6 +415,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       radius: softSelectionRadius,
       mode: softSelectionMode,
       falloff: softSelectionFalloff,
+      surfaceBlend: softSelectionSurfaceBlend,
+      connectivity: softSelectionConnectivity,
       heatmapVisible: softSelectionHeatmapVisible,
     });
 
@@ -406,6 +533,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       hoveredEdgeSignature: '',
       selectionVertexRevision: -1,
       softWeightRevision: -1,
+      referenceMeshes: new Map(),
+      referenceRevision: -1,
     };
   };
 
@@ -422,6 +551,14 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     res.selectedEdgeOverlay.dispose(gl);
     res.hoveredEdgeOverlay.dispose(gl);
     res.vertexOverlay.dispose(gl);
+    res.referenceMeshes.forEach(reference => {
+      gl.deleteVertexArray(reference.vao);
+      gl.deleteBuffer(reference.vbo);
+      gl.deleteBuffer(reference.nbo);
+      gl.deleteBuffer(reference.softWeightBo);
+      gl.deleteBuffer(reference.ibo);
+    });
+    res.referenceMeshes.clear();
     res.materialPreview.dispose(gl);
   };
 
@@ -444,6 +581,23 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       if (dirty === 'FULL') {
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, res.ibo);
         gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, asset.geometry.indices, gl.DYNAMIC_DRAW);
+
+        const vertexCount = asset.geometry.vertices.length / 3;
+        const uvs = asset.geometry.uvs?.length >= vertexCount * 2
+          ? asset.geometry.uvs
+          : new Float32Array(vertexCount * 2);
+        gl.bindBuffer(gl.ARRAY_BUFFER, res.uvbo);
+        gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.DYNAMIC_DRAW);
+
+        const colors = asset.geometry.colors && asset.geometry.colors.length >= vertexCount * 3
+          ? asset.geometry.colors
+          : new Float32Array(vertexCount * 3).fill(1);
+        gl.bindBuffer(gl.ARRAY_BUFFER, res.colorbo);
+        gl.bufferData(gl.ARRAY_BUFFER, colors, gl.DYNAMIC_DRAW);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, res.softWeightBo);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCount), gl.DYNAMIC_DRAW);
+
         res.edgeOverlay.update(
           gl,
           buildMeshEdgeIndices(asset.geometry.indices, asset.topology?.faces),
@@ -455,6 +609,78 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         res.softWeightRevision = -1;
       }
       dirtyRef.current = 'NONE';
+    }
+
+    if (res.referenceRevision !== referenceRevisionRef.current) {
+      res.referenceMeshes.forEach(reference => {
+        gl.deleteVertexArray(reference.vao);
+        gl.deleteBuffer(reference.vbo);
+        gl.deleteBuffer(reference.nbo);
+        gl.deleteBuffer(reference.softWeightBo);
+        gl.deleteBuffer(reference.ibo);
+      });
+      res.referenceMeshes.clear();
+
+      if (asset.type === 'MESH') {
+        for (const referenceId of staticMeshAssetAPI.getReferenceMeshIds(asset.id)) {
+          const referenceAsset = assetManager.getAsset(referenceId);
+          if (!referenceAsset || referenceAsset.type !== 'MESH') continue;
+          const vertexCount = Math.floor(referenceAsset.geometry.vertices.length / 3);
+          if (vertexCount === 0 || referenceAsset.geometry.indices.length === 0) continue;
+
+          const vao = gl.createVertexArray();
+          const vbo = gl.createBuffer();
+          const nbo = gl.createBuffer();
+          const softWeightBo = gl.createBuffer();
+          const ibo = gl.createBuffer();
+          if (!vao || !vbo || !nbo || !softWeightBo || !ibo) {
+            if (vao) gl.deleteVertexArray(vao);
+            if (vbo) gl.deleteBuffer(vbo);
+            if (nbo) gl.deleteBuffer(nbo);
+            if (softWeightBo) gl.deleteBuffer(softWeightBo);
+            if (ibo) gl.deleteBuffer(ibo);
+            continue;
+          }
+
+          gl.bindVertexArray(vao);
+          gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+          gl.bufferData(gl.ARRAY_BUFFER, referenceAsset.geometry.vertices, gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(0);
+          gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+
+          let referenceNormals = referenceAsset.geometry.normals;
+          if (referenceNormals.length < vertexCount * 3) {
+            referenceNormals = new Float32Array(vertexCount * 3);
+            for (let vertexId = 0; vertexId < vertexCount; vertexId++) {
+              referenceNormals[vertexId * 3 + 1] = 1;
+            }
+          }
+          gl.bindBuffer(gl.ARRAY_BUFFER, nbo);
+          gl.bufferData(gl.ARRAY_BUFFER, referenceNormals, gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(1);
+          gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, softWeightBo);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertexCount), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(14);
+          gl.vertexAttribPointer(14, 1, gl.FLOAT, false, 0, 0);
+
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+          gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, referenceAsset.geometry.indices, gl.STATIC_DRAW);
+          gl.bindVertexArray(null);
+
+          res.referenceMeshes.set(referenceId, {
+            vao,
+            vbo,
+            nbo,
+            softWeightBo,
+            ibo,
+            indexCount: referenceAsset.geometry.indices.length,
+            indexType: referenceAsset.geometry.indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT,
+          });
+        }
+      }
+      res.referenceRevision = referenceRevisionRef.current;
     }
 
     const engine = previewEngineRef.current;
@@ -531,6 +757,35 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     gl.drawElements(gl.TRIANGLES, asset.geometry.indices.length, idxType, 0);
     gl.disable(gl.POLYGON_OFFSET_FILL);
     if (assignedMaterialProgram) gl.disable(gl.BLEND);
+
+    // Reference meshes are editor-only and non-selectable, but they use the
+    // normal shaded surface path rather than a topology cage. A cool neutral
+    // material distinguishes them from the editable target without changing
+    // their geometry or participating in component picking.
+    if (res.referenceMeshes.size > 0) {
+      const referenceModel = Mat4Utils.create();
+      const referenceMvp = Mat4Utils.create();
+      Mat4Utils.multiply(vp, referenceModel, referenceMvp);
+      gl.useProgram(meshProgram);
+      gl.uniformMatrix4fv(gl.getUniformLocation(meshProgram, 'u_mvp'), false, referenceMvp);
+      gl.uniformMatrix4fv(gl.getUniformLocation(meshProgram, 'u_model'), false, referenceModel);
+      applyMeshSurfaceUniforms(gl, meshProgram, {
+        cameraPosition: eye,
+        renderMode: renderModeRef.current,
+        light: DEFAULT_MESH_PREVIEW_LIGHT,
+        material: REFERENCE_MESH_SURFACE_MATERIAL,
+      });
+      gl.uniform1f(gl.getUniformLocation(meshProgram, 'u_time'), performance.now() / 1000);
+      gl.uniform1f(gl.getUniformLocation(meshProgram, 'u_showHeatmap'), 0.0);
+      gl.enable(gl.POLYGON_OFFSET_FILL);
+      gl.polygonOffset(2, 2);
+      res.referenceMeshes.forEach(reference => {
+        gl.bindVertexArray(reference.vao);
+        gl.drawElements(gl.TRIANGLES, reference.indexCount, reference.indexType, 0);
+      });
+      gl.disable(gl.POLYGON_OFFSET_FILL);
+      gl.bindVertexArray(null);
+    }
 
     // Authored polygon-edge overlay. Component edit modes always show a dim
     // topology cage; Object mode only shows it when Wireframe is enabled.
@@ -638,6 +893,38 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     previewEngineRef.current?.syncTransforms(false);
   };
 
+  const commitPendingComponentClick = useCallback((pending: PendingComponentPress) => {
+    const engine = previewEngineRef.current;
+    if (!engine || meshComponentModeRef.current !== pending.mode || !pending.picked) return;
+
+    engine.clearDeformation();
+    if (!pending.shiftKey) {
+      engine.selectionSystem.subSelection.vertexIds.clear();
+      engine.selectionSystem.subSelection.edgeIds.clear();
+      engine.selectionSystem.subSelection.faceIds.clear();
+    }
+
+    if (pending.mode === 'VERTEX') {
+      const id = pending.picked.vertexId;
+      if (pending.shiftKey && engine.selectionSystem.subSelection.vertexIds.has(id))
+        engine.selectionSystem.subSelection.vertexIds.delete(id);
+      else engine.selectionSystem.subSelection.vertexIds.add(id);
+    } else if (pending.mode === 'EDGE') {
+      const id = meshEdgeKey(pending.picked.edgeId[0], pending.picked.edgeId[1]);
+      if (pending.shiftKey && engine.selectionSystem.subSelection.edgeIds.has(id))
+        engine.selectionSystem.subSelection.edgeIds.delete(id);
+      else engine.selectionSystem.subSelection.edgeIds.add(id);
+    } else {
+      const id = pending.picked.faceId;
+      if (pending.shiftKey && engine.selectionSystem.subSelection.faceIds.has(id))
+        engine.selectionSystem.subSelection.faceIds.delete(id);
+      else engine.selectionSystem.subSelection.faceIds.add(id);
+    }
+
+    engine.recalculateSoftSelection();
+    engine.notifyUI();
+  }, []);
+
   const handleMouseDown = (
     e: React.MouseEvent,
     coords: { x: number; y: number; width: number; height: number }
@@ -648,80 +935,201 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     const engine = previewEngineRef.current;
     if (!engine) return;
 
-    // RMB opens Pie Menu (Alt+RMB reserved for zoom in AssetViewport3D)
+    // RMB opens Pie Menu (Alt+RMB reserved for zoom in AssetViewport3D).
+    // In component mode the preview entity is already the edit target; object
+    // picking here would call setSelected() and wipe vertex/edge/face selection,
+    // which also removes the component gizmo and soft-selection heatmap.
     if (e.button === 2 && !e.altKey) {
-      const hitId = engine.selectionSystem.selectEntityAt(coords.x, coords.y, coords.width, coords.height);
-      if (hitId) engine.selectionSystem.setSelected([hitId]);
+      if (meshComponentMode === 'OBJECT') {
+        const hitId = engine.selectionSystem.selectEntityAt(coords.x, coords.y, coords.width, coords.height);
+        if (hitId) engine.selectionSystem.setSelected([hitId]);
+      }
       setPieMenu({ x: e.clientX, y: e.clientY });
       return;
     }
 
-    // AssetViewport3D owns gizmo input. This callback is reached only when
-    // the shared viewport did not capture the press for an active gizmo axis.
+    // Resolve selection ownership before doing any query. The gesture layer does
+    // not decide whether this is object/component selection; the active editor +
+    // component mode resolves a policy first, then click/marquee follows it.
     if (e.button === 0 && !e.altKey) {
-      // Component picking in edit modes
-      if (meshComponentMode !== 'OBJECT') {
-        const previewEntityId = engine.entityId;
-        if (!previewEntityId) return;
-        const picked = engine.selectionSystem.pickMeshComponent(
-          previewEntityId,
-          coords.x,
-          coords.y,
-          coords.width,
-          coords.height
-        );
-        if (picked) {
-          // Changing component selection commits/invalidates any retained Live
-          // Falloff operation before a new selection becomes the tool target.
-          engine.clearDeformation();
-          if (!e.shiftKey) {
-            engine.selectionSystem.subSelection.vertexIds.clear();
-            engine.selectionSystem.subSelection.edgeIds.clear();
-            engine.selectionSystem.subSelection.faceIds.clear();
-          }
-          if (meshComponentMode === 'VERTEX') {
-            const id = picked.vertexId;
-            if (engine.selectionSystem.subSelection.vertexIds.has(id))
-              engine.selectionSystem.subSelection.vertexIds.delete(id);
-            else engine.selectionSystem.subSelection.vertexIds.add(id);
-          } else if (meshComponentMode === 'EDGE') {
-            const id = meshEdgeKey(picked.edgeId[0], picked.edgeId[1]);
-            if (engine.selectionSystem.subSelection.edgeIds.has(id))
-              engine.selectionSystem.subSelection.edgeIds.delete(id);
-            else engine.selectionSystem.subSelection.edgeIds.add(id);
-          } else if (meshComponentMode === 'FACE') {
-            const id = picked.faceId;
-            if (engine.selectionSystem.subSelection.faceIds.has(id))
-              engine.selectionSystem.subSelection.faceIds.delete(id);
-            else engine.selectionSystem.subSelection.faceIds.add(id);
-          }
-          engine.recalculateSoftSelection();
-          engine.notifyUI();
-          return;
+      const policy = resolveStaticMeshEditorSelectionPolicy(meshComponentMode, engine.entityId);
+
+      // Component-mode mouse-down stays pending until mouse-up. This lets the
+      // gesture become either a true click or a marquee once it crosses the
+      // drag threshold, even when the press started directly over mesh geometry.
+      if (policy.domain !== 'OBJECT') {
+        if (!policy.supportsMarquee || policy.target?.kind !== 'MESH_COMPONENTS') return;
+        const previewEntityId = policy.target.entityId;
+        const entityIndex = engine.ecs.idToIndex.get(previewEntityId);
+        if (entityIndex !== undefined && !engine.selectionSystem.selectedIndices.has(entityIndex)) {
+          engine.selectionSystem.setSelected([previewEntityId], false);
         }
+
+        pendingComponentPressRef.current = {
+          policy,
+          entityId: previewEntityId,
+          mode: policy.domain,
+          startX: coords.x,
+          startY: coords.y,
+          shiftKey: e.shiftKey,
+          picked: engine.selectionSystem.pickMeshComponent(
+            previewEntityId,
+            coords.x,
+            coords.y,
+            coords.width,
+            coords.height,
+          ),
+        };
+        commitSelectionBoxState(null);
+        return;
       }
 
-      // Object picking
-      const hitId = engine.selectionSystem.selectEntityAt(coords.x, coords.y, coords.width, coords.height);
-      if (hitId) engine.selectionSystem.setSelected([hitId]);
-      else engine.selectionSystem.setSelected([]);
-      engine.notifyUI();
+      // Object mode uses the same pending-press lifecycle as component mode so a
+      // press can become either a true click or an object-domain marquee.
+      if (policy.target?.kind !== 'OBJECTS') return;
+      pendingObjectPressRef.current = {
+        policy,
+        startX: coords.x,
+        startY: coords.y,
+        shiftKey: e.shiftKey,
+        hitId: engine.selectionSystem.selectEntityAt(coords.x, coords.y, coords.width, coords.height),
+      };
+      commitSelectionBoxState(null);
     }
   };
 
-  const handleMouseMove = (
+  const handleMouseMove = useCallback((
     _e: MouseEvent,
     coords: { x: number; y: number; width: number; height: number }
   ) => {
     const engine = previewEngineRef.current;
     if (!engine) return;
+
+    const pendingComponent = pendingComponentPressRef.current;
+    const pendingObject = pendingObjectPressRef.current;
+    const pending = pendingComponent ?? pendingObject;
+    const activeBox = selectionBoxRef.current;
+    if (pending && !gizmoSystemRef.current?.activeAxis) {
+      const currentPolicy = resolveStaticMeshEditorSelectionPolicy(meshComponentModeRef.current, engine.entityId);
+      if (selectionPoliciesMatch(currentPolicy, pending.policy)) {
+        const selectionX = Math.max(0, Math.min(coords.width, coords.x));
+        const selectionY = Math.max(0, Math.min(coords.height, coords.y));
+
+        if (activeBox?.isSelecting) {
+          commitSelectionBoxState({
+            ...activeBox,
+            currentX: selectionX,
+            currentY: selectionY,
+          });
+          return;
+        }
+
+        const dx = selectionX - pending.startX;
+        const dy = selectionY - pending.startY;
+        if ((dx * dx) + (dy * dy) >= MARQUEE_DRAG_THRESHOLD_PX * MARQUEE_DRAG_THRESHOLD_PX) {
+          if (pendingComponent) engine.selectionSystem.clearMeshComponentHover();
+          commitSelectionBoxState({
+            startX: pending.startX,
+            startY: pending.startY,
+            currentX: selectionX,
+            currentY: selectionY,
+            isSelecting: true,
+          });
+          return;
+        }
+      }
+    }
+
     // AssetViewport3D already advanced the GizmoSystem for this mouse move.
     // Do not double-drive the drag state; only update component hover when the
-    // gizmo is not actively dragging.
-    if (!gizmoSystemRef.current?.activeAxis && meshComponentModeRef.current !== 'OBJECT') {
+    // gizmo is not actively dragging and no marquee is active.
+    if (!selectionBoxRef.current && !gizmoSystemRef.current?.activeAxis && meshComponentModeRef.current !== 'OBJECT') {
       engine.selectionSystem.hoverMeshComponentAt(coords.x, coords.y, coords.width, coords.height);
     }
-  };
+  }, [commitSelectionBoxState]);
+
+  const handleMouseUp = useCallback((
+    e: MouseEvent,
+    coords: { x: number; y: number; width: number; height: number }
+  ) => {
+    const pendingComponent = pendingComponentPressRef.current;
+    const pendingObject = pendingObjectPressRef.current;
+    const pending = pendingComponent ?? pendingObject;
+    if (!pending) {
+      commitSelectionBoxState(null);
+      return;
+    }
+
+    const engine = previewEngineRef.current;
+    const activeBox = selectionBoxRef.current;
+    pendingComponentPressRef.current = null;
+    pendingObjectPressRef.current = null;
+
+    if (!engine) {
+      commitSelectionBoxState(null);
+      return;
+    }
+
+    const currentPolicy = resolveStaticMeshEditorSelectionPolicy(meshComponentModeRef.current, engine.entityId);
+    if (!selectionPoliciesMatch(currentPolicy, pending.policy)) {
+      commitSelectionBoxState(null);
+      return;
+    }
+
+    const commitObjectClick = () => {
+      if (!pendingObject || e.button !== 0) return;
+      const currentIds = engine.api.getSelectedIds();
+      if (pendingObject.hitId) {
+        const next = pendingObject.shiftKey
+          ? (currentIds.includes(pendingObject.hitId)
+              ? currentIds.filter(id => id !== pendingObject.hitId)
+              : [...currentIds, pendingObject.hitId])
+          : [pendingObject.hitId];
+        engine.api.commands.selection.setSelected(next);
+      } else if (!pendingObject.shiftKey) {
+        engine.api.commands.selection.clear();
+      }
+    };
+
+    if (activeBox?.isSelecting) {
+      const selectionX = Math.max(0, Math.min(coords.width, coords.x));
+      const selectionY = Math.max(0, Math.min(coords.height, coords.y));
+      const x = Math.min(activeBox.startX, selectionX);
+      const y = Math.min(activeBox.startY, selectionY);
+      const w = Math.abs(selectionX - activeBox.startX);
+      const h = Math.abs(selectionY - activeBox.startY);
+
+      if (w >= MARQUEE_DRAG_THRESHOLD_PX || h >= MARQUEE_DRAG_THRESHOLD_PX) {
+        const result = executeMarqueeSelection(
+          engine,
+          pending.policy,
+          {
+            x,
+            y,
+            width: w,
+            height: h,
+            viewportWidth: coords.width,
+            viewportHeight: coords.height,
+          },
+          resolveMarqueeOperation(pending),
+          engine.api.getSelectedIds(),
+        );
+        if (result.kind === 'OBJECTS') {
+          engine.api.commands.selection.setSelected(result.selectedIds);
+        }
+      } else if (pendingComponent && e.button === 0) {
+        commitPendingComponentClick(pendingComponent);
+      } else {
+        commitObjectClick();
+      }
+    } else if (pendingComponent && e.button === 0) {
+      commitPendingComponentClick(pendingComponent);
+    } else {
+      commitObjectClick();
+    }
+
+    commitSelectionBoxState(null);
+  }, [commitPendingComponentClick, commitSelectionBoxState]);
 
   const handleContextMenu = (
     e: React.MouseEvent,
@@ -730,7 +1138,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     e.preventDefault();
     if (e.altKey) return;
     const engine = previewEngineRef.current;
-    if (engine) {
+    if (engine && meshComponentModeRef.current === 'OBJECT') {
       const hitId = engine.selectionSystem.selectEntityAt(coords.x, coords.y, 1000, 1000);
       if (hitId) engine.selectionSystem.setSelected([hitId]);
     }
@@ -747,7 +1155,66 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     return asset && (asset.type === 'MESH' || asset.type === 'SKELETAL_MESH')
       ? (asset as StaticMeshAsset | SkeletalMeshAsset)
       : null;
-  }, [assetId, selectionTick, stats]);
+  }, [assetId, selectionTick, stats, assetRevision]);
+
+  const compositionSources = useMemo(() => {
+    if (!currentAsset || currentAsset.type !== 'MESH') return [];
+    return staticMeshAssetAPI.listCompositionSources(currentAsset.id);
+  }, [currentAsset, assetRevision]);
+
+  const referenceMeshes = useMemo(() => {
+    if (!currentAsset || currentAsset.type !== 'MESH') return [];
+    return staticMeshAssetAPI.getReferenceMeshIds(currentAsset.id)
+      .map(id => assetManager.getAsset(id))
+      .filter((asset): asset is StaticMeshAsset => Boolean(asset && asset.type === 'MESH'))
+      .map(asset => ({ id: asset.id, name: asset.name }));
+  }, [currentAsset, assetRevision]);
+
+  const handleAppendMesh = useCallback((sourceAssetId: string) => {
+    const target = assetManager.getAsset(assetId);
+    if (!target || target.type !== 'MESH') return;
+
+    const result = staticMeshAssetAPI.appendMesh({
+      targetAssetId: target.id,
+      sourceAssetId,
+    });
+    if (result.verticesAdded <= 0) return;
+
+    const updated = assetManager.getAsset(target.id) as StaticMeshAsset;
+    dirtyRef.current = 'FULL';
+    previewEngineRef.current?.clearDeformation();
+    const previewEntityId = previewEngineRef.current?.entityId;
+    if (previewEngineRef.current && previewEntityId) {
+      previewEngineRef.current.selectionSystem.setSelected([previewEntityId], false);
+      previewEngineRef.current.selectionSystem.subSelection.vertexIds.clear();
+      previewEngineRef.current.selectionSystem.subSelection.edgeIds.clear();
+      previewEngineRef.current.selectionSystem.subSelection.faceIds.clear();
+      previewEngineRef.current.recalculateSoftSelection();
+    }
+    setStats({
+      verts: updated.geometry.vertices.length / 3,
+      tris: updated.geometry.indices.length / 3,
+    });
+    const fit = computeFitCamera(updated);
+    setFitCamera(fit);
+    setAssetRevision(value => value + 1);
+  }, [assetId]);
+
+  const handleAddReferenceMesh = useCallback((sourceAssetId: string) => {
+    const target = assetManager.getAsset(assetId);
+    if (!target || target.type !== 'MESH') return;
+    staticMeshAssetAPI.addReferenceMesh(target.id, sourceAssetId);
+    referenceRevisionRef.current += 1;
+    setAssetRevision(value => value + 1);
+  }, [assetId]);
+
+  const handleRemoveReferenceMesh = useCallback((referenceAssetId: string) => {
+    const target = assetManager.getAsset(assetId);
+    if (!target || target.type !== 'MESH') return;
+    staticMeshAssetAPI.removeReferenceMesh(target.id, referenceAssetId);
+    referenceRevisionRef.current += 1;
+    setAssetRevision(value => value + 1);
+  }, [assetId]);
 
   const selectionCounts = useMemo(() => {
     const selection = previewEngineRef.current?.selectionSystem;
@@ -782,7 +1249,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     if (settings.enabled !== undefined) setSoftSelectionEnabled(settings.enabled);
     if (settings.radius !== undefined) setSoftSelectionRadius(settings.radius);
     if (settings.mode !== undefined) setSoftSelectionMode(settings.mode);
-    if (settings.falloff !== undefined) setSoftSelectionFalloff(settings.falloff);
+    const distanceMetric = settings.distanceMetric ?? settings.falloff;
+    if (distanceMetric !== undefined) setSoftSelectionFalloff(distanceMetric);
+    if (settings.surfaceBlend !== undefined) setSoftSelectionSurfaceBlend(settings.surfaceBlend);
+    if (settings.connectivity !== undefined) setSoftSelectionConnectivity(settings.connectivity);
     if (settings.heatmapVisible !== undefined) setSoftSelectionHeatmapVisible(settings.heatmapVisible);
   }, []);
 
@@ -809,7 +1279,12 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       staticMeshTarget,
       softSelection: {
         enabled: softSelectionEnabled,
+        radius: softSelectionRadius,
         mode: softSelectionMode,
+        distanceMetric: softSelectionFalloff,
+        falloff: softSelectionFalloff,
+        surfaceBlend: softSelectionSurfaceBlend,
+        connectivity: softSelectionConnectivity,
         heatmapVisible: softSelectionHeatmapVisible,
       },
       services: {
@@ -825,6 +1300,24 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           focusCamera();
         },
         selectLoop: handleSelectLoop,
+        expandSelection: mode => {
+          const engine = previewEngineRef.current;
+          if (!engine || mode === 'OBJECT') return;
+          engine.meshComponentMode = mode;
+          engine.selectionSystem.expandSelection(mode);
+        },
+        shrinkSelection: mode => {
+          const engine = previewEngineRef.current;
+          if (!engine || mode === 'OBJECT') return;
+          engine.meshComponentMode = mode;
+          engine.selectionSystem.shrinkSelection(mode);
+        },
+        selectRing: mode => {
+          const engine = previewEngineRef.current;
+          if (!engine || mode !== 'EDGE') return;
+          engine.meshComponentMode = mode;
+          engine.selectionSystem.selectRing(mode);
+        },
         configureSoftSelection,
       },
     };
@@ -833,7 +1326,11 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     meshComponentMode,
     selectionCounts,
     softSelectionEnabled,
+    softSelectionRadius,
     softSelectionMode,
+    softSelectionFalloff,
+    softSelectionSurfaceBlend,
+    softSelectionConnectivity,
     softSelectionHeatmapVisible,
     setTool,
     setMeshComponentMode,
@@ -945,9 +1442,15 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             softSelectionRadius={softSelectionRadius}
             softSelectionMode={softSelectionMode}
             softSelectionFalloff={softSelectionFalloff}
+            softSelectionSurfaceBlend={softSelectionSurfaceBlend}
+            softSelectionConnectivity={softSelectionConnectivity}
             softSelectionHeatmapVisible={softSelectionHeatmapVisible}
             onSoftSelectionRadiusChange={radius => configureSoftSelection({ radius })}
             onSoftSelectionFalloffChange={falloff => configureSoftSelection({ falloff })}
+            onSoftSelectionSurfaceBlendChange={surfaceBlend => configureSoftSelection({ surfaceBlend })}
+            onSoftSelectionConnectivityChange={connectivity => configureSoftSelection({ connectivity })}
+            compositionSources={compositionSources}
+            onAppendMesh={handleAppendMesh}
             commandContext={commandContext}
           />
         ) : (
@@ -970,6 +1473,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           wireframe={showWireframe}
           materialId={materialId}
           onMaterialChange={handleMaterialChange}
+          availableMeshSources={compositionSources}
+          referenceMeshes={referenceMeshes}
+          onAddReferenceMesh={handleAddReferenceMesh}
+          onRemoveReferenceMesh={handleRemoveReferenceMesh}
         />
       }
     >
@@ -997,12 +1504,13 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         engine={previewEngine}
         gizmoSystem={gizmoSystem}
         toolbarActions={meshToolbarActions}
-        shortcutsLegend="F Focus • B Radius • Alt+LMB Orbit • Alt+MMB Pan • Alt+RMB Zoom • RMB Pie"
+        shortcutsLegend="Drag Box Select • Shift+Drag Toggle • F Focus • B Radius • Alt+LMB Orbit • Alt+MMB Pan • Alt+RMB Zoom • RMB Pie"
         onInitGl={handleInitGl}
         onCleanupGl={handleCleanupGl}
         onRender={handleRender}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
         onContextMenu={handleContextMenu}
         onResetView={() => {
           resetTransform();
@@ -1010,27 +1518,40 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         }}
         onKeyDown={handleKeyDown}
         overlayChildren={
-          pieMenu &&
-          createPortal(
-            <PieMenu
-              x={pieMenu.x}
-              y={pieMenu.y}
-              currentMode={meshComponentMode}
-              onSelectMode={m => {
-                if (assetViewportAllows(currentAsset.type, meshModeActionId(m))) {
-                  setMeshComponentMode(m);
-                  setHierarchySection(
-                    m === 'VERTEX' ? 'VERTICES' : m === 'EDGE' ? 'EDGES' : m === 'FACE' ? 'FACES' : 'GEOMETRY',
-                  );
-                }
-                setPieMenu(null);
-              }}
-              onAction={handlePieAction}
-              commandContext={commandContext}
-              onClose={() => setPieMenu(null)}
-            />,
-            document.body
-          )
+          <>
+            {selectionBox?.isSelecting && (
+              <div
+                className="absolute border border-blue-500 bg-blue-500/20 pointer-events-none z-30"
+                style={{
+                  left: Math.min(selectionBox.startX, selectionBox.currentX),
+                  top: Math.min(selectionBox.startY, selectionBox.currentY),
+                  width: Math.abs(selectionBox.currentX - selectionBox.startX),
+                  height: Math.abs(selectionBox.currentY - selectionBox.startY),
+                }}
+              />
+            )}
+            {pieMenu &&
+              createPortal(
+                <PieMenu
+                  x={pieMenu.x}
+                  y={pieMenu.y}
+                  currentMode={meshComponentMode}
+                  onSelectMode={m => {
+                    if (assetViewportAllows(currentAsset.type, meshModeActionId(m))) {
+                      setMeshComponentMode(m);
+                      setHierarchySection(
+                        m === 'VERTEX' ? 'VERTICES' : m === 'EDGE' ? 'EDGES' : m === 'FACE' ? 'FACES' : 'GEOMETRY',
+                      );
+                    }
+                    setPieMenu(null);
+                  }}
+                  onAction={handlePieAction}
+                  commandContext={commandContext}
+                  onClose={() => setPieMenu(null)}
+                />,
+                document.body
+              )}
+          </>
         }
       />
     </AssetEditorTemplate>

@@ -382,3 +382,19 @@ CAMERA RESOLUTION / PRESET RULES
 - **CLAIM ON POINTER CONTEXT:** Viewports claim input ownership on pointer enter/down. Scene is the fallback only when no asset viewport is active.
 - **NO GLOBAL EDITOR STATE IN BRUSH HOOKS:** Reusable gestures such as `B` radius adjustment must receive a host API adapter (`configureSoftSelection`) and local state. Do not read/write Scene `EditorContext` from a generic viewport interaction hook.
 - **GESTURES BELONG TO THEIR START VIEWPORT:** B + LMB may start only when the mouse-down target belongs to the currently active viewport. Continue move/up globally only after that gesture has started.
+- **ONE MESH CONNECTIVITY CONTRACT:** Surface soft selection, neighbor queries, shortest surface paths, and modeling adjacency must use `engine/mesh-editing/MeshConnectivity.ts`. Never rebuild a separate adjacency graph from triangle indices inside a tool; triangle diagonals are not authored polygon edges.
+- **CONNECTIVITY IS TOPOLOGY, NOT CURRENT POSITION:** Use `LogicalMesh.faces` plus persistent `siblings` for seam/hard-edge welding. Positional deformation must not redefine connectivity. Topology-changing operations must call `MeshConnectivityAPI.invalidate(topology)` after rebuilding faces/siblings.
+- **LOOP != SHORTEST PATH:** Keep quad/strip loop traversal in `MeshTopologyUtils`; use `MeshConnectivityAPI.shortestVertexPath` for geometric shortest paths. Do not substitute one algorithm for the other.
+
+---
+
+### 17. SOFT-INFLUENCE METRIC / CONNECTIVITY SEPARATION
+- **DISTANCE != CONNECTIVITY:** Keep `VOLUME | SURFACE | HYBRID` as the distance/weight metric and `NONE | SAME_ISLAND | FLOOD_WITHIN_RADIUS` as an orthogonal topology mask. Do not create one special-case solver per combination.
+- **TOPOLOGY NEIGHBORS REMAIN AUTHORED EDGES:** `MeshConnectivityAPI.neighbors()` is for real logical polygon edges. Never add face diagonals/virtual face centers to topology neighbor queries just to make a brush look rounder.
+- **FACE-CENTER LINKS ARE METRIC ONLY:** Soft-selection Surface may use `faceAwareSurfaceDistances()` to cross polygon interiors. Loop/Ring/Extrude/valence/boundary tools must never observe those virtual links.
+- **CONNECTED VOLUME IS A RADIUS-LIMITED FLOOD:** `FLOOD_WITHIN_RADIUS` walks cached logical neighbors and stops a branch when the next vertex is outside the Euclidean radius. It is intentionally cheaper and behaviorally different from geodesic Surface distance.
+- **HYBRID BLENDS WEIGHTS, THEN MASKS:** Blend final Volume/Surface weights with `surfaceBlend`, then apply connectivity. This keeps endpoints exact (`0 = Volume`, `1 = Surface`) and makes heatmap/deformation share one weight buffer.
+- **ONE CONFIGURATION API:** Scene UI, Static Mesh dock, brush hotkeys, scripts, and future agents must route these settings through `meshEditing.configureSoftSelection(...)`. Do not add renderer-only copies of surfaceBlend/connectivity state.
+- **COMPONENT MODE MUST NOT FALL THROUGH TO OBJECT PICKING:** In Static Mesh Vertex/Edge/Face mode, a missed component/gizmo click must preserve the current component selection. Calling `SelectionSystem.setSelected()` from that path clears sub-selection, heatmap weights, and the component gizmo. RMB/pie-menu opening must preserve component selection too.
+- **GIZMO DRAG OWNS ITS TARGET UNTIL MOUSE-UP:** Capture drag entity + component/object mode at gizmo mouse-down. Do not re-resolve selection on every pointer sample or clear `activeAxis` because of transient UI/selection notifications.
+- **NO REACT INVALIDATION PER GIZMO SAMPLE:** Asset mesh deformation updates GPU/geometry state through revisions/events. Do not call `notifyUI()` on every `updateVertexDrag()` sample when selection/UI state did not change.

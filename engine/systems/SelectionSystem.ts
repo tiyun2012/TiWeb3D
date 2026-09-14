@@ -6,6 +6,7 @@ import { StaticMeshAsset, MeshComponentMode, IEngine } from '@/types';
 import { MeshTopologyUtils, MeshPickingResult } from '../MeshTopologyUtils';
 import { consoleService } from '../Console';
 import { meshEdgeKey } from '../MeshEdgeGeometry';
+import { areVerticesAdjacent, getEdgeFaces, getSharedFaceEdge, getVertexNeighbors } from '../mesh-editing/MeshConnectivity';
 
 
 type ScreenPoint = { x: number; y: number };
@@ -77,6 +78,23 @@ const segmentsIntersect2D = (a: ScreenPoint, b: ScreenPoint, c: ScreenPoint, d: 
         (Math.abs(o2) <= SCREEN_OVERLAP_EPSILON && pointOnSegment2D(d, a, b)) ||
         (Math.abs(o3) <= SCREEN_OVERLAP_EPSILON && pointOnSegment2D(a, c, d)) ||
         (Math.abs(o4) <= SCREEN_OVERLAP_EPSILON && pointOnSegment2D(b, c, d));
+};
+
+const segmentOverlapsScreenRect = (a: ScreenPoint, b: ScreenPoint, rect: ScreenRect): boolean => {
+    if (pointInScreenRect(a, rect) || pointInScreenRect(b, rect)) return true;
+    const corners: ScreenPoint[] = [
+        { x: rect.left, y: rect.top },
+        { x: rect.right, y: rect.top },
+        { x: rect.right, y: rect.bottom },
+        { x: rect.left, y: rect.bottom },
+    ];
+    const rectEdges: Array<[ScreenPoint, ScreenPoint]> = [
+        [corners[0], corners[1]],
+        [corners[1], corners[2]],
+        [corners[2], corners[3]],
+        [corners[3], corners[0]],
+    ];
+    return rectEdges.some(([start, end]) => segmentsIntersect2D(a, b, start, end));
 };
 
 const triangleOverlapsScreenRect = (
@@ -476,6 +494,153 @@ export class SelectionSystem {
         return ids;
     }
 
+    /**
+     * Select mesh components whose projected geometry overlaps a screen-space marquee.
+     *
+     * This is deliberately topology-aware: edges come only from authored polygon
+     * boundaries and faces use their logical polygon triangulation. The query is
+     * select-through (occluded/back-side projected components can be included), which
+     * matches the conventional modeling-editor marquee behavior and keeps visibility
+     * filtering as a separate future policy.
+     */
+    selectMeshComponentsInRect(
+        entityId: string,
+        mode: MeshComponentMode,
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+        viewportWidth: number = this.engine.currentWidth,
+        viewportHeight: number = this.engine.currentHeight,
+        operation: 'REPLACE' | 'ADD' | 'SUBTRACT' | 'TOGGLE' = 'REPLACE',
+    ): number {
+        if (mode === 'OBJECT' || !this.engine.currentViewProj) return 0;
+
+        const idx = this.engine.ecs.idToIndex.get(entityId);
+        if (idx === undefined) return 0;
+        const meshIntId = this.engine.ecs.store.meshType[idx];
+        const assetUuid = assetManager.meshIntToUuid.get(meshIntId);
+        const asset = assetUuid ? assetManager.getAsset(assetUuid) as StaticMeshAsset : null;
+        if (!asset?.topology) return 0;
+
+        const worldMat = this.engine.sceneGraph.getWorldMatrix(entityId);
+        if (!worldMat) return 0;
+
+        const width = Math.max(1, viewportWidth);
+        const height = Math.max(1, viewportHeight);
+        const rawLeft = Math.min(x, x + w);
+        const rawRight = Math.max(x, x + w);
+        const rawTop = Math.min(y, y + h);
+        const rawBottom = Math.max(y, y + h);
+        const rect: ScreenRect = {
+            left: Math.max(0, Math.min(width, rawLeft)),
+            right: Math.max(0, Math.min(width, rawRight)),
+            top: Math.max(0, Math.min(height, rawTop)),
+            bottom: Math.max(0, Math.min(height, rawBottom)),
+        };
+        if (rect.right < rect.left || rect.bottom < rect.top) return 0;
+
+        const vertices = asset.geometry.vertices;
+        const vertexCount = Math.floor(vertices.length / 3);
+        const projected = new Array<ScreenPoint | null | undefined>(vertexCount);
+        const viewProj = this.engine.currentViewProj;
+
+        const projectVertex = (vertexId: number): ScreenPoint | null => {
+            if (!Number.isInteger(vertexId) || vertexId < 0 || vertexId >= vertexCount) return null;
+            const cached = projected[vertexId];
+            if (cached !== undefined) return cached;
+
+            const offset = vertexId * 3;
+            const local = { x: vertices[offset], y: vertices[offset + 1], z: vertices[offset + 2] };
+            const world = Vec3Utils.transformMat4(local, worldMat, { x: 0, y: 0, z: 0 });
+            const clipW = viewProj[3] * world.x + viewProj[7] * world.y + viewProj[11] * world.z + viewProj[15];
+            if (clipW <= 0.001) {
+                projected[vertexId] = null;
+                return null;
+            }
+
+            const ndc = Vec3Utils.transformMat4(world, viewProj, { x: 0, y: 0, z: 0 });
+            const point = {
+                x: (ndc.x * 0.5 + 0.5) * width,
+                y: (1.0 - (ndc.y * 0.5 + 0.5)) * height,
+            };
+            projected[vertexId] = point;
+            return point;
+        };
+
+        const vertexHits = new Set<number>();
+        const edgeHits = new Set<string>();
+        const faceHits = new Set<number>();
+
+        if (mode === 'VERTEX') {
+            for (let vertexId = 0; vertexId < vertexCount; vertexId++) {
+                const point = projectVertex(vertexId);
+                if (point && pointInScreenRect(point, rect)) vertexHits.add(vertexId);
+            }
+        } else if (mode === 'EDGE') {
+            const visited = new Set<string>();
+            for (const face of asset.topology.faces) {
+                if (!face || face.length < 2) continue;
+                for (let i = 0; i < face.length; i++) {
+                    const aId = face[i];
+                    const bId = face[(i + 1) % face.length];
+                    const key = meshEdgeKey(aId, bId);
+                    if (visited.has(key)) continue;
+                    visited.add(key);
+                    const a = projectVertex(aId);
+                    const b = projectVertex(bId);
+                    if (a && b && segmentOverlapsScreenRect(a, b, rect)) edgeHits.add(key);
+                }
+            }
+        } else if (mode === 'FACE') {
+            asset.topology.faces.forEach((face, faceId) => {
+                if (!face || face.length < 3) return;
+                const first = projectVertex(face[0]);
+                if (!first) return;
+                for (let i = 1; i < face.length - 1; i++) {
+                    const b = projectVertex(face[i]);
+                    const c = projectVertex(face[i + 1]);
+                    if (b && c && triangleOverlapsScreenRect(first, b, c, rect)) {
+                        faceHits.add(faceId);
+                        return;
+                    }
+                }
+            });
+        }
+
+        const target = (mode === 'VERTEX'
+            ? this.subSelection.vertexIds
+            : mode === 'EDGE'
+                ? this.subSelection.edgeIds
+                : this.subSelection.faceIds) as Set<number | string>;
+        const hits = (mode === 'VERTEX' ? vertexHits : mode === 'EDGE' ? edgeHits : faceHits) as Set<number | string>;
+        const next = operation === 'REPLACE'
+            ? new Set<number | string>()
+            : new Set<number | string>(target);
+
+        hits.forEach(value => {
+            if (operation === 'SUBTRACT') next.delete(value);
+            else if (operation === 'TOGGLE') {
+                if (next.has(value)) next.delete(value);
+                else next.add(value);
+            } else {
+                next.add(value);
+            }
+        });
+
+        const changed = next.size !== target.size || Array.from(next).some(value => !target.has(value));
+        if (!changed) return hits.size;
+
+        this.engine.clearDeformation();
+        if (mode === 'VERTEX') this.subSelection.vertexIds = next as Set<number>;
+        else if (mode === 'EDGE') this.subSelection.edgeIds = next as Set<string>;
+        else this.subSelection.faceIds = next as Set<number>;
+        this.hoveredMeshComponent = null;
+        this.engine.recalculateSoftSelection();
+        this.engine.notifyUI();
+        return hits.size;
+    }
+
     pickMeshComponent(entityId: string, mx: number, my: number, width: number, height: number): MeshPickingResult | null {
         if (!this.engine.currentViewProj) return null;
         
@@ -656,6 +821,147 @@ export class SelectionSystem {
         this.engine.notifyUI();
     }
 
+    private getSelectedMeshAsset(): StaticMeshAsset | null {
+        if (this.selectedIndices.size === 0) return null;
+        const idx = Array.from(this.selectedIndices)[0];
+        const meshIntId = this.engine.ecs.store.meshType[idx];
+        const assetUuid = assetManager.meshIntToUuid.get(meshIntId);
+        if (!assetUuid) return null;
+        const asset = assetManager.getAsset(assetUuid) as StaticMeshAsset;
+        return asset?.topology ? asset : null;
+    }
+
+    private addVertexWithSiblings(target: Set<number>, topology: StaticMeshAsset['topology'], vertexId: number) {
+        target.add(vertexId);
+        topology?.siblings?.get(vertexId)?.forEach(sibling => target.add(sibling));
+    }
+
+    expandSelection(mode: MeshComponentMode) {
+        const asset = this.getSelectedMeshAsset();
+        if (!asset?.topology || mode === 'OBJECT') return;
+        const topology = asset.topology;
+        const vertexCount = Math.floor(asset.geometry.vertices.length / 3);
+        this.engine.clearDeformation();
+
+        if (mode === 'VERTEX') {
+            const next = new Set(this.subSelection.vertexIds);
+            this.subSelection.vertexIds.forEach(vertexId => {
+                getVertexNeighbors(topology, vertexId, vertexCount).forEach(neighbor => {
+                    this.addVertexWithSiblings(next, topology, neighbor);
+                });
+            });
+            this.subSelection.vertexIds = next;
+        } else if (mode === 'FACE') {
+            const next = new Set(this.subSelection.faceIds);
+            this.subSelection.faceIds.forEach(faceId => {
+                const face = topology.faces[faceId];
+                if (!face) return;
+                for (let i = 0; i < face.length; i++) {
+                    const a = face[i];
+                    const b = face[(i + 1) % face.length];
+                    getEdgeFaces(topology, a, b, vertexCount).forEach(neighborFace => next.add(neighborFace));
+                }
+            });
+            this.subSelection.faceIds = next;
+        } else if (mode === 'EDGE') {
+            const next = new Set(this.subSelection.edgeIds);
+            this.subSelection.edgeIds.forEach(key => {
+                const [a, b] = key.split('-').map(Number);
+                getEdgeFaces(topology, a, b, vertexCount).forEach(faceId => {
+                    const face = topology.faces[faceId];
+                    if (!face) return;
+                    for (let i = 0; i < face.length; i++) {
+                        next.add(meshEdgeKey(face[i], face[(i + 1) % face.length]));
+                    }
+                });
+            });
+            this.subSelection.edgeIds = next;
+        }
+
+        this.engine.recalculateSoftSelection();
+        this.engine.notifyUI();
+    }
+
+    shrinkSelection(mode: MeshComponentMode) {
+        const asset = this.getSelectedMeshAsset();
+        if (!asset?.topology || mode === 'OBJECT') return;
+        const topology = asset.topology;
+        const vertexCount = Math.floor(asset.geometry.vertices.length / 3);
+        this.engine.clearDeformation();
+
+        if (mode === 'VERTEX') {
+            const selected = this.subSelection.vertexIds;
+            const next = new Set<number>();
+            selected.forEach(vertexId => {
+                const neighbors = getVertexNeighbors(topology, vertexId, vertexCount);
+                if (neighbors.length > 0 && neighbors.every(neighbor => selected.has(neighbor) || topology.siblings?.get(neighbor)?.some(s => selected.has(s)))) {
+                    this.addVertexWithSiblings(next, topology, vertexId);
+                }
+            });
+            this.subSelection.vertexIds = next;
+        } else if (mode === 'FACE') {
+            const selected = this.subSelection.faceIds;
+            const next = new Set<number>();
+            selected.forEach(faceId => {
+                const face = topology.faces[faceId];
+                if (!face) return;
+                let interior = true;
+                for (let i = 0; i < face.length && interior; i++) {
+                    const adjacent = getEdgeFaces(topology, face[i], face[(i + 1) % face.length], vertexCount);
+                    if (adjacent.length < 2 || adjacent.some(neighborFace => !selected.has(neighborFace))) interior = false;
+                }
+                if (interior) next.add(faceId);
+            });
+            this.subSelection.faceIds = next;
+        } else if (mode === 'EDGE') {
+            const selected = this.subSelection.edgeIds;
+            const next = new Set<string>();
+            selected.forEach(key => {
+                const [a, b] = key.split('-').map(Number);
+                const incidentFaces = getEdgeFaces(topology, a, b, vertexCount);
+                const belongsToFilledRegion = incidentFaces.some(faceId => {
+                    const face = topology.faces[faceId];
+                    if (!face) return false;
+                    for (let i = 0; i < face.length; i++) {
+                        if (!selected.has(meshEdgeKey(face[i], face[(i + 1) % face.length]))) return false;
+                    }
+                    return true;
+                });
+                if (belongsToFilledRegion) next.add(key);
+            });
+            this.subSelection.edgeIds = next;
+        }
+
+        this.engine.recalculateSoftSelection();
+        this.engine.notifyUI();
+    }
+
+    selectRing(mode: MeshComponentMode) {
+        if (mode !== 'EDGE') {
+            consoleService.warn('Ring selection currently supports Edge mode only.', 'SelectionSystem');
+            return;
+        }
+        const asset = this.getSelectedMeshAsset();
+        if (!asset?.topology) return;
+        const edges = Array.from(this.subSelection.edgeIds);
+        if (edges.length === 0) {
+            consoleService.warn('Select an edge first.', 'SelectionSystem');
+            return;
+        }
+
+        const [a, b] = edges[edges.length - 1].split('-').map(Number);
+        const ring = MeshTopologyUtils.getEdgeRing(asset.topology, a, b);
+        if (ring.length === 0) {
+            consoleService.warn('No edge ring found.', 'SelectionSystem');
+            return;
+        }
+        this.engine.clearDeformation();
+        ring.forEach(([v1, v2]) => this.subSelection.edgeIds.add(meshEdgeKey(v1, v2)));
+        this.engine.recalculateSoftSelection();
+        this.engine.notifyUI();
+        consoleService.success(`Selected Edge Ring (${ring.length} edges)`, 'SelectionSystem');
+    }
+
     selectLoop(mode: MeshComponentMode) {
         if (this.selectedIndices.size === 0) return;
         const idx = Array.from(this.selectedIndices)[0];
@@ -696,9 +1002,8 @@ export class SelectionSystem {
             // Better to assume user clicked last two.
             const v1 = verts[verts.length - 2];
             const v2 = verts[verts.length - 1];
-            const key = meshEdgeKey(v1, v2);
-            
-            if (topo.graph && topo.graph.edgeKeyToHalfEdge.has(key)) {
+            const vertexCount = Math.floor(asset.geometry.vertices.length / 3);
+            if (areVerticesAdjacent(topo, v1, v2, vertexCount)) {
                 this.engine.clearDeformation();
                 const loop = MeshTopologyUtils.getVertexLoop(topo, v1, v2);
                 loop.forEach(v => this.subSelection.vertexIds.add(v));
@@ -716,13 +1021,12 @@ export class SelectionSystem {
             const f1 = faces[faces.length - 2];
             const f2 = faces[faces.length - 1];
             
-            const verts1 = topo.faces[f1];
-            const verts2 = topo.faces[f2];
-            const shared = verts1.filter(v => verts2.includes(v));
+            const vertexCount = Math.floor(asset.geometry.vertices.length / 3);
+            const sharedEdge = getSharedFaceEdge(topo, f1, f2, vertexCount);
             
-            if (shared.length >= 2) { // 2 shared vertices = shared edge
+            if (sharedEdge) {
                 this.engine.clearDeformation();
-                const loop = MeshTopologyUtils.getFaceLoop(topo, shared[0], shared[1]);
+                const loop = MeshTopologyUtils.getFaceLoop(topo, sharedEdge[0], sharedEdge[1]);
                 loop.forEach(f => this.subSelection.faceIds.add(f));
                 consoleService.success(`Selected Face Loop`, "SelectionSystem");
             } else {

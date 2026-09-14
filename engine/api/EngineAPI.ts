@@ -1,5 +1,15 @@
-import type { CameraSettings, ComponentType, MeshComponentMode, ResolvedCameraState, SimulationMode, SoftSelectionFalloff, ToolType } from '@/types';
+import type { CameraSettings, ComponentType, MeshComponentMode, ResolvedCameraState, SimulationMode, SoftSelectionConnectivity, SoftSelectionFalloff, ToolType } from '@/types';
 import type { SoftSelectionMode } from '@/engine/mesh-editing/SoftSelection';
+
+export type SoftSelectionAPIState = {
+  enabled: boolean;
+  radius: number;
+  mode: SoftSelectionMode;
+  distanceMetric: SoftSelectionFalloff;
+  surfaceBlend: number;
+  connectivity: SoftSelectionConnectivity;
+  heatmapVisible: boolean;
+};
 
 export type EngineAPI = {
   // Commands: stable surface that UI should call
@@ -7,6 +17,17 @@ export type EngineAPI = {
     selection: {
       setSelected(ids: string[]): void;
       clear(): void;
+      selectMeshComponentsInRect(args: {
+        entityId: string;
+        mode: MeshComponentMode;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+        viewportWidth: number;
+        viewportHeight: number;
+        operation?: 'REPLACE' | 'ADD' | 'SUBTRACT' | 'TOGGLE';
+      }): number;
     };
     simulation: {
       setMode(mode: SimulationMode): void;
@@ -19,7 +40,12 @@ export type EngineAPI = {
         enabled: boolean;
         radius: number;
         mode: SoftSelectionMode;
+        /** Preferred semantic name for Volume / Surface / Hybrid. */
+        distanceMetric: SoftSelectionFalloff;
+        /** Legacy alias retained for existing callers. */
         falloff: SoftSelectionFalloff;
+        surfaceBlend: number;
+        connectivity: SoftSelectionConnectivity;
         heatmapVisible: boolean;
       }>): void;
       recalculateSoftSelection(): void;
@@ -57,6 +83,7 @@ export type EngineAPI = {
   getPosition(id: string): { x: number; y: number; z: number } | null;
   getWorldPosition(id: string): { x: number; y: number; z: number } | null;
   getTool(): ToolType;
+  getSoftSelectionSettings(): SoftSelectionAPIState;
   getResolvedCamera(id: string): ResolvedCameraState | null;
   hasComponentCapability(id: string, capability: string): boolean;
 };

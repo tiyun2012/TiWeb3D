@@ -64,6 +64,10 @@ export class GizmoSystem {
     private gizmoScale = 1.0;
 
     private isDragging = false;
+    /** Drag ownership is captured at mouse-down so transient selection/UI updates
+     * cannot invalidate the gesture before mouse-up. */
+    private dragEntityId: string | null = null;
+    private dragComponentMode = false;
     private startPos: Vector3 = { x: 0, y: 0, z: 0 };
     private clickOffset: Vector3 = { x: 0, y: 0, z: 0 };
     private planeNormal: Vector3 = { x: 0, y: 1, z: 0 };
@@ -73,38 +77,71 @@ export class GizmoSystem {
     setTool(tool: ToolType) {
         this.tool = tool;
         if (tool === 'SELECT' && this.isDragging) {
+            const wasComponentDrag = this.dragComponentMode;
             this.isDragging = false;
             this.activeAxis = null;
-            this.engine.endVertexDrag();
+            this.hoverAxis = null;
+            this.dragEntityId = null;
+            this.dragComponentMode = false;
+            if (wasComponentDrag) this.engine.endVertexDrag();
         }
     }
 
-    update(dt: number, mx: number, my: number, width: number, height: number, isDown: boolean, isUp: boolean) {
+    update(_dt: number, mx: number, my: number, width: number, height: number, isDown: boolean, isUp: boolean) {
         if (!this.viewportEnabled) {
             this.hoverAxis = null;
-            this.activeAxis = null;
+            if (!this.isDragging) this.activeAxis = null;
             return;
         }
         if (this.tool === 'SELECT' && !this.renderInSelectTool) {
             this.hoverAxis = null;
-            this.activeAxis = null;
+            if (!this.isDragging) this.activeAxis = null;
             return;
         }
 
-        const selected = this.engine.selectionSystem.selectedIndices; // Updated
+        const camPos = this.engine.currentCameraPos;
+        const vp = this.engine.currentViewProj;
+
+        // Once a gizmo drag starts, the gesture owns its original target until
+        // mouse-up. Do not re-resolve mutable selection state on every pointer
+        // sample; selection/UI notifications can otherwise clear activeAxis and
+        // make the gizmo appear to vanish mid-gesture.
+        if (this.isDragging) {
+            if (isUp) {
+                const wasComponentDrag = this.dragComponentMode;
+                this.isDragging = false;
+                this.activeAxis = null;
+                this.hoverAxis = null;
+                this.dragEntityId = null;
+                this.dragComponentMode = false;
+                if (wasComponentDrag) this.engine.endVertexDrag();
+                this.engine.pushUndoState();
+                this.engine.notifyUI();
+                return;
+            }
+
+            const entityId = this.dragEntityId;
+            if (!entityId || !vp) return;
+            const invVP = new Float32Array(16);
+            if (!Mat4Utils.invert(vp, invVP)) return;
+            const ray = this.screenToRay(mx, my, width, height, invVP, camPos);
+            this.handleDrag(ray, entityId, this.dragComponentMode);
+            return;
+        }
+
+        const selected = this.engine.selectionSystem.selectedIndices;
         if (selected.size === 0) {
             this.hoverAxis = null;
             this.activeAxis = null;
             return;
         }
-        
+
         let worldPos = { x: 0, y: 0, z: 0 };
         let entityId: string | null = null;
-
         const isComponentMode = this.engine.meshComponentMode !== 'OBJECT';
-        
+
         if (isComponentMode) {
-            const sub = this.engine.selectionSystem.subSelection; // Updated
+            const sub = this.engine.selectionSystem.subSelection;
             if (sub.vertexIds.size === 0 && sub.edgeIds.size === 0 && sub.faceIds.size === 0) {
                 this.hoverAxis = null;
                 this.activeAxis = null;
@@ -140,11 +177,9 @@ export class GizmoSystem {
             return;
         }
 
-        const camPos = this.engine.currentCameraPos;
         const dist = Math.sqrt((camPos.x-worldPos.x)**2 + (camPos.y-worldPos.y)**2 + (camPos.z-worldPos.z)**2);
-        this.gizmoScale = dist * 0.15;
+        this.gizmoScale = Math.max(0.05, dist * 0.15);
 
-        const vp = this.engine.currentViewProj;
         if (!vp) {
             this.hoverAxis = null;
             this.activeAxis = null;
@@ -158,27 +193,14 @@ export class GizmoSystem {
         }
 
         const ray = this.screenToRay(mx, my, width, height, invVP, camPos);
+        this.hoverAxis = this.raycastGizmo(ray, worldPos, this.gizmoScale);
 
-        if (this.isDragging) {
-            if (isUp) {
-                this.isDragging = false;
-                this.activeAxis = null;
-                if (isComponentMode) {
-                    this.engine.endVertexDrag();
-                }
-                this.engine.pushUndoState();
-                this.engine.notifyUI();
-            } else {
-                this.handleDrag(ray, entityId, isComponentMode);
-            }
-        } else {
-            this.hoverAxis = this.raycastGizmo(ray, worldPos, this.gizmoScale);
-            
-            if (isDown && this.hoverAxis) {
-                this.isDragging = true;
-                this.activeAxis = this.hoverAxis;
-                this.startDrag(ray, worldPos, entityId, isComponentMode);
-            }
+        if (isDown && this.hoverAxis) {
+            this.isDragging = true;
+            this.activeAxis = this.hoverAxis;
+            this.dragEntityId = entityId;
+            this.dragComponentMode = isComponentMode;
+            this.startDrag(ray, worldPos, entityId, isComponentMode);
         }
     }
 

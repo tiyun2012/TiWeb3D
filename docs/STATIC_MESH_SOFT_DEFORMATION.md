@@ -6,19 +6,37 @@ Soft deformation is owned by Static Mesh editing and shared by both the Static M
 
 `component selection -> soft-selection solver -> MeshDeformationSession -> gizmo deformation -> geometry/GPU update`
 
-The pure weight solver lives in `engine/mesh-editing/SoftSelection.ts`. The transactional deformation state lives in `engine/mesh-editing/MeshDeformationSession.ts`.
+The pure weight solver lives in `engine/mesh-editing/SoftSelection.ts`. Surface/connected traversal uses the shared cached connectivity API in `engine/mesh-editing/MeshConnectivity.ts`. The transactional deformation state lives in `engine/mesh-editing/MeshDeformationSession.ts`.
 
 Only assets with `type === 'MESH'` are accepted by the new deformation session. Skeletal Mesh editing is intentionally excluded until it has its own explicit deformation policy.
+
+
+## Influence settings
+
+Distance and connectivity are separate axes and are shared by Scene and Static Mesh Editor:
+
+- **Volume** — Euclidean distance from the current component-selection center.
+- **Surface** — face-aware surface-distance approximation. Authored edges stay authoritative for topology, while virtual face-center links are used only by the influence metric so quads/ngons do not expand in edge-only cross patterns.
+- **Hybrid** — blends the resulting Volume and Surface weights. `surfaceBlend = 0` is Volume, `1` is Surface.
+- **Connectivity / None** — no topology mask.
+- **Connectivity / Same Island** — reject vertices outside the connected logical component.
+- **Connectivity / Flood Within Radius** — flood logical neighbors only while each next vertex remains inside the Euclidean radius. This is the cheap connected-volume behavior intended for future skinning/deformer/sculpt brushes.
+
+The solver order is:
+
+`distance weights -> optional Volume/Surface blend -> connectivity mask -> deformation strategy`
+
+This keeps Fixed / Live Falloff / Slide independent from how influence is calculated.
 
 ## Behaviors
 
 ### FIXED — Fixed Soft Transform
 
-Weights are captured when the gizmo drag begins. Geometry is reconstructed as:
+The component selection owns a stable influence-reference geometry. Gizmo movement does not change that reference, so repeated transforms cannot make the weights drift. Geometry for each drag is reconstructed as:
 
-`position = operationBaseline + totalGizmoDelta * capturedWeight`
+`position = operationBaseline + totalGizmoDelta * fixedWeight`
 
-Changing radius after/during the operation does not rewrite that operation. The preview weights may update to show what the next drag will use.
+Explicit influence edits such as radius, distance metric, hybrid blend, or connectivity **do** recompute `fixedWeight`, but they are solved against the stable reference geometry rather than the already-deformed mesh. Existing deformation is not retroactively rewritten; the updated heatmap/weights are used by the next gizmo movement.
 
 ### LIVE_FALLOFF — Live Falloff Transform
 
@@ -38,17 +56,30 @@ Slide intentionally keeps a per-vertex accumulated displacement buffer. On every
 
 Vertices that move outside the current influence radius receive zero additional movement. If they later re-enter the radius, they can be affected again. Radius changes do not retroactively rewrite already accumulated Slide history.
 
-Surface/geodesic distance is supported, but SLIDE + SURFACE is deliberately more expensive because weights are re-evaluated during movement. Optimize/cached adjacency only after behavior is validated.
+Surface distance is supported through the cached logical-mesh connectivity graph plus metric-only face-center links. SLIDE + SURFACE/HYBRID is still more expensive than Volume because surface distances are re-evaluated during movement, but adjacency/weld discovery is no longer rebuilt on each solve.
 
 ## API
 
-`EngineAPI.commands.meshEditing.configureSoftSelection(...)` is the stable configuration surface for UI, scripts, tests, and future agents. Asset viewports already use this API instead of directly writing local engine fields.
+`EngineAPI.commands.meshEditing.configureSoftSelection(...)` is the stable configuration surface for UI, scripts, tests, and future agents. Asset viewports already use this API instead of directly writing local engine fields. Example:
+
+```ts
+engine.api.commands.meshEditing.configureSoftSelection({
+  distanceMetric: 'HYBRID',
+  surfaceBlend: 0.65,
+  connectivity: 'FLOOD_WITHIN_RADIUS',
+  radius: 1.5,
+});
+
+const current = engine.api.getSoftSelectionSettings();
+```
+
+`falloff` remains accepted as a legacy alias for `distanceMetric`, but new agent/script callers should prefer `distanceMetric`.
 
 ## Test matrix
 
 1. Select one or more vertices, edges, or faces on a Static Mesh.
 2. Enable Soft Selection and choose a radius.
-3. FIXED: move the gizmo, release, change radius. Existing deformation must stay unchanged. Start another drag to use the new radius.
+3. FIXED: move the gizmo and release. The heatmap/weights must remain unchanged from geometry movement alone. Change radius: the heatmap/weights must update from the stable selection reference while existing deformation stays unchanged. Start another drag to use the new weights.
 4. LIVE_FALLOFF: move the gizmo, release, change radius without changing selection. Existing deformation must expand/contract from the original operation baseline without drift.
 5. SLIDE: drag far enough that low-weight vertices fall behind/outside the moving influence region. Those vertices must stop receiving additional movement rather than being pulled indefinitely.
 6. Change component selection or Vertex/Edge/Face mode. Any retained LIVE operation must no longer respond to subsequent radius changes.
@@ -63,3 +94,9 @@ The deformation **implementation** and command IDs are shared with Scene, but tr
 Both contexts still configure the same `meshEditing.configureSoftSelection(...)` API on their own engine host. This is implementation reuse without cross-viewport UI-state coupling.
 
 The Static Mesh asset viewport uploads the session's existing soft-selection weight buffer as vertex attribute 14 for heatmap display. The renderer observes weights; it does not calculate a second set of weights.
+
+## Component-edit interaction ownership
+
+While Vertex/Edge/Face mode is active, the Static Mesh viewport treats the preview entity as a fixed edit target. Component clicks must never fall through to object picking: `SelectionSystem.setSelected()` deliberately clears component sub-selection, which also clears the soft-selection weights and removes the component gizmo. A component-pick miss therefore preserves the current component selection rather than silently switching selection domains. RMB/Pie Menu opening must preserve component selection too.
+
+Gizmo drags capture their entity and component/object mode at mouse-down and keep that ownership until mouse-up. Pointer-move samples do not re-resolve mutable selection state, so UI notifications, hover changes, or other transient state cannot cancel `activeAxis` mid-gesture. `AssetViewportEngine.updateVertexDrag()` also avoids React UI invalidation per pointer sample; rendering reads geometry and soft-selection revisions directly, with normal UI/asset finalization at the gesture boundary.

@@ -1,8 +1,10 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { MeshComponentMode, SkeletalMeshAsset, StaticMeshAsset } from '@/types';
 import { Icon } from '@/editor/components/Icon';
 import { MeshHierarchySection } from './MeshAssetHierarchy';
 import { MaterialSlotField } from '@/editor/components/inspector/MaterialSlotField';
+import type { StaticMeshCompositionSource } from '@/engine/api/StaticMeshAssetAPI';
+import { StaticMeshAssetField } from '@/editor/components/inspector/StaticMeshAssetField';
 
 export interface MeshAssetInspectorProps {
   asset: StaticMeshAsset | SkeletalMeshAsset;
@@ -13,6 +15,10 @@ export interface MeshAssetInspectorProps {
   wireframe: boolean;
   materialId: string;
   onMaterialChange: (materialId: string) => void;
+  availableMeshSources?: StaticMeshCompositionSource[];
+  referenceMeshes?: Array<{ id: string; name: string }>;
+  onAddReferenceMesh?: (assetId: string) => void;
+  onRemoveReferenceMesh?: (assetId: string) => void;
 }
 
 const Row: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
@@ -49,9 +55,25 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
   wireframe,
   materialId,
   onMaterialChange,
+  availableMeshSources = [],
+  referenceMeshes = [],
+  onAddReferenceMesh,
+  onRemoveReferenceMesh,
 }) => {
   const counts = useMemo(() => geometryCounts(asset), [asset]);
   const aabb = asset.geometry.aabb;
+  const referenceCandidates = useMemo(
+    () => availableMeshSources.filter(source => !referenceMeshes.some(reference => reference.id === source.id)),
+    [availableMeshSources, referenceMeshes],
+  );
+  const [referenceSourceAssetId, setReferenceSourceAssetId] = useState('');
+
+  useEffect(() => {
+    if (referenceCandidates.some(source => source.id === referenceSourceAssetId)) return;
+    setReferenceSourceAssetId(referenceCandidates[0]?.id ?? '');
+  }, [referenceCandidates, referenceSourceAssetId]);
+
+  const referenceSource = referenceCandidates.find(source => source.id === referenceSourceAssetId) ?? null;
   const selectedCount =
     meshComponentMode === 'VERTEX'
       ? selectionCounts.vertices
@@ -75,6 +97,73 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
           <Row label="Section" value={section} />
           {asset.path && <Row label="Path" value={asset.path} />}
         </Card>
+
+        {asset.type === 'MESH' && (section === 'ASSET' || section === 'GEOMETRY') && (
+          <Card title="Reference Meshes" icon="Eye">
+            <div className="py-1.5 space-y-2">
+              <div className="text-[9px] leading-relaxed text-text-secondary/70">
+                Add non-destructive Static Mesh references for shape comparison. References render shaded but remain non-selectable.
+              </div>
+
+              {referenceCandidates.length === 0 ? (
+                <div className="rounded border border-white/5 bg-black/10 p-2 text-[9px] text-text-secondary/60">
+                  {availableMeshSources.length === 0
+                    ? 'No other Static Mesh assets are available.'
+                    : 'All available Static Mesh assets are already referenced.'}
+                </div>
+              ) : (
+                <div className="rounded border border-white/5 bg-black/10 p-2 space-y-1.5">
+                  <StaticMeshAssetField
+                    label="Source"
+                    sources={referenceCandidates}
+                    value={referenceSourceAssetId}
+                    onChange={setReferenceSourceAssetId}
+                  />
+                  {referenceSource && (
+                    <div className="px-0.5 text-[8px] leading-3 text-text-secondary/70">
+                      {referenceSource.vertexCount} vertices • {referenceSource.triangleCount} triangles • {referenceSource.faceCount} faces
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    title={referenceSource ? `Add ${referenceSource.name} as a reference` : 'Choose a Static Mesh reference'}
+                    aria-label="Add selected Static Mesh reference"
+                    disabled={!referenceSource || !onAddReferenceMesh}
+                    onClick={() => referenceSource && onAddReferenceMesh?.(referenceSource.id)}
+                    className={`w-full h-7 rounded border text-[9px] font-semibold transition-colors ${
+                      referenceSource && onAddReferenceMesh
+                        ? 'border-white/10 bg-white/[0.03] text-text-primary hover:bg-white/[0.07] hover:text-white'
+                        : 'border-white/5 bg-black/10 text-text-secondary/35 cursor-not-allowed'
+                    }`}
+                  >
+                    Add Reference
+                  </button>
+                </div>
+              )}
+
+              {referenceMeshes.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[8px] uppercase tracking-wider font-semibold text-text-secondary/70">Active References</div>
+                  {referenceMeshes.map(reference => (
+                    <div key={reference.id} className="h-7 px-1.5 rounded border border-white/5 bg-black/10 flex items-center gap-1.5">
+                      <Icon name="Box" size={10} className="text-cyan-300" />
+                      <span className="min-w-0 flex-1 truncate text-[9px] text-text-primary">{reference.name}</span>
+                      <button
+                        type="button"
+                        title={`Remove ${reference.name} reference`}
+                        aria-label={`Remove ${reference.name} reference`}
+                        onClick={() => onRemoveReferenceMesh?.(reference.id)}
+                        className="w-5 h-5 flex items-center justify-center rounded text-text-secondary hover:text-white hover:bg-white/5"
+                      >
+                        <Icon name="X" size={10} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
 
         {(section === 'ASSET' || section === 'GEOMETRY') && (
           <Card title="Material" icon="Palette">

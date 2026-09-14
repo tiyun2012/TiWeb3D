@@ -110,6 +110,42 @@ editorCommandRegistry.register({
   execute: context => context.services.selectLoop?.(context.meshComponentMode),
 });
 
+editorCommandRegistry.register({
+  id: 'staticMesh.selection.expand',
+  label: 'Expand',
+  icon: 'Expand',
+  category: 'SELECTION',
+  requiredCapabilities: ['STATIC_MESH_COMPONENT_EDIT'],
+  visible: context => context.meshComponentMode !== 'OBJECT',
+  enabled: context => Boolean(context.services.expandSelection) && componentCount(context) > 0,
+  description: 'Grow the current component selection by one topology ring.',
+  execute: context => context.services.expandSelection?.(context.meshComponentMode),
+});
+
+editorCommandRegistry.register({
+  id: 'staticMesh.selection.shrink',
+  label: 'Shrink',
+  icon: 'Shrink',
+  category: 'SELECTION',
+  requiredCapabilities: ['STATIC_MESH_COMPONENT_EDIT'],
+  visible: context => context.meshComponentMode !== 'OBJECT',
+  enabled: context => Boolean(context.services.shrinkSelection) && componentCount(context) > 0,
+  description: 'Peel one topology ring from the current component selection.',
+  execute: context => context.services.shrinkSelection?.(context.meshComponentMode),
+});
+
+editorCommandRegistry.register({
+  id: 'staticMesh.selection.ring',
+  label: 'Edge Ring',
+  icon: 'Repeat2',
+  category: 'SELECTION',
+  requiredCapabilities: ['STATIC_MESH_COMPONENT_EDIT'],
+  visible: context => context.meshComponentMode === 'EDGE',
+  enabled: context => Boolean(context.services.selectRing) && context.selectionCounts.edges > 0,
+  description: 'Extend the selected edge across opposite edges of connected quad-like faces.',
+  execute: context => context.services.selectRing?.(context.meshComponentMode),
+});
+
 const registerSoftMode = (id: string, mode: SoftSelectionMode, label: string, icon: string, description: string) => {
   editorCommandRegistry.register({
     id,

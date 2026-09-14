@@ -12,6 +12,7 @@ import { assetManager } from '@/engine/AssetManager';
 import { Mat4Utils, Vec3Utils, RayUtils } from '@/engine/math';
 import { VIEW_MODES } from '@/engine/constants';
 import { meshEdgeKey } from '@/engine/MeshEdgeGeometry';
+import type { MeshPickingResult } from '@/engine/MeshTopologyUtils';
 import { Icon } from './Icon';
 import { PieMenu } from './PieMenu';
 import { EditorContext } from '@/editor/state/EditorContext';
@@ -43,8 +44,22 @@ import { frameCameraOnFocusTarget } from '@/editor/viewports/viewportFocus';
 import type { EditorCommandCapability, EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
 import '@/editor/commands/StaticMeshCommandCatalogue';
 import { resolveSceneStaticMeshEditTarget } from '@/engine/mesh-editing/StaticMeshEditTarget';
+import {
+    executeMarqueeSelection,
+    resolveMarqueeOperation,
+    resolveSceneSelectionPolicy,
+    selectionPoliciesMatch,
+    type SelectionPolicy,
+} from '@/editor/selection/SelectionPolicy';
 
 const MARQUEE_DRAG_THRESHOLD_PX = 4;
+type PendingSceneComponentPress = {
+    policy: SelectionPolicy;
+    startX: number;
+    startY: number;
+    shiftKey: boolean;
+    picked: MeshPickingResult | null;
+};
 type SoftSelectionCommandSettings = Parameters<NonNullable<EditorCommandContext['services']['configureSoftSelection']>>[0];
 const sceneEngineApi = createEngineAPI(engineInstance);
 
@@ -62,11 +77,15 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         softSelectionRadius,
         softSelectionMode, 
         softSelectionFalloff,
+        softSelectionSurfaceBlend,
+        softSelectionConnectivity,
         softSelectionHeatmapVisible,
         setSoftSelectionEnabled,
         setSoftSelectionRadius,
         setSoftSelectionMode,
         setSoftSelectionFalloff,
+        setSoftSelectionSurfaceBlend,
+        setSoftSelectionConnectivity,
         setSoftSelectionHeatmapVisible,
         setTool
     } = useContext(EditorContext)!;
@@ -261,13 +280,18 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         if (settings.enabled !== undefined) setSoftSelectionEnabled(settings.enabled);
         if (settings.radius !== undefined) setSoftSelectionRadius(settings.radius);
         if (settings.mode !== undefined) setSoftSelectionMode(settings.mode);
-        if (settings.falloff !== undefined) setSoftSelectionFalloff(settings.falloff);
+        const distanceMetric = settings.distanceMetric ?? settings.falloff;
+        if (distanceMetric !== undefined) setSoftSelectionFalloff(distanceMetric);
+        if (settings.surfaceBlend !== undefined) setSoftSelectionSurfaceBlend(settings.surfaceBlend);
+        if (settings.connectivity !== undefined) setSoftSelectionConnectivity(settings.connectivity);
         if (settings.heatmapVisible !== undefined) setSoftSelectionHeatmapVisible(settings.heatmapVisible);
     }, [
         setSoftSelectionEnabled,
         setSoftSelectionRadius,
         setSoftSelectionMode,
         setSoftSelectionFalloff,
+        setSoftSelectionSurfaceBlend,
+        setSoftSelectionConnectivity,
         setSoftSelectionHeatmapVisible,
     ]);
 
@@ -354,6 +378,8 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
             radius: softSelectionRadius,
             mode: softSelectionMode,
             falloff: softSelectionFalloff,
+            surfaceBlend: softSelectionSurfaceBlend,
+            connectivity: softSelectionConnectivity,
             heatmapVisible: softSelectionHeatmapVisible,
         });
     }, [
@@ -361,6 +387,8 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         softSelectionRadius,
         softSelectionMode,
         softSelectionFalloff,
+        softSelectionSurfaceBlend,
+        softSelectionConnectivity,
         softSelectionHeatmapVisible,
     ]);
 
@@ -469,11 +497,18 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         hitId: string | null;
         shiftKey: boolean;
     } | null>(null);
+    const pendingComponentPressRef = useRef<PendingSceneComponentPress | null>(null);
 
     const commitSelectionBoxState = (next: SelectionBoxState | null) => {
         selectionBoxRef.current = next;
         setSelectionBox(next);
     };
+
+    useEffect(() => {
+        pendingObjectPressRef.current = null;
+        pendingComponentPressRef.current = null;
+        commitSelectionBoxState(null);
+    }, [meshComponentMode]);
 
     useLayoutEffect(() => {
         if (canvasRef.current && !engineInstance.renderer.gl) {
@@ -586,6 +621,45 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [handleFocus]);
 
+    const commitPendingSceneComponentClick = (pending: PendingSceneComponentPress) => {
+        const currentPolicy = resolveSceneSelectionPolicy(engineInstance, selectedIds, meshComponentMode);
+        if (!selectionPoliciesMatch(currentPolicy, pending.policy) || !pending.picked) return;
+        if (pending.policy.target?.kind !== 'MESH_COMPONENTS') return;
+
+        engineInstance.clearDeformation();
+        if (!pending.shiftKey) {
+            engineInstance.selectionSystem.subSelection.vertexIds.clear();
+            engineInstance.selectionSystem.subSelection.edgeIds.clear();
+            engineInstance.selectionSystem.subSelection.faceIds.clear();
+        }
+
+        if (pending.policy.domain === 'VERTEX') {
+            const id = pending.picked.vertexId;
+            if (pending.shiftKey && engineInstance.selectionSystem.subSelection.vertexIds.has(id)) {
+                engineInstance.selectionSystem.subSelection.vertexIds.delete(id);
+            } else {
+                engineInstance.selectionSystem.subSelection.vertexIds.add(id);
+            }
+        } else if (pending.policy.domain === 'EDGE') {
+            const id = meshEdgeKey(pending.picked.edgeId[0], pending.picked.edgeId[1]);
+            if (pending.shiftKey && engineInstance.selectionSystem.subSelection.edgeIds.has(id)) {
+                engineInstance.selectionSystem.subSelection.edgeIds.delete(id);
+            } else {
+                engineInstance.selectionSystem.subSelection.edgeIds.add(id);
+            }
+        } else if (pending.policy.domain === 'FACE') {
+            const id = pending.picked.faceId;
+            if (pending.shiftKey && engineInstance.selectionSystem.subSelection.faceIds.has(id)) {
+                engineInstance.selectionSystem.subSelection.faceIds.delete(id);
+            } else {
+                engineInstance.selectionSystem.subSelection.faceIds.add(id);
+            }
+        }
+
+        engineInstance.recalculateSoftSelection();
+        engineInstance.notifyUI();
+    };
+
     const handleMouseDown = (e: React.MouseEvent) => {
         if (isBrushKeyHeld.current) return;
 
@@ -603,80 +677,63 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
         }
 
         if (e.button === 2 && !e.altKey) {
-            const hitId = engineInstance.selectionSystem.selectEntityAt(mx, my, rect.width, rect.height);
-            if (hitId) {
-                if (!selectedIds.includes(hitId)) onSelect([hitId]);
-                openPieMenu(e.clientX, e.clientY, hitId);
-            } else if (selectedIds.length > 0) {
-                openPieMenu(e.clientX, e.clientY);
+            const policy = resolveSceneSelectionPolicy(engineInstance, selectedIds, meshComponentMode);
+            if (policy.domain === 'OBJECT') {
+                const hitId = engineInstance.selectionSystem.selectEntityAt(mx, my, rect.width, rect.height);
+                if (hitId) {
+                    if (!selectedIds.includes(hitId)) onSelect([hitId]);
+                    openPieMenu(e.clientX, e.clientY, hitId);
+                } else if (selectedIds.length > 0) {
+                    openPieMenu(e.clientX, e.clientY);
+                }
+            } else if (policy.target?.kind === 'MESH_COMPONENTS') {
+                // Component context owns RMB too: opening the modeling menu must not
+                // silently switch object selection just because the cursor missed an edge/vertex.
+                openPieMenu(e.clientX, e.clientY, policy.target.entityId);
             }
             return;
         }
 
         if (e.button === 0 && !isAdjustingBrush && !e.altKey) {
             engineInstance.isInputDown = true;
-            let componentHit = false;
-            
-            if (meshComponentMode !== 'OBJECT' && selectedIds.length > 0) {
-                const result = engineInstance.selectionSystem.pickMeshComponent(selectedIds[0], mx, my, rect.width, rect.height);
-                
-                if (result) {
-                    engineInstance.clearDeformation(); 
-                    componentHit = true;
-                    
-                    if (!e.shiftKey) {
-                        engineInstance.selectionSystem.subSelection.vertexIds.clear();
-                        engineInstance.selectionSystem.subSelection.edgeIds.clear();
-                        engineInstance.selectionSystem.subSelection.faceIds.clear();
-                    }
+            pendingObjectPressRef.current = null;
+            pendingComponentPressRef.current = null;
+            commitSelectionBoxState(null);
 
-                    if (meshComponentMode === 'VERTEX') {
-                        const id = result.vertexId;
-                        if (engineInstance.selectionSystem.subSelection.vertexIds.has(id)) engineInstance.selectionSystem.subSelection.vertexIds.delete(id);
-                        else engineInstance.selectionSystem.subSelection.vertexIds.add(id);
-                    } else if (meshComponentMode === 'EDGE') {
-                        const id = meshEdgeKey(result.edgeId[0], result.edgeId[1]);
-                        if (engineInstance.selectionSystem.subSelection.edgeIds.has(id)) engineInstance.selectionSystem.subSelection.edgeIds.delete(id);
-                        else engineInstance.selectionSystem.subSelection.edgeIds.add(id);
-                    } else if (meshComponentMode === 'FACE') {
-                        const id = result.faceId;
-                        if (engineInstance.selectionSystem.subSelection.faceIds.has(id)) engineInstance.selectionSystem.subSelection.faceIds.delete(id);
-                        else engineInstance.selectionSystem.subSelection.faceIds.add(id);
-                    }
-                    
-                    engineInstance.recalculateSoftSelection(); 
-                    engineInstance.notifyUI();
-                    return;
-                }
-            }
+            // Resolve Scene + mode + editable target before any selection query.
+            // Component mode never falls through to object picking; changing the object
+            // selection is an OBJECT-domain operation, not a side effect of a component miss.
+            const policy = resolveSceneSelectionPolicy(engineInstance, selectedIds, meshComponentMode);
 
-            if (!componentHit) {
+            if (policy.domain === 'OBJECT') {
+                if (policy.target?.kind !== 'OBJECTS') return;
                 const hitId = engineInstance.selectionSystem.selectEntityAt(mx, my, rect.width, rect.height);
-
-                if (meshComponentMode === 'OBJECT') {
-                    // Do not commit object picking on mouse-down. A ray hit may be a mesh,
-                    // light, joint, or bone helper, and committing here makes that projected
-                    // geometry a dead zone where a marquee can never begin. Keep the hit as
-                    // a pending click and promote the gesture to box selection once it moves.
-                    pendingObjectPressRef.current = {
-                        startX: mx,
-                        startY: my,
-                        hitId,
-                        shiftKey: e.shiftKey,
-                    };
-                } else if (hitId) {
-                    // Preserve component-mode behavior: a click that misses the active
-                    // component but lands on another object changes the object selection.
-                    if (e.shiftKey) {
-                        const newSel = selectedIds.includes(hitId) ? selectedIds.filter(id => id !== hitId) : [...selectedIds, hitId];
-                        onSelect(newSel);
-                    } else {
-                        onSelect([hitId]);
-                    }
-                } else {
-                    commitSelectionBoxState({ startX: mx, startY: my, currentX: mx, currentY: my, isSelecting: true });
-                }
+                // Delay the click until mouse-up so the same press can become a marquee.
+                // No drag threshold was crossed: this was a true click (handled on mouse-up).
+                pendingObjectPressRef.current = {
+                    startX: mx,
+                    startY: my,
+                    hitId,
+                    shiftKey: e.shiftKey,
+                };
+                return;
             }
+
+            if (!policy.supportsMarquee || policy.target?.kind !== 'MESH_COMPONENTS') return;
+            pendingComponentPressRef.current = {
+                policy,
+                startX: mx,
+                startY: my,
+                shiftKey: e.shiftKey,
+                picked: engineInstance.selectionSystem.pickMeshComponent(
+                    policy.target.entityId,
+                    mx,
+                    my,
+                    rect.width,
+                    rect.height,
+                ),
+            };
+            return;
         }
 
         if (e.altKey && (e.button !== 0 || !isAdjustingBrush)) {
@@ -712,31 +769,54 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
 
         if (isAdjustingBrush) return; // Handled by hook
 
-        if (engineInstance.isInputDown && !dragState && !selectionBoxRef.current && meshComponentMode === 'VERTEX') {
-            engineInstance.selectionSystem.selectVerticesInBrush(mx, my, rect.width, rect.height, !e.ctrlKey); 
+        const pendingComponentPress = pendingComponentPressRef.current;
+        if (pendingComponentPress && !dragState && !selectionBoxRef.current) {
+            const currentPolicy = resolveSceneSelectionPolicy(engineInstance, selectedIds, meshComponentMode);
+            if (selectionPoliciesMatch(currentPolicy, pendingComponentPress.policy)) {
+                const selectionX = Math.max(0, Math.min(rect.width, mx));
+                const selectionY = Math.max(0, Math.min(rect.height, my));
+                const dx = selectionX - pendingComponentPress.startX;
+                const dy = selectionY - pendingComponentPress.startY;
+                if ((dx * dx) + (dy * dy) >= MARQUEE_DRAG_THRESHOLD_PX * MARQUEE_DRAG_THRESHOLD_PX) {
+                    engineInstance.selectionSystem.clearMeshComponentHover();
+                    commitSelectionBoxState({
+                        startX: pendingComponentPress.startX,
+                        startY: pendingComponentPress.startY,
+                        currentX: selectionX,
+                        currentY: selectionY,
+                        isSelecting: true,
+                    });
+                }
+            }
         }
 
         const pendingObjectPress = pendingObjectPressRef.current;
-        if (pendingObjectPress && !dragState && !selectionBoxRef.current && meshComponentMode === 'OBJECT') {
-            const dx = mx - pendingObjectPress.startX;
-            const dy = my - pendingObjectPress.startY;
-            if ((dx * dx) + (dy * dy) >= MARQUEE_DRAG_THRESHOLD_PX * MARQUEE_DRAG_THRESHOLD_PX) {
-                const selectionX = Math.max(0, Math.min(rect.width, mx));
-                const selectionY = Math.max(0, Math.min(rect.height, my));
-                commitSelectionBoxState({
-                    startX: pendingObjectPress.startX,
-                    startY: pendingObjectPress.startY,
-                    currentX: selectionX,
-                    currentY: selectionY,
-                    isSelecting: true,
-                });
+        if (pendingObjectPress && !dragState && !selectionBoxRef.current) {
+            const currentPolicy = resolveSceneSelectionPolicy(engineInstance, selectedIds, meshComponentMode);
+            if (currentPolicy.domain === 'OBJECT' && currentPolicy.target?.kind === 'OBJECTS') {
+                const dx = mx - pendingObjectPress.startX;
+                const dy = my - pendingObjectPress.startY;
+                if ((dx * dx) + (dy * dy) >= MARQUEE_DRAG_THRESHOLD_PX * MARQUEE_DRAG_THRESHOLD_PX) {
+                    const selectionX = Math.max(0, Math.min(rect.width, mx));
+                    const selectionY = Math.max(0, Math.min(rect.height, my));
+                    commitSelectionBoxState({
+                        startX: pendingObjectPress.startX,
+                        startY: pendingObjectPress.startY,
+                        currentX: selectionX,
+                        currentY: selectionY,
+                        isSelecting: true,
+                    });
+                }
             }
         }
 
         engineInstance.gizmoSystem.update(0, mx, my, rect.width, rect.height, false, false);
 
-        if (meshComponentMode !== 'OBJECT') {
+        const hoverPolicy = resolveSceneSelectionPolicy(engineInstance, selectedIds, meshComponentMode);
+        if (!selectionBoxRef.current && hoverPolicy.target?.kind === 'MESH_COMPONENTS') {
             engineInstance.selectionSystem.hoverMeshComponentAt(mx, my, rect.width, rect.height);
+        } else if (meshComponentMode !== 'OBJECT') {
+            engineInstance.selectionSystem.clearMeshComponentHover();
         }
 
         if (dragState && dragState.isDragging) {
@@ -782,76 +862,90 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
 
             engineInstance.gizmoSystem.update(0, mx, my, rect.width, rect.height, false, true);
 
-            // Finalize marquee selection globally rather than on the viewport div.
-            // Releasing just outside a viewport corner/edge otherwise never delivered
-            // the local mouseup and left rectangle selection looking disabled/stuck.
+            // Finalize the gesture through the policy captured on mouse-down. The
+            // active viewport/context already decided OBJECT vs mesh component domain;
+            // marquee execution therefore cannot accidentally fall through across domains.
             const activeSelectionBox = selectionBoxRef.current;
+            const pendingObjectPress = pendingObjectPressRef.current;
+            const pendingComponentPress = pendingComponentPressRef.current;
+
+            const commitObjectClick = () => {
+                if (!pendingObjectPress || e.button !== 0) return;
+                const policy = resolveSceneSelectionPolicy(engineInstance, selectedIds, meshComponentMode);
+                if (policy.domain !== 'OBJECT' || policy.target?.kind !== 'OBJECTS') return;
+                if (pendingObjectPress.hitId) {
+                    const operation = resolveMarqueeOperation(pendingObjectPress);
+                    const next = operation === 'TOGGLE'
+                        ? (selectedIds.includes(pendingObjectPress.hitId)
+                            ? selectedIds.filter(id => id !== pendingObjectPress.hitId)
+                            : [...selectedIds, pendingObjectPress.hitId])
+                        : [pendingObjectPress.hitId];
+                    onSelect(next);
+                } else if (!pendingObjectPress.shiftKey) {
+                    onSelect([]);
+                }
+            };
+
             if (activeSelectionBox?.isSelecting) {
                 const x = Math.min(activeSelectionBox.startX, selectionX);
                 const y = Math.min(activeSelectionBox.startY, selectionY);
                 const w = Math.abs(selectionX - activeSelectionBox.startX);
                 const h = Math.abs(selectionY - activeSelectionBox.startY);
 
-                if (w > 3 || h > 3) {
-                    const hitIds = engineInstance.selectionSystem.selectEntitiesInRect(
-                        x,
-                        y,
-                        w,
-                        h,
-                        rect.width,
-                        rect.height,
-                    );
-                    if (e.shiftKey) {
-                        const nextSelection = new Set(selectedIds);
-                        hitIds.forEach(id => {
-                            if (nextSelection.has(id)) nextSelection.delete(id);
-                            else nextSelection.add(id);
-                        });
-                        onSelect(Array.from(nextSelection));
-                    } else {
-                        onSelect(hitIds);
-                    }
-                } else if (e.button === 0) {
-                    // Pointer jitter can barely cross the drag threshold (especially on
-                    // high-DPI/touchpad input) and create a tiny marquee. Preserve the
-                    // original mouse-down hit so that tiny gestures still behave as clicks.
-                    const pendingObjectPress = pendingObjectPressRef.current;
-                    if (pendingObjectPress?.hitId) {
-                        if (pendingObjectPress.shiftKey) {
-                            const newSelection = selectedIds.includes(pendingObjectPress.hitId)
-                                ? selectedIds.filter(id => id !== pendingObjectPress.hitId)
-                                : [...selectedIds, pendingObjectPress.hitId];
-                            onSelect(newSelection);
-                        } else {
-                            onSelect([pendingObjectPress.hitId]);
+                if (w >= MARQUEE_DRAG_THRESHOLD_PX || h >= MARQUEE_DRAG_THRESHOLD_PX) {
+                    if (pendingComponentPress) {
+                        const currentPolicy = resolveSceneSelectionPolicy(engineInstance, selectedIds, meshComponentMode);
+                        if (selectionPoliciesMatch(currentPolicy, pendingComponentPress.policy)) {
+                            executeMarqueeSelection(
+                                engineInstance,
+                                pendingComponentPress.policy,
+                                {
+                                    x,
+                                    y,
+                                    width: w,
+                                    height: h,
+                                    viewportWidth: rect.width,
+                                    viewportHeight: rect.height,
+                                },
+                                resolveMarqueeOperation(pendingComponentPress),
+                            );
                         }
-                    } else if (!pendingObjectPress?.shiftKey) {
-                        onSelect([]);
+                    } else if (pendingObjectPress) {
+                        const policy = resolveSceneSelectionPolicy(engineInstance, selectedIds, meshComponentMode);
+                        if (policy.domain === 'OBJECT') {
+                            const result = executeMarqueeSelection(
+                                engineInstance,
+                                policy,
+                                {
+                                    x,
+                                    y,
+                                    width: w,
+                                    height: h,
+                                    viewportWidth: rect.width,
+                                    viewportHeight: rect.height,
+                                },
+                                resolveMarqueeOperation(pendingObjectPress),
+                                selectedIds,
+                            );
+                            if (result.kind === 'OBJECTS') onSelect(result.selectedIds);
+                        }
                     }
+                } else if (pendingComponentPress && e.button === 0) {
+                    commitPendingSceneComponentClick(pendingComponentPress);
+                } else {
+                    commitObjectClick();
                 }
 
                 commitSelectionBoxState(null);
+            } else if (pendingComponentPress && e.button === 0) {
+                // No drag threshold was crossed: component click, not object picking.
+                commitPendingSceneComponentClick(pendingComponentPress);
             } else {
-                // No drag threshold was crossed: this was a true click. Apply the raycast
-                // hit captured on mouse-down now, after we know it was not a marquee.
-                const pendingObjectPress = pendingObjectPressRef.current;
-                if (pendingObjectPress && e.button === 0) {
-                    if (pendingObjectPress.hitId) {
-                        if (pendingObjectPress.shiftKey) {
-                            const newSelection = selectedIds.includes(pendingObjectPress.hitId)
-                                ? selectedIds.filter(id => id !== pendingObjectPress.hitId)
-                                : [...selectedIds, pendingObjectPress.hitId];
-                            onSelect(newSelection);
-                        } else {
-                            onSelect([pendingObjectPress.hitId]);
-                        }
-                    } else if (!pendingObjectPress.shiftKey) {
-                        onSelect([]);
-                    }
-                }
+                commitObjectClick();
             }
 
             pendingObjectPressRef.current = null;
+            pendingComponentPressRef.current = null;
         }
 
         if (viewCameraEntityIdRef.current && dragState?.isDragging) {
@@ -869,6 +963,7 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
     const handleWindowBlur = () => {
         engineInstance.isInputDown = false;
         pendingObjectPressRef.current = null;
+        pendingComponentPressRef.current = null;
         if (viewCameraEntityIdRef.current && boundCameraNavigationActiveRef.current) {
             commitBoundCameraViewportState();
         } else {
@@ -951,7 +1046,12 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
             staticMeshTarget,
             softSelection: {
                 enabled: softSelectionEnabled,
+                radius: softSelectionRadius,
                 mode: softSelectionMode,
+                distanceMetric: softSelectionFalloff,
+                falloff: softSelectionFalloff,
+                surfaceBlend: softSelectionSurfaceBlend,
+                connectivity: softSelectionConnectivity,
                 heatmapVisible: softSelectionHeatmapVisible,
             },
             services: {
@@ -970,6 +1070,21 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
                     engineInstance.meshComponentMode = mode;
                     setMeshComponentMode(mode);
                     engineInstance.selectLoop(mode);
+                },
+                expandSelection: mode => {
+                    engineInstance.meshComponentMode = mode;
+                    setMeshComponentMode(mode);
+                    engineInstance.expandSelection(mode);
+                },
+                shrinkSelection: mode => {
+                    engineInstance.meshComponentMode = mode;
+                    setMeshComponentMode(mode);
+                    engineInstance.shrinkSelection(mode);
+                },
+                selectRing: mode => {
+                    engineInstance.meshComponentMode = mode;
+                    setMeshComponentMode(mode);
+                    engineInstance.selectRing(mode);
                 },
                 topologyCommand: command => {
                     if (command === 'EXTRUDE') engineInstance.extrudeFaces();

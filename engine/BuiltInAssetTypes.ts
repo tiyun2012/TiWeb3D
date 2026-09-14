@@ -1,5 +1,6 @@
 import { assetManager } from './AssetManager';
 import { assetTypeRegistry } from './AssetTypeRegistry';
+import { staticMeshAssetAPI } from './api/StaticMeshAssetAPI';
 
 let registered = false;
 
@@ -144,7 +145,14 @@ export function registerBuiltInAssetTypes() {
     label: 'Static Mesh',
     icon: 'Box',
     colorClass: 'text-blue-400',
+    description: 'Editable static geometry. New assets start empty and can append or reference existing meshes.',
+    contentVisibility: 'PUBLIC',
+    creatable: true,
+    createCategory: 'Project',
+    createOrder: 20,
+    defaultName: 'New Static Mesh',
     placeable: true,
+    create: ({ name, path }) => staticMeshAssetAPI.create({ name, path }),
   });
 
   assetTypeRegistry.register({

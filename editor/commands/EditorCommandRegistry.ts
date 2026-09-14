@@ -1,4 +1,4 @@
-import type { MeshComponentMode, SoftSelectionFalloff, ToolType } from '@/types';
+import type { MeshComponentMode, SoftSelectionConnectivity, SoftSelectionFalloff, ToolType } from '@/types';
 import type { SoftSelectionMode } from '@/engine/mesh-editing/SoftSelection';
 import type { StaticMeshEditTarget } from '@/engine/mesh-editing/StaticMeshEditTarget';
 
@@ -28,12 +28,20 @@ export interface EditorCommandServices {
   duplicateSelection?: () => void;
   deleteSelection?: () => void;
   selectLoop?: (mode: MeshComponentMode) => void;
+  expandSelection?: (mode: MeshComponentMode) => void;
+  shrinkSelection?: (mode: MeshComponentMode) => void;
+  selectRing?: (mode: MeshComponentMode) => void;
   topologyCommand?: (command: 'EXTRUDE' | 'BEVEL' | 'WELD' | 'CONNECT' | 'DELETE_FACE') => void;
   configureSoftSelection?: (settings: Partial<{
     enabled: boolean;
     radius: number;
     mode: SoftSelectionMode;
+    /** Preferred semantic name for Volume / Surface / Hybrid. */
+    distanceMetric: SoftSelectionFalloff;
+    /** Legacy alias retained for existing callers. */
     falloff: SoftSelectionFalloff;
+    surfaceBlend: number;
+    connectivity: SoftSelectionConnectivity;
     heatmapVisible: boolean;
   }>) => void;
 }
@@ -45,7 +53,14 @@ export interface EditorCommandContext {
   staticMeshTarget?: StaticMeshEditTarget | null;
   softSelection?: {
     enabled: boolean;
+    radius: number;
     mode: SoftSelectionMode;
+    /** Preferred semantic name for Volume / Surface / Hybrid. */
+    distanceMetric: SoftSelectionFalloff;
+    /** Legacy alias retained for existing callers. */
+    falloff: SoftSelectionFalloff;
+    surfaceBlend: number;
+    connectivity: SoftSelectionConnectivity;
     heatmapVisible: boolean;
   };
   services: EditorCommandServices;
