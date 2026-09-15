@@ -6,6 +6,7 @@ import { StaticMeshAsset, MeshComponentMode, IEngine } from '@/types';
 import { MeshTopologyUtils, MeshPickingResult } from '../MeshTopologyUtils';
 import { consoleService } from '../Console';
 import { meshEdgeKey } from '../MeshEdgeGeometry';
+import { applyMeshComponentSelectionOperation, type MeshComponentSelectionOperation } from '../selection/MeshComponentSelection';
 import { areVerticesAdjacent, getEdgeFaces, getSharedFaceEdge, getVertexNeighbors } from '../mesh-editing/MeshConnectivity';
 
 
@@ -233,6 +234,51 @@ export class SelectionSystem {
 
     clearMeshComponentHover() {
         this.hoveredMeshComponent = null;
+    }
+
+    /**
+     * Applies explicit component IDs to the active mesh sub-selection.
+     * Hierarchy scopes, viewport modifier-clicks, and future automation should
+     * use this instead of mutating subSelection sets directly so selection
+     * operations, deformation/soft-selection, and UI invalidation stay unified.
+     */
+    setMeshComponentSelection(
+        mode: Exclude<MeshComponentMode, 'OBJECT'>,
+        ids: Iterable<number | string>,
+        operation: MeshComponentSelectionOperation = 'REPLACE',
+        notify: boolean = true,
+    ) {
+        this.engine.clearDeformation();
+
+        // A mesh component selection always belongs to one active component domain.
+        // Clear the other domains even for additive/toggle operations so callers cannot
+        // accidentally create a mixed vertex/edge/face selection.
+        const target = (mode === 'VERTEX'
+            ? this.subSelection.vertexIds
+            : mode === 'EDGE'
+                ? this.subSelection.edgeIds
+                : this.subSelection.faceIds) as Set<number | string>;
+
+        const validIds: Array<number | string> = [];
+        for (const id of ids) {
+            if (mode === 'EDGE') {
+                if (typeof id === 'string') validIds.push(id);
+            } else if (typeof id === 'number' && Number.isInteger(id) && id >= 0) {
+                validIds.push(id);
+            }
+        }
+        const next = applyMeshComponentSelectionOperation(target, validIds, operation);
+
+        this.subSelection.vertexIds.clear();
+        this.subSelection.edgeIds.clear();
+        this.subSelection.faceIds.clear();
+        if (mode === 'VERTEX') this.subSelection.vertexIds = next as Set<number>;
+        else if (mode === 'EDGE') this.subSelection.edgeIds = next as Set<string>;
+        else this.subSelection.faceIds = next as Set<number>;
+
+        this.hoveredMeshComponent = null;
+        this.engine.recalculateSoftSelection();
+        if (notify) this.engine.notifyUI();
     }
 
     get selectedEntities(): Set<string> {
@@ -512,7 +558,7 @@ export class SelectionSystem {
         h: number,
         viewportWidth: number = this.engine.currentWidth,
         viewportHeight: number = this.engine.currentHeight,
-        operation: 'REPLACE' | 'ADD' | 'SUBTRACT' | 'TOGGLE' = 'REPLACE',
+        operation: MeshComponentSelectionOperation = 'REPLACE',
     ): number {
         if (mode === 'OBJECT' || !this.engine.currentViewProj) return 0;
 
@@ -614,19 +660,7 @@ export class SelectionSystem {
                 ? this.subSelection.edgeIds
                 : this.subSelection.faceIds) as Set<number | string>;
         const hits = (mode === 'VERTEX' ? vertexHits : mode === 'EDGE' ? edgeHits : faceHits) as Set<number | string>;
-        const next = operation === 'REPLACE'
-            ? new Set<number | string>()
-            : new Set<number | string>(target);
-
-        hits.forEach(value => {
-            if (operation === 'SUBTRACT') next.delete(value);
-            else if (operation === 'TOGGLE') {
-                if (next.has(value)) next.delete(value);
-                else next.add(value);
-            } else {
-                next.add(value);
-            }
-        });
+        const next = applyMeshComponentSelectionOperation(target, hits, operation);
 
         const changed = next.size !== target.size || Array.from(next).some(value => !target.has(value));
         if (!changed) return hits.size;
@@ -1060,16 +1094,18 @@ export class SelectionSystem {
         }
         if (this.engine.meshComponentMode === 'FACE') {
             const topo = asset.topology;
-            if (topo) {
+            if (topo?.faces?.length) {
                 this.subSelection.faceIds.forEach(fIdx => {
-                    topo.faces[fIdx].forEach(v => result.add(v));
+                    topo.faces[fIdx]?.forEach(v => result.add(v));
                 });
             } else {
                 const indices = asset.geometry.indices;
                 this.subSelection.faceIds.forEach(fIdx => {
-                    result.add(indices[fIdx * 3]);
-                    result.add(indices[fIdx * 3 + 1]);
-                    result.add(indices[fIdx * 3 + 2]);
+                    const offset = fIdx * 3;
+                    if (offset + 2 >= indices.length) return;
+                    result.add(indices[offset]);
+                    result.add(indices[offset + 1]);
+                    result.add(indices[offset + 2]);
                 });
             }
         }

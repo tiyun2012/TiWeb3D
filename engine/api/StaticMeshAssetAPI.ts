@@ -1,7 +1,11 @@
 import { assetManager } from '@/engine/AssetManager';
 import { MeshTopologyUtils } from '@/engine/MeshTopologyUtils';
 import type { LogicalMesh, MeshGeometry, StaticMeshAsset, StaticMeshIdRange } from '@/types';
+<<<<<<< HEAD
 import { offsetStaticMeshShell, resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
+=======
+import { materializeStaticMeshShell, offsetStaticMeshShell, resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
 export type { StaticMeshIdRange } from '@/types';
 
 export interface CreateStaticMeshArgs {
@@ -273,6 +277,7 @@ class StaticMeshAssetAPIService {
     const triToFace: number[] = Array.from(sourceTriangleToFace(target, faces.length));
     const siblings = new Map<number, number[]>();
     copySiblingGroups(siblings, target.topology?.siblings, 0);
+<<<<<<< HEAD
     const shells = resolveStaticMeshShells(target).map(shell => ({
       ...shell,
       id: shell.id.startsWith('legacy:') ? crypto.randomUUID() : shell.id,
@@ -280,6 +285,9 @@ class StaticMeshAssetAPIService {
       triangleIds: { ...shell.triangleIds },
       faceIds: { ...shell.faceIds },
     }));
+=======
+    const shells = resolveStaticMeshShells(target).map(shell => materializeStaticMeshShell(shell));
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
 
     let vertexCount = Math.floor(vertices.length / 3);
     let triangleCount = Math.floor(indices.length / 3);
@@ -359,7 +367,20 @@ class StaticMeshAssetAPIService {
       aabb: computeAABB(vertices),
     };
 
+<<<<<<< HEAD
     assetManager.updateAsset(target.id, { geometry, topology, shells });
+=======
+    // Re-detect from the final topology before saving shell metadata. The appended
+    // metadata above is provenance/naming input only; connectivity is authoritative.
+    const validatedShells = resolveStaticMeshShells({
+      ...target,
+      geometry,
+      topology,
+      shells,
+    }).map(shell => materializeStaticMeshShell(shell));
+
+    assetManager.updateAsset(target.id, { geometry, topology, shells: validatedShells });
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
 
     return {
       targetAssetId: target.id,

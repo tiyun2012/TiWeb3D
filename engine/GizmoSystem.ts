@@ -3,6 +3,7 @@ import { Mat4Utils, Vec3Utils } from './math';
 import { Vector3, ToolType } from '@/types';
 import { assetManager } from './AssetManager';
 import { StaticMeshAsset } from '@/types';
+import { hasActiveMeshComponentSelection } from './selection/MeshComponentSelection';
 
 export type GizmoAxis = 'X' | 'Y' | 'Z' | 'XY' | 'XZ' | 'YZ' | 'VIEW' | null;
 
@@ -141,8 +142,7 @@ export class GizmoSystem {
         const isComponentMode = this.engine.meshComponentMode !== 'OBJECT';
 
         if (isComponentMode) {
-            const sub = this.engine.selectionSystem.subSelection;
-            if (sub.vertexIds.size === 0 && sub.edgeIds.size === 0 && sub.faceIds.size === 0) {
+            if (!this.hasActiveComponentSelection()) {
                 this.hoverAxis = null;
                 this.activeAxis = null;
                 return;
@@ -216,8 +216,7 @@ export class GizmoSystem {
         const isComponentMode = this.engine.meshComponentMode !== 'OBJECT';
 
         if (isComponentMode) {
-            const sub = this.engine.selectionSystem.subSelection; // Updated
-            if (sub.vertexIds.size === 0 && sub.edgeIds.size === 0 && sub.faceIds.size === 0) return;
+            if (!this.hasActiveComponentSelection()) return;
 
             const idx = Array.from(selected)[0];
             const entityId = this.engine.ecs.store.ids[idx];
@@ -256,6 +255,18 @@ export class GizmoSystem {
                 this.activeAxis
             );
         }
+    }
+
+
+    /**
+     * Gizmo visibility in component mode is driven only by the active component
+     * domain. Selection sets from a previous mode can legitimately remain cached,
+     * but they must never create an origin gizmo when the active domain is empty.
+     */
+    private hasActiveComponentSelection(): boolean {
+        const mode = this.engine.meshComponentMode;
+        if (mode !== 'VERTEX' && mode !== 'EDGE' && mode !== 'FACE') return false;
+        return hasActiveMeshComponentSelection(mode, this.engine.selectionSystem.subSelection);
     }
 
     private getSelectedComponentCentroid(entityId: string): Vector3 {

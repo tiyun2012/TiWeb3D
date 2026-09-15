@@ -13,10 +13,14 @@ hard-normal boundaries that still represent one logical point.
 Connectivity therefore comes from:
 
 1. `LogicalMesh.faces` for authored polygon boundary edges.
-2. `LogicalMesh.siblings` for persistent seam/hard-edge weld groups.
+2. `LogicalMesh.siblings` for **explicit source-authored/imported** seam/hard-edge weld groups.
 
-Current vertex positions never define connectivity. Moving a vertex must not silently
-disconnect or reconnect the topology graph.
+Current vertex positions do not create connectivity. Equal XYZ values are not evidence of a weld,
+and moving unrelated vertices into the same position must never weld them automatically. Existing seam/hard-edge sibling welds are a
+persistent topology relationship, but direct component deformation can intentionally move only
+part of one render-vertex sibling group. At the geometry-edit transaction boundary,
+`reconcileMeshSiblingGroupsAfterGeometryEdit(...)` validates those **existing** welds and may
+split a group whose members no longer coincide. It never creates a new sibling relationship.
 
 ## Runtime cache
 
@@ -29,17 +33,42 @@ disconnect or reconnect the topology graph.
 - logical face -> canonical member vertices
 - canonical logical edge -> incident logical faces
 
-Position-only edits do not invalidate this cache. A future topology-changing operation
-such as Extrude, Weld, Delete Face, Connect, or Cut must rebuild the logical
-topology/sibling data and then call:
+Position samples during a drag do not invalidate this cache. At mouse-up/finalization, direct
+Static Mesh deformation runs sibling reconciliation once; if an existing weld split, the
+connectivity cache and propagated `vertexToFaces` map are rebuilt. A future explicit
+topology-changing operation such as Extrude, Weld, Delete Face, Connect, Detach, or Cut must
+rebuild the logical topology/sibling data and then call:
 
 ```ts
 MeshConnectivityAPI.invalidate(asset.topology);
 ```
 
+
+## Deformation finalization and weld splitting
+
+A generated/imported mesh may use several render vertices for one logical point, but that relationship
+must be explicit. The built-in Cube is intentionally **not** such a case: its 24 render vertices form six
+independent quads, so it has 6 Mesh Shells. OBJ seam splits are safer: when several render vertices came
+from the same source OBJ position index, the importer records them as siblings without comparing XYZ.
+
+If a component edit moves only one side of an existing explicit sibling group, the old weld record is no
+longer valid. Static Mesh finalization therefore performs a **split-only** reconciliation:
+
+1. start from sibling groups that already exist;
+2. partition each existing group by positional coincidence at edit finalization;
+3. keep coincident subsets as sibling groups and drop singleton members;
+4. rebuild propagated `vertexToFaces`;
+5. invalidate `MeshConnectivity`;
+6. let Mesh Shell resolution rematerialize `StaticMeshAsset.shells`.
+
+This is intentionally not a spatial weld pass. Two independent faces, appended Mesh Shells, or FBX nodes
+can occupy exactly the same coordinates and still remain separate until an explicit Weld/Connect operation
+changes their topology.
+
 ## Public queries
 
 ```ts
+MeshConnectivityAPI.reconcileExistingSiblingsAfterGeometryEdit(mesh, vertices)
 MeshConnectivityAPI.neighbors(mesh, vertexId, vertexCount)
 MeshConnectivityAPI.areAdjacent(mesh, a, b, vertexCount)
 MeshConnectivityAPI.edgeFaces(mesh, a, b, vertexCount)

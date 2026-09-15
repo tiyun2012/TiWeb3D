@@ -47,9 +47,11 @@ export interface MeshConnectivityView {
  * Runtime-only connectivity cache for a LogicalMesh.
  *
  * Connectivity depends on authored topology (faces + persistent sibling groups),
- * not on current vertex positions. Positional edits therefore do not invalidate
- * this cache. Topology-changing tools (extrude/weld/delete/etc.) MUST call
- * invalidateMeshConnectivity(mesh) after rebuilding faces/siblings.
+ * not on arbitrary positional proximity. Drag samples therefore do not invalidate
+ * this cache. At a Static Mesh edit transaction boundary, an existing sibling weld
+ * may be split if its members were edited apart; that reconciliation invalidates
+ * this cache. Explicit topology-changing tools (extrude/weld/delete/etc.) MUST also
+ * call invalidateMeshConnectivity(mesh) after rebuilding faces/siblings.
  */
 const connectivityCache = new WeakMap<LogicalMesh, MeshConnectivityIndex>();
 
@@ -214,6 +216,168 @@ export function getMeshConnectivity(mesh: LogicalMesh, vertexCount: number): Mes
 
 export function invalidateMeshConnectivity(mesh: LogicalMesh) {
     connectivityCache.delete(mesh);
+}
+
+export interface MeshSiblingReconcileResult {
+    changed: boolean;
+    previousGroupCount: number;
+    nextGroupCount: number;
+}
+
+export const MESH_SIBLING_POSITION_QUANTIZATION = 10000;
+
+/**
+ * Revalidates only the weld/sibling relationships that already exist. This is
+ * intended for the transaction boundary after direct component deformation.
+ *
+ * A sibling group may split when some of its render vertices no longer occupy
+ * the same quantized position. The function never creates a weld between
+ * vertices that were not siblings before the edit, so merely moving unrelated
+ * shells into contact cannot merge their topology.
+ */
+export function reconcileMeshSiblingGroupsAfterGeometryEdit(
+    mesh: LogicalMesh,
+    vertices: Float32Array,
+    quantization = MESH_SIBLING_POSITION_QUANTIZATION,
+): MeshSiblingReconcileResult {
+    const vertexCount = Math.floor(vertices.length / 3);
+    const previous = mesh.siblings;
+    if (!previous || previous.size === 0 || vertexCount === 0) {
+        return { changed: false, previousGroupCount: 0, nextGroupCount: 0 };
+    }
+
+    // Existing sibling maps store the whole group on each member. Build a small
+    // union-find anyway so malformed/asymmetric imported maps are normalized
+    // safely before position-based splitting.
+    const parent = new Int32Array(vertexCount);
+    for (let i = 0; i < vertexCount; i += 1) parent[i] = i;
+    const find = (value: number): number => {
+        let root = value;
+        while (parent[root] !== root) root = parent[root];
+        let current = value;
+        while (parent[current] !== current) {
+            const next = parent[current];
+            parent[current] = root;
+            current = next;
+        }
+        return root;
+    };
+    const unite = (a: number, b: number) => {
+        const ra = find(a);
+        const rb = find(b);
+        if (ra === rb) return;
+        const root = Math.min(ra, rb);
+        const child = root === ra ? rb : ra;
+        parent[child] = root;
+    };
+
+    previous.forEach((group, vertexId) => {
+        if (vertexId < 0 || vertexId >= vertexCount) return;
+        for (const member of group) {
+            if (member < 0 || member >= vertexCount) continue;
+            unite(vertexId, member);
+        }
+    });
+
+    const authoredRoots = new Set<number>();
+    previous.forEach((_, vertexId) => {
+        if (vertexId >= 0 && vertexId < vertexCount) authoredRoots.add(find(vertexId));
+    });
+
+    const oldGroups = new Map<number, number[]>();
+    for (let vertexId = 0; vertexId < vertexCount; vertexId += 1) {
+        const root = find(vertexId);
+        if (!authoredRoots.has(root)) continue;
+        let group = oldGroups.get(root);
+        if (!group) {
+            group = [];
+            oldGroups.set(root, group);
+        }
+        group.push(vertexId);
+    }
+
+    const next = new Map<number, number[]>();
+    let nextGroupCount = 0;
+    const positionKey = (vertexId: number) => {
+        const offset = vertexId * 3;
+        const x = Math.round((vertices[offset] ?? 0) * quantization);
+        const y = Math.round((vertices[offset + 1] ?? 0) * quantization);
+        const z = Math.round((vertices[offset + 2] ?? 0) * quantization);
+        return `${x},${y},${z}`;
+    };
+
+    oldGroups.forEach(group => {
+        const buckets = new Map<string, number[]>();
+        group.forEach(vertexId => {
+            const key = positionKey(vertexId);
+            let bucket = buckets.get(key);
+            if (!bucket) {
+                bucket = [];
+                buckets.set(key, bucket);
+            }
+            bucket.push(vertexId);
+        });
+
+        buckets.forEach(bucket => {
+            if (bucket.length < 2) return;
+            bucket.sort((a, b) => a - b);
+            const normalized = [...bucket];
+            bucket.forEach(vertexId => next.set(vertexId, normalized));
+            nextGroupCount += 1;
+        });
+    });
+
+    const previousGroupSignatures = new Set<string>();
+    previous.forEach((group, vertexId) => {
+        if (vertexId < 0 || vertexId >= vertexCount) return;
+        const valid = Array.from(new Set([vertexId, ...group].filter(id => id >= 0 && id < vertexCount))).sort((a, b) => a - b);
+        if (valid.length > 1) previousGroupSignatures.add(valid.join(','));
+    });
+    const nextGroupSignatures = new Set<string>();
+    next.forEach((group, vertexId) => {
+        if (group[0] === vertexId) nextGroupSignatures.add(group.join(','));
+    });
+
+    const changed = previousGroupSignatures.size !== nextGroupSignatures.size
+        || Array.from(previousGroupSignatures).some(signature => !nextGroupSignatures.has(signature));
+    if (!changed) {
+        return {
+            changed: false,
+            previousGroupCount: previousGroupSignatures.size,
+            nextGroupCount: nextGroupSignatures.size,
+        };
+    }
+
+    mesh.siblings = next;
+
+    // vertexToFaces historically includes faces reached through sibling welds.
+    // Rebuild it together with sibling changes so legacy topology utilities do
+    // not retain stale cross-shell adjacency after a face is detached by edit.
+    const vertexToFaces = new Map<number, number[]>();
+    const addFace = (vertexId: number, faceId: number) => {
+        let ids = vertexToFaces.get(vertexId);
+        if (!ids) {
+            ids = [];
+            vertexToFaces.set(vertexId, ids);
+        }
+        if (!ids.includes(faceId)) ids.push(faceId);
+    };
+    mesh.faces.forEach((face, faceId) => {
+        face.forEach(vertexId => {
+            if (vertexId < 0 || vertexId >= vertexCount) return;
+            addFace(vertexId, faceId);
+            next.get(vertexId)?.forEach(siblingId => addFace(siblingId, faceId));
+        });
+    });
+    mesh.vertexToFaces = vertexToFaces;
+    mesh.bvh = undefined;
+    invalidateMeshConnectivity(mesh);
+
+    return {
+        changed: true,
+        previousGroupCount: previousGroupSignatures.size,
+        nextGroupCount,
+    };
 }
 
 export function getCanonicalVertex(mesh: LogicalMesh, vertexId: number, vertexCount: number): number {
@@ -589,6 +753,7 @@ export function createMeshConnectivityView(
 export const MeshConnectivityAPI = {
     getIndex: getMeshConnectivity,
     invalidate: invalidateMeshConnectivity,
+    reconcileExistingSiblingsAfterGeometryEdit: reconcileMeshSiblingGroupsAfterGeometryEdit,
     canonicalVertex: getCanonicalVertex,
     neighbors: getVertexNeighbors,
     areAdjacent: areVerticesAdjacent,

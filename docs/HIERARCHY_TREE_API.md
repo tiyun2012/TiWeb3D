@@ -155,6 +155,7 @@ export const MyTreePanel: React.FC = () => {
 3. **`ProjectPanel.tsx` (Asset Browser):**
    - Enforces key event isolation and accessible labels on asset renaming inputs.
 
+<<<<<<< HEAD
 ## Static Mesh shell hierarchy
 
 `MeshAssetHierarchy` uses the shared `HierarchyTreeItem` rows for Static Mesh composition parts.
@@ -167,8 +168,65 @@ Selecting a shell sets the hierarchy section to `SHELL` and keeps mesh component
 The selected shell is automatically expanded so its `Vertices / Edges / Faces / Triangles` summary rows are
 visible. The Inspector may show shell provenance and component ID ranges, while viewport object selection and
 component picking keep their existing contracts.
+=======
+## Static Mesh: Mesh Shell hierarchy
+
+`MeshAssetHierarchy` uses the shared `HierarchyTreeItem` rows for Static Mesh composition parts.
+`Geometry` contains two related branches: `Mesh Shells` for topology-detected connected components and `Components`
+for asset-wide Vertex / Edge / Face mode entry. Saved Mesh Shell metadata may supply names/provenance, but it is not
+the source of truth for Mesh Shell count or membership.
+
+Selecting a Mesh Shell row sets the hierarchy section to `SHELL`, but the transform implementation intentionally
+uses the existing `VERTEX` component domain with every vertex owned by that Mesh Shell selected. This keeps Mesh Shell
+as a hierarchy/authoring scope rather than inventing a fourth component mode, while ensuring the gizmo transforms only
+the selected Mesh Shell instead of the whole Static Mesh.
+
+`Shift+click` on Mesh Shell rows toggles membership in a multi-shell selection. The selected component IDs are always the
+union of the active Mesh Shell set. Because `HierarchyTreeItem.onSelect` receives the original React mouse event, modifier
+semantics belong in the hierarchy controller and must be forwarded to the shared selection API rather than reimplemented
+inside `HierarchyTreeItem`.
+
+Mesh Shell membership is resolved through the shared logical connectivity contract (`LogicalMesh.faces` plus
+**explicit authored/imported** `siblings`). Current positions never invent connectivity. The built-in 24-vertex Cube
+has six independent quads and no authored sibling groups, so it appears as **6 Mesh Shells**. A seam-split imported
+mesh may still be one Mesh Shell when the source format explicitly identifies those render vertices as one logical
+vertex. Append never creates cross-part sibling groups from spatial overlap.
+
+The editable child rows under a Mesh Shell are active selection presets:
+
+```text
+Mesh Shell 1 · AppendedMesh
+├─ Vertices   -> switch to VERTEX mode + select every Mesh Shell vertex
+├─ Edges      -> switch to EDGE mode   + select every Mesh Shell edge
+└─ Faces      -> switch to FACE mode   + select every Mesh Shell face
+```
+
+These actions must use the same public component-mode and selection APIs as the viewport. The hierarchy
+must not mutate `SelectionSystem.subSelection` directly. `getStaticMeshShellComponentSelection()` resolves
+the existing global component IDs for a Mesh Shell; `engine.api.commands.mesh.setComponentMode(...)` switches
+mode and `engine.api.commands.selection.setMeshComponents(...)` replaces that mode's selection.
+
+`Triangles` remain Mesh Shell metadata/Inspector information because there is no Triangle `MeshComponentMode`.
+Do not add a clickable Triangles hierarchy row until the editor has a real triangle component mode.
+
+`Components -> All Vertices / All Edges / All Faces` is the asset-wide selection entry point. Choosing one of
+those rows clears the active Mesh Shell scope, switches component mode, and selects every component of that type. The
+component toolbar/pie menu remains mode-only and does not imply select-all. Likewise, once viewport picking, marquee,
+loop/ring, expand, or shrink changes a Mesh Shell-wide selection, the Mesh Shell selection scope is released so the
+hierarchy never claims that the full shell is still selected. A plain component-mode LMB miss is also a real selection
+change: it clears the active component set and Mesh Shell scope. `Shift+LMB` on empty space does not clear the scope.
+
+Static Mesh preview creation does not imply an object selection. Asset/Geometry rows explicitly select the whole preview
+object; component and Mesh Shell rows install the preview entity only as the component edit target. With no actionable
+object/component selection, the gizmo must remain hidden.
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
 
 `AssetManager.updateAsset()` currently mutates an asset object in place. Hierarchy/Inspector memoization must
 therefore not rely on `[asset]` alone. Asset editors pass a reactive `assetRevision` into these views and include it
 in asset-derived memo dependencies. Without this explicit invalidation, append succeeds in the engine/viewport
+<<<<<<< HEAD
 while the hierarchy remains stuck on the pre-append shell/component counts.
+=======
+while the hierarchy remains stuck on the pre-append Mesh Shell/component counts.
+
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820

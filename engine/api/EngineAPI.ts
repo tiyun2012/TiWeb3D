@@ -1,5 +1,6 @@
 import type { CameraSettings, ComponentType, MeshComponentMode, ResolvedCameraState, SimulationMode, SoftSelectionConnectivity, SoftSelectionFalloff, ToolType } from '@/types';
 import type { SoftSelectionMode } from '@/engine/mesh-editing/SoftSelection';
+import type { MeshComponentSelectionOperation } from '@/engine/selection/MeshComponentSelection';
 
 export type SoftSelectionAPIState = {
   enabled: boolean;
@@ -17,6 +18,11 @@ export type EngineAPI = {
     selection: {
       setSelected(ids: string[]): void;
       clear(): void;
+      setMeshComponents(args:
+        | { mode: 'VERTEX'; ids: number[]; operation?: MeshComponentSelectionOperation }
+        | { mode: 'EDGE'; ids: string[]; operation?: MeshComponentSelectionOperation }
+        | { mode: 'FACE'; ids: number[]; operation?: MeshComponentSelectionOperation }
+      ): void;
       selectMeshComponentsInRect(args: {
         entityId: string;
         mode: MeshComponentMode;
@@ -26,7 +32,7 @@ export type EngineAPI = {
         height: number;
         viewportWidth: number;
         viewportHeight: number;
-        operation?: 'REPLACE' | 'ADD' | 'SUBTRACT' | 'TOGGLE';
+        operation?: MeshComponentSelectionOperation;
       }): number;
     };
     simulation: {

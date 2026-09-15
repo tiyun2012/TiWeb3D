@@ -153,6 +153,11 @@ export interface LogicalMesh {
     faces: number[][];
     triangleToFaceIndex: Int32Array;
     vertexToFaces: Map<number, number[]>;
+    /**
+     * Explicit logical-weld groups for render vertices split by an authored/imported
+     * seam (for example UV or normals). Equal XYZ positions alone never create a
+     * sibling relationship. Mesh Shell connectivity may use these groups.
+     */
     siblings?: Map<number, number[]>;
     graph?: MeshTopology;
     bvh?: any;
@@ -164,15 +169,36 @@ export interface StaticMeshIdRange {
 }
 
 /**
+<<<<<<< HEAD
  * Authored geometry part inside a Static Mesh. Shells reference component ID
  * ranges owned by geometry/topology; they never duplicate vertex or face data.
+=======
+ * Authored Mesh Shell metadata inside a Static Mesh. A Mesh Shell is a connected
+ * component of polygon topology. Metadata references component IDs owned by the
+ * geometry/topology and never duplicates vertex or face data.
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
  */
 export interface StaticMeshShell {
     id: string;
     name: string;
+<<<<<<< HEAD
     vertexIds: StaticMeshIdRange;
     triangleIds: StaticMeshIdRange;
     faceIds: StaticMeshIdRange;
+=======
+    /**
+     * Legacy/allocation bounds kept for saved-asset compatibility and append provenance.
+     * They are hints only: actual shell membership is resolved from mesh topology.
+     */
+    vertexIds: StaticMeshIdRange;
+    triangleIds: StaticMeshIdRange;
+    faceIds: StaticMeshIdRange;
+    /**
+     * Exact logical-face membership hint for non-contiguous/imported shells. New writes
+     * should populate this, but readers must still accept older range-only metadata.
+     */
+    faceIdsExact?: number[];
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
     /** Optional provenance used by append/composition tooling. */
     sourceAssetId?: string;
 }
@@ -181,7 +207,11 @@ export interface StaticMeshAsset extends Asset {
     type: 'MESH' | 'SKELETAL_MESH';
     topology: LogicalMesh;
     geometry: MeshGeometry;
+<<<<<<< HEAD
     /** Authored mesh parts. Older assets without this field resolve as one legacy shell. */
+=======
+    /** Optional Mesh Shell naming/provenance metadata. Actual membership is detected from logical topology. */
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
     shells?: StaticMeshShell[];
     /** Optional asset-default material. Empty/undefined uses built-in Standard Lambert. */
     materialId?: string;

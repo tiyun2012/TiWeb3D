@@ -4,7 +4,11 @@ import { Icon } from '@/editor/components/Icon';
 import { MeshHierarchySection } from './MeshAssetHierarchy';
 import { MaterialSlotField } from '@/editor/components/inspector/MaterialSlotField';
 import type { StaticMeshCompositionSource } from '@/engine/api/StaticMeshAssetAPI';
+<<<<<<< HEAD
 import { getStaticMeshShellCounts, resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
+=======
+import { getStaticMeshShellsComponentSelection, resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
 import { StaticMeshAssetField } from '@/editor/components/inspector/StaticMeshAssetField';
 
 export interface MeshAssetInspectorProps {
@@ -20,7 +24,11 @@ export interface MeshAssetInspectorProps {
   referenceMeshes?: Array<{ id: string; name: string }>;
   onAddReferenceMesh?: (assetId: string) => void;
   onRemoveReferenceMesh?: (assetId: string) => void;
+<<<<<<< HEAD
   selectedShellId?: string | null;
+=======
+  selectedShellIds?: readonly string[];
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
   /** Reactive revision for AssetManager assets, which are mutated in place. */
   assetRevision?: number;
 }
@@ -41,6 +49,18 @@ const Card: React.FC<{ title: string; icon: string; children: React.ReactNode }>
     <div className="px-2.5 py-1">{children}</div>
   </section>
 );
+
+
+const formatIdSet = (ids: readonly number[]): string => {
+  if (ids.length === 0) return '—';
+  let contiguous = true;
+  for (let i = 1; i < ids.length; i += 1) {
+    if (ids[i] !== ids[i - 1] + 1) { contiguous = false; break; }
+  }
+  if (contiguous) return ids.length === 1 ? `${ids[0]}` : `${ids[0]}–${ids[ids.length - 1]}`;
+  const preview = ids.slice(0, 6).join(', ');
+  return ids.length > 6 ? `${preview}, … (${ids.length})` : preview;
+};
 
 function geometryCounts(asset: StaticMeshAsset | SkeletalMeshAsset) {
   return {
@@ -63,6 +83,7 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
   referenceMeshes = [],
   onAddReferenceMesh,
   onRemoveReferenceMesh,
+<<<<<<< HEAD
   selectedShellId = null,
   assetRevision = 0,
 }) => {
@@ -77,6 +98,34 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
   );
   const selectedShellSource = selectedShell?.sourceAssetId
     ? availableMeshSources.find(source => source.id === selectedShell.sourceAssetId) ?? null
+=======
+  selectedShellIds = [],
+  assetRevision = 0,
+}) => {
+  const counts = useMemo(() => geometryCounts(asset), [asset, assetRevision]);
+  const selectedShells = useMemo(() => {
+    if (asset.type !== 'MESH' || selectedShellIds.length === 0) return [];
+    const selectedIds = new Set(selectedShellIds);
+    return resolveStaticMeshShells(asset).filter(shell => selectedIds.has(shell.id));
+  }, [asset, selectedShellIds, assetRevision]);
+  const primarySelectedShell = selectedShells[selectedShells.length - 1] ?? null;
+  const selectedShellAggregate = useMemo(() => {
+    if (asset.type !== 'MESH' || selectedShells.length === 0) return null;
+    const selection = getStaticMeshShellsComponentSelection(asset, selectedShells);
+    const triangleIds = new Set<number>();
+    selectedShells.forEach(shell => shell.triangleIds.forEach(id => triangleIds.add(id)));
+    return {
+      vertexIds: selection.vertexIds,
+      faceIds: selection.faceIds,
+      vertices: selection.vertexIds.length,
+      edges: selection.edgeIds.length,
+      faces: selection.faceIds.length,
+      triangles: triangleIds.size,
+    };
+  }, [asset, selectedShells, assetRevision]);
+  const selectedShellSource = primarySelectedShell?.sourceAssetId && selectedShells.length === 1
+    ? availableMeshSources.find(source => source.id === primarySelectedShell.sourceAssetId) ?? null
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
     : null;
   const aabb = asset.geometry.aabb;
   const referenceCandidates = useMemo(
@@ -100,6 +149,14 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
           ? selectionCounts.faces
           : selectionCounts.object;
 
+  const shellComponentLabel = section === 'VERTICES'
+    ? 'Vertices'
+    : section === 'EDGES'
+      ? 'Edges'
+      : section === 'FACES'
+        ? 'Faces'
+        : null;
+
   return (
     <div className="h-full flex flex-col min-h-0">
       <div className="h-8 px-2.5 border-b border-white/10 bg-black/15 flex items-center gap-2 shrink-0">
@@ -115,6 +172,7 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
           {asset.path && <Row label="Path" value={asset.path} />}
         </Card>
 
+<<<<<<< HEAD
         {asset.type === 'MESH' && section === 'SHELL' && selectedShell && selectedShellCounts && (
           <Card title="Shell" icon="Box">
             <Row label="Name" value={selectedShell.name} />
@@ -127,6 +185,30 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
             <Row label="Face IDs" value={`${selectedShell.faceIds.start}–${Math.max(selectedShell.faceIds.start, selectedShell.faceIds.endExclusive - 1)}`} />
             <div className="py-1.5 text-[9px] leading-relaxed text-text-secondary/70">
               Shells organize authored geometry parts. Vertex / Edge / Face edit modes remain asset-wide until shell-scoped component selection is added.
+=======
+        {asset.type === 'MESH' && selectedShells.length > 0 && selectedShellAggregate && (
+          <Card title={section === 'SHELL' ? (selectedShells.length > 1 ? 'Mesh Shells' : 'Mesh Shell') : 'Mesh Shell Selection Scope'} icon="Box">
+            <Row label="Name" value={selectedShells.length === 1 ? primarySelectedShell?.name ?? 'Mesh Shell' : `${selectedShells.length} Mesh Shells`} />
+            <Row
+              label="Source"
+              value={selectedShells.length === 1
+                ? selectedShellSource?.name ?? (primarySelectedShell?.sourceAssetId ? 'Appended Mesh' : 'Base Geometry')
+                : 'Multiple'}
+            />
+            {shellComponentLabel && <Row label="Component" value={shellComponentLabel} />}
+            {shellComponentLabel && <Row label="Selected" value={selectedCount} />}
+            {section === 'SHELL' && <Row label="Transform Selection" value={`${selectionCounts.vertices} vertices`} />}
+            <Row label="Vertices" value={selectedShellAggregate.vertices} />
+            <Row label="Edges" value={selectedShellAggregate.edges} />
+            <Row label="Faces" value={selectedShellAggregate.faces} />
+            <Row label="Triangles" value={selectedShellAggregate.triangles} />
+            <Row label="Vertex IDs" value={formatIdSet(selectedShellAggregate.vertexIds)} />
+            <Row label="Face IDs" value={formatIdSet(selectedShellAggregate.faceIds)} />
+            <div className="py-1.5 text-[9px] leading-relaxed text-text-secondary/70">
+              {shellComponentLabel
+                ? `All ${shellComponentLabel.toLowerCase()} elements in the selected Mesh Shell scope are selected. Shift+click another Mesh Shell row to add or remove it from this scope.`
+                : 'Mesh Shell rows transform through their owned vertices. Shift+click toggles additional Mesh Shells; child Vertices, Edges, or Faces switch the same multi-shell scope to that component type.'}
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
             </div>
           </Card>
         )}
@@ -154,7 +236,11 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
                   />
                   {referenceSource && (
                     <div className="px-0.5 text-[8px] leading-3 text-text-secondary/70">
+<<<<<<< HEAD
                       {referenceSource.shellCount} shell{referenceSource.shellCount === 1 ? '' : 's'} • {referenceSource.vertexCount} vertices • {referenceSource.triangleCount} triangles • {referenceSource.faceCount} faces
+=======
+                      {referenceSource.shellCount} Mesh Shell{referenceSource.shellCount === 1 ? '' : 's'} • {referenceSource.vertexCount} vertices • {referenceSource.triangleCount} triangles • {referenceSource.faceCount} faces
+>>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
                     </div>
                   )}
                   <button
@@ -249,8 +335,10 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
 
         {['VERTICES', 'EDGES', 'FACES'].includes(section) && (
           <div className="rounded-md border border-accent/20 bg-accent/5 p-2.5 text-[10px] leading-relaxed text-text-secondary">
-            The hierarchy switched the viewport to <span className="text-accent font-semibold">{meshComponentMode}</span> mode.
-            Viewport picking and transform triggers are limited to that component type until Object mode is selected.
+            The hierarchy switched the viewport to <span className="text-accent font-semibold">{meshComponentMode}</span> mode.{' '}
+            {selectedShells.length > 0 && shellComponentLabel
+              ? `All ${shellComponentLabel.toLowerCase()} elements in the selected Mesh Shell scope are selected.`
+              : 'Viewport picking and transform triggers are limited to that component type until Object mode is selected.'}
           </div>
         )}
       </div>
