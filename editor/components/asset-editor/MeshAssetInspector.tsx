@@ -4,7 +4,7 @@ import { Icon } from '@/editor/components/Icon';
 import { MeshHierarchySection } from './MeshAssetHierarchy';
 import { MaterialSlotField } from '@/editor/components/inspector/MaterialSlotField';
 import type { StaticMeshCompositionSource } from '@/engine/api/StaticMeshAssetAPI';
-import { getStaticMeshShellCounts, resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
+import { getStaticMeshShellsComponentSelection, resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
 import { StaticMeshAssetField } from '@/editor/components/inspector/StaticMeshAssetField';
 
 export interface MeshAssetInspectorProps {
@@ -20,7 +20,7 @@ export interface MeshAssetInspectorProps {
   referenceMeshes?: Array<{ id: string; name: string }>;
   onAddReferenceMesh?: (assetId: string) => void;
   onRemoveReferenceMesh?: (assetId: string) => void;
-  selectedShellId?: string | null;
+  selectedShellIds?: readonly string[];
   /** Reactive revision for AssetManager assets, which are mutated in place. */
   assetRevision?: number;
 }
@@ -75,20 +75,32 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
   referenceMeshes = [],
   onAddReferenceMesh,
   onRemoveReferenceMesh,
-  selectedShellId = null,
+  selectedShellIds = [],
   assetRevision = 0,
 }) => {
   const counts = useMemo(() => geometryCounts(asset), [asset, assetRevision]);
-  const selectedShell = useMemo(() => {
-    if (asset.type !== 'MESH' || !selectedShellId) return null;
-    return resolveStaticMeshShells(asset).find(shell => shell.id === selectedShellId) ?? null;
-  }, [asset, selectedShellId, assetRevision]);
-  const selectedShellCounts = useMemo(
-    () => asset.type === 'MESH' && selectedShell ? getStaticMeshShellCounts(asset, selectedShell) : null,
-    [asset, selectedShell, assetRevision],
-  );
-  const selectedShellSource = selectedShell?.sourceAssetId
-    ? availableMeshSources.find(source => source.id === selectedShell.sourceAssetId) ?? null
+  const selectedShells = useMemo(() => {
+    if (asset.type !== 'MESH' || selectedShellIds.length === 0) return [];
+    const selectedIds = new Set(selectedShellIds);
+    return resolveStaticMeshShells(asset).filter(shell => selectedIds.has(shell.id));
+  }, [asset, selectedShellIds, assetRevision]);
+  const primarySelectedShell = selectedShells[selectedShells.length - 1] ?? null;
+  const selectedShellAggregate = useMemo(() => {
+    if (asset.type !== 'MESH' || selectedShells.length === 0) return null;
+    const selection = getStaticMeshShellsComponentSelection(asset, selectedShells);
+    const triangleIds = new Set<number>();
+    selectedShells.forEach(shell => shell.triangleIds.forEach(id => triangleIds.add(id)));
+    return {
+      vertexIds: selection.vertexIds,
+      faceIds: selection.faceIds,
+      vertices: selection.vertexIds.length,
+      edges: selection.edgeIds.length,
+      faces: selection.faceIds.length,
+      triangles: triangleIds.size,
+    };
+  }, [asset, selectedShells, assetRevision]);
+  const selectedShellSource = primarySelectedShell?.sourceAssetId && selectedShells.length === 1
+    ? availableMeshSources.find(source => source.id === primarySelectedShell.sourceAssetId) ?? null
     : null;
   const aabb = asset.geometry.aabb;
   const referenceCandidates = useMemo(
@@ -135,22 +147,28 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
           {asset.path && <Row label="Path" value={asset.path} />}
         </Card>
 
-        {asset.type === 'MESH' && selectedShell && selectedShellCounts && (
-          <Card title={section === 'SHELL' ? 'Shell' : 'Shell Selection Scope'} icon="Box">
-            <Row label="Name" value={selectedShell.name} />
-            <Row label="Source" value={selectedShellSource?.name ?? (selectedShell.sourceAssetId ? 'Appended Mesh' : 'Base Geometry')} />
+        {asset.type === 'MESH' && selectedShells.length > 0 && selectedShellAggregate && (
+          <Card title={section === 'SHELL' ? (selectedShells.length > 1 ? 'Mesh Shells' : 'Mesh Shell') : 'Mesh Shell Selection Scope'} icon="Box">
+            <Row label="Name" value={selectedShells.length === 1 ? primarySelectedShell?.name ?? 'Mesh Shell' : `${selectedShells.length} Mesh Shells`} />
+            <Row
+              label="Source"
+              value={selectedShells.length === 1
+                ? selectedShellSource?.name ?? (primarySelectedShell?.sourceAssetId ? 'Appended Mesh' : 'Base Geometry')
+                : 'Multiple'}
+            />
             {shellComponentLabel && <Row label="Component" value={shellComponentLabel} />}
             {shellComponentLabel && <Row label="Selected" value={selectedCount} />}
-            <Row label="Vertices" value={selectedShellCounts.vertices} />
-            <Row label="Edges" value={selectedShellCounts.edges} />
-            <Row label="Faces" value={selectedShellCounts.faces} />
-            <Row label="Triangles" value={selectedShellCounts.triangles} />
-            <Row label="Vertex IDs" value={formatIdSet(selectedShell.vertexIds)} />
-            <Row label="Face IDs" value={formatIdSet(selectedShell.faceIds)} />
+            {section === 'SHELL' && <Row label="Transform Selection" value={`${selectionCounts.vertices} vertices`} />}
+            <Row label="Vertices" value={selectedShellAggregate.vertices} />
+            <Row label="Edges" value={selectedShellAggregate.edges} />
+            <Row label="Faces" value={selectedShellAggregate.faces} />
+            <Row label="Triangles" value={selectedShellAggregate.triangles} />
+            <Row label="Vertex IDs" value={formatIdSet(selectedShellAggregate.vertexIds)} />
+            <Row label="Face IDs" value={formatIdSet(selectedShellAggregate.faceIds)} />
             <div className="py-1.5 text-[9px] leading-relaxed text-text-secondary/70">
               {shellComponentLabel
-                ? `This hierarchy row selected every ${shellComponentLabel.toLowerCase()} element owned by this shell. Viewport picking or marquee selection releases the shell-wide scope.`
-                : 'Select Vertices, Edges, or Faces below this shell to switch component mode and select every matching element in the shell.'}
+                ? `All ${shellComponentLabel.toLowerCase()} elements in the selected Mesh Shell scope are selected. Shift+click another Mesh Shell row to add or remove it from this scope.`
+                : 'Mesh Shell rows transform through their owned vertices. Shift+click toggles additional Mesh Shells; child Vertices, Edges, or Faces switch the same multi-shell scope to that component type.'}
             </div>
           </Card>
         )}
@@ -178,7 +196,7 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
                   />
                   {referenceSource && (
                     <div className="px-0.5 text-[8px] leading-3 text-text-secondary/70">
-                      {referenceSource.shellCount} shell{referenceSource.shellCount === 1 ? '' : 's'} • {referenceSource.vertexCount} vertices • {referenceSource.triangleCount} triangles • {referenceSource.faceCount} faces
+                      {referenceSource.shellCount} Mesh Shell{referenceSource.shellCount === 1 ? '' : 's'} • {referenceSource.vertexCount} vertices • {referenceSource.triangleCount} triangles • {referenceSource.faceCount} faces
                     </div>
                   )}
                   <button
@@ -274,8 +292,8 @@ export const MeshAssetInspector: React.FC<MeshAssetInspectorProps> = ({
         {['VERTICES', 'EDGES', 'FACES'].includes(section) && (
           <div className="rounded-md border border-accent/20 bg-accent/5 p-2.5 text-[10px] leading-relaxed text-text-secondary">
             The hierarchy switched the viewport to <span className="text-accent font-semibold">{meshComponentMode}</span> mode.{' '}
-            {selectedShell && shellComponentLabel
-              ? `All ${shellComponentLabel.toLowerCase()} elements in ${selectedShell.name} are selected.`
+            {selectedShells.length > 0 && shellComponentLabel
+              ? `All ${shellComponentLabel.toLowerCase()} elements in the selected Mesh Shell scope are selected.`
               : 'Viewport picking and transform triggers are limited to that component type until Object mode is selected.'}
           </div>
         )}

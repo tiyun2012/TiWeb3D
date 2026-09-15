@@ -59,6 +59,8 @@ If the pointer moves at least 4 CSS pixels from the press position, the pending 
 
 The BVH remains responsible for mesh click/component raycasts; it does not own marquee gesture activation. Rectangle selection uses projected AABB broad phase plus projected mesh-triangle refinement after the UI gesture has already been classified as a marquee.
 
+Static Mesh component-mode clicks follow the same replace/toggle semantics as marquee selection. A plain LMB click that misses every component is a `REPLACE` with an empty component set, so the current component selection, soft-selection heatmap, hierarchy Mesh Shell scope, and gizmo all clear together. `Shift+LMB` on empty space is intentionally a no-op so additive/toggle workflows do not destroy the current selection. RMB/pie-menu opening also preserves component selection.
+
 ### View-through Camera picking suppression
 
 When a Scene Camera is bound as the active viewport camera, that camera entity is suppressed from both gizmo picking and object selection. The picking ray starts at the active camera position, so treating the bound Camera helper as a normal sphere pick target would make it the nearest hit for nearly every click. Other Camera entities remain selectable.
@@ -72,16 +74,36 @@ Selection does not own viewport navigation. Changing `selectedIds` or mesh sub-s
 
 ## Programmatic mesh-component selection
 
-UI surfaces that need to select known mesh component IDs (for example `Shell > Faces` in the Static Mesh
+UI surfaces that need to select known mesh component IDs (for example `Mesh Shell > Faces` in the Static Mesh
 hierarchy) must use `engine.api.commands.selection.setMeshComponents(...)`. The command delegates to
-`SelectionSystem.setMeshComponentSelection(...)`, which replaces the active sub-selection, clears deformation
-and hover state, recalculates soft selection, and publishes the normal UI notification. Do not assign or mutate
-`subSelection.vertexIds`, `edgeIds`, or `faceIds` from hierarchy/Inspector code.
+`SelectionSystem.setMeshComponentSelection(...)`, clears deformation/hover state, recalculates soft selection, and
+publishes the normal UI notification. Do not assign or mutate `subSelection.vertexIds`, `edgeIds`, or `faceIds` from
+hierarchy/Inspector/viewport code.
+
+Passing `ids: []` with `operation: 'REPLACE'` is the canonical API-level way to clear the active mesh-component domain. Viewport empty-click and empty replacement-marquee behavior should route through this same command rather than mutating the selection sets directly.
+
+The command accepts an operation:
+
+```ts
+engine.api.commands.selection.setMeshComponents({
+  mode: 'FACE',
+  ids: faceIds,
+  operation: 'REPLACE' | 'ADD' | 'SUBTRACT' | 'TOGGLE',
+});
+```
+
+`REPLACE` is the default. All operations remain confined to one component domain: selecting faces clears vertex/edge
+sub-selection, selecting edges clears vertex/face sub-selection, etc. Hierarchy and viewport Shift-click use `TOGGLE`,
+so they share one selection contract instead of maintaining parallel set-mutation logic.
 
 Mode switching remains a separate command: call `engine.api.commands.mesh.setComponentMode(...)` before
 programmatic selection when the action also changes component domain. Edge IDs must use the canonical
-`meshEdgeKey(a, b)` format so hierarchy-driven selection renders through the same edge overlay contract as
-viewport picking.
+`meshEdgeKey(a, b)` format so hierarchy-driven selection renders through the same edge overlay contract as viewport
+picking.
+
+A preview entity selected only to host component editing is **not** itself an actionable component selection. Gizmo
+visibility must inspect the active component domain only (`VERTEX`, `EDGE`, or `FACE`). Empty active-domain selection
+means no component gizmo, even if another domain contains stale IDs or an internal preview entity remains selected.
 
 ## Component hover contract
 

@@ -8,7 +8,11 @@ import { resolveMeshFocusTarget } from '@/editor/viewports/focusTargetResolvers'
 import type { EditorCommandCapability, EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
 import '@/editor/commands/StaticMeshCommandCatalogue';
 import { resolveAssetStaticMeshEditTarget } from '@/engine/mesh-editing/StaticMeshEditTarget';
-import { getStaticMeshShellComponentSelection, resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
+import {
+  getStaticMeshComponentSelection,
+  getStaticMeshShellsComponentSelection,
+  resolveStaticMeshShells,
+} from '@/engine/mesh-editing/StaticMeshShells';
 import {
   executeMarqueeSelection,
   resolveMarqueeOperation,
@@ -181,7 +185,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const [stats, setStats] = useState<{ verts: number; tris: number }>({ verts: 0, tris: 0 });
   const [pieMenu, setPieMenu] = useState<{ x: number; y: number } | null>(null);
   const [hierarchySection, setHierarchySection] = useState<MeshHierarchySection>('ASSET');
-  const [selectedShellId, setSelectedShellId] = useState<string | null>(null);
+  const [selectedShellIds, setSelectedShellIds] = useState<string[]>([]);
   const [leftDockCollapsed, setLeftDockCollapsed] = useState(false);
   const [materialId, setMaterialId] = useState<string>('');
   const materialIdRef = useRef<string>('');
@@ -226,6 +230,18 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const selectionBoxRef = useRef<SelectionBoxState | null>(null);
   const pendingComponentPressRef = useRef<PendingComponentPress | null>(null);
   const pendingObjectPressRef = useRef<PendingObjectPress | null>(null);
+
+  const changeMeshComponentMode = useCallback((mode: MeshComponentMode) => {
+    const engine = previewEngineRef.current;
+    if (mode === 'OBJECT' && engine && meshComponentModeRef.current !== 'OBJECT') {
+      // Component modes keep the preview entity selected only as an internal edit
+      // target. A mode-only switch back to Object must not reinterpret that hidden
+      // target as an explicit whole-object selection/gizmo. Hierarchy Asset/Geometry
+      // clicks opt into object selection separately via handleHierarchyObjectSelect().
+      engine.api.commands.selection.clear();
+    }
+    setMeshComponentMode(mode);
+  }, []);
 
   useEffect(() => {
     const refreshMeshAssets = (payload: { id?: string; type?: string } | undefined) => {
@@ -406,11 +422,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     };
 
     const previewEngine = new AssetViewportEngine(onNotifyUI, onGeometryUpdated, onGeometryFinalized);
-    const entityId = previewEngine.setPreviewMesh(assetId);
+    previewEngine.setPreviewMesh(assetId, { select: false });
     previewEngine.syncTransforms(false);
-    if (entityId) {
-      previewEngine.selectionSystem.setSelected([entityId]);
-    }
     previewEngine.meshComponentMode = meshComponentMode;
     previewEngine.api.commands.meshEditing.configureSoftSelection({
       enabled: softSelectionEnabled,
@@ -897,37 +910,51 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
 
   const commitPendingComponentClick = useCallback((pending: PendingComponentPress) => {
     const engine = previewEngineRef.current;
-    if (!engine || meshComponentModeRef.current !== pending.mode || !pending.picked) return;
+    if (!engine || meshComponentModeRef.current !== pending.mode) return;
 
-    // Once viewport picking changes the explicit shell-wide selection, the
-    // hierarchy must stop presenting that shell row as the active full scope.
-    setSelectedShellId(null);
-    engine.clearDeformation();
-    if (!pending.shiftKey) {
-      engine.selectionSystem.subSelection.vertexIds.clear();
-      engine.selectionSystem.subSelection.edgeIds.clear();
-      engine.selectionSystem.subSelection.faceIds.clear();
+    // A plain LMB click owns the component selection result. If it hits empty
+    // viewport space, REPLACE with an empty set so the gizmo/heatmap/hierarchy
+    // all observe "nothing selected", matching empty marquee behavior. Shift+LMB
+    // on empty space is a no-op so additive/toggle workflows preserve selection.
+    if (!pending.picked) {
+      if (!pending.shiftKey) {
+        setSelectedShellIds([]);
+        if (pending.mode === 'VERTEX') {
+          engine.api.commands.selection.setMeshComponents({ mode: 'VERTEX', ids: [], operation: 'REPLACE' });
+        } else if (pending.mode === 'EDGE') {
+          engine.api.commands.selection.setMeshComponents({ mode: 'EDGE', ids: [], operation: 'REPLACE' });
+        } else {
+          engine.api.commands.selection.setMeshComponents({ mode: 'FACE', ids: [], operation: 'REPLACE' });
+        }
+      }
+      return;
     }
+
+    // Once viewport picking changes an explicit hierarchy scope, the hierarchy
+    // stops presenting it as a full Mesh Shell/global selection. Route the click
+    // through the same public operation-aware API used by hierarchy multi-select.
+    setSelectedShellIds([]);
+    const operation = pending.shiftKey ? 'TOGGLE' : 'REPLACE';
 
     if (pending.mode === 'VERTEX') {
-      const id = pending.picked.vertexId;
-      if (pending.shiftKey && engine.selectionSystem.subSelection.vertexIds.has(id))
-        engine.selectionSystem.subSelection.vertexIds.delete(id);
-      else engine.selectionSystem.subSelection.vertexIds.add(id);
+      engine.api.commands.selection.setMeshComponents({
+        mode: 'VERTEX',
+        ids: [pending.picked.vertexId],
+        operation,
+      });
     } else if (pending.mode === 'EDGE') {
-      const id = meshEdgeKey(pending.picked.edgeId[0], pending.picked.edgeId[1]);
-      if (pending.shiftKey && engine.selectionSystem.subSelection.edgeIds.has(id))
-        engine.selectionSystem.subSelection.edgeIds.delete(id);
-      else engine.selectionSystem.subSelection.edgeIds.add(id);
+      engine.api.commands.selection.setMeshComponents({
+        mode: 'EDGE',
+        ids: [meshEdgeKey(pending.picked.edgeId[0], pending.picked.edgeId[1])],
+        operation,
+      });
     } else {
-      const id = pending.picked.faceId;
-      if (pending.shiftKey && engine.selectionSystem.subSelection.faceIds.has(id))
-        engine.selectionSystem.subSelection.faceIds.delete(id);
-      else engine.selectionSystem.subSelection.faceIds.add(id);
+      engine.api.commands.selection.setMeshComponents({
+        mode: 'FACE',
+        ids: [pending.picked.faceId],
+        operation,
+      });
     }
-
-    engine.recalculateSoftSelection();
-    engine.notifyUI();
   }, []);
 
   const handleMouseDown = (
@@ -1122,7 +1149,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         if (result.kind === 'OBJECTS') {
           engine.api.commands.selection.setSelected(result.selectedIds);
         } else if (result.kind === 'MESH_COMPONENTS') {
-          setSelectedShellId(null);
+          setSelectedShellIds([]);
         }
       } else if (pendingComponent && e.button === 0) {
         commitPendingComponentClick(pendingComponent);
@@ -1177,6 +1204,107 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       .map(asset => ({ id: asset.id, name: asset.name }));
   }, [currentAsset, assetRevision]);
 
+  const ensurePreviewSelectionTarget = useCallback((engine: AssetViewportEngine) => {
+    const previewEntityId = engine.entityId;
+    if (previewEntityId && !engine.selectionSystem.isSelected(previewEntityId)) {
+      engine.api.commands.selection.setSelected([previewEntityId]);
+    }
+  }, []);
+
+  const applyComponentSelection = useCallback((
+    engine: AssetViewportEngine,
+    mode: Exclude<MeshComponentMode, 'OBJECT'>,
+    selection: { vertexIds: number[]; edgeIds: string[]; faceIds: number[] },
+  ) => {
+    engine.api.commands.mesh.setComponentMode(mode);
+    if (mode === 'VERTEX') {
+      engine.api.commands.selection.setMeshComponents({ mode, ids: selection.vertexIds });
+    } else if (mode === 'EDGE') {
+      engine.api.commands.selection.setMeshComponents({ mode, ids: selection.edgeIds });
+    } else {
+      engine.api.commands.selection.setMeshComponents({ mode, ids: selection.faceIds });
+    }
+  }, []);
+
+  const applyShellSelection = useCallback((
+    shellIds: readonly string[],
+    mode: Exclude<MeshComponentMode, 'OBJECT'>,
+  ) => {
+    const asset = assetManager.getAsset(assetId);
+    const engine = previewEngineRef.current;
+    if (!asset || asset.type !== 'MESH' || !engine) return;
+
+    ensurePreviewSelectionTarget(engine);
+    const shellIdSet = new Set(shellIds);
+    const shells = resolveStaticMeshShells(asset as StaticMeshAsset).filter(shell => shellIdSet.has(shell.id));
+    const selection = getStaticMeshShellsComponentSelection(asset as StaticMeshAsset, shells);
+    applyComponentSelection(engine, mode, selection);
+    changeMeshComponentMode(mode);
+    setSelectedShellIds(shells.map(shell => shell.id));
+  }, [applyComponentSelection, assetId, changeMeshComponentMode, ensurePreviewSelectionTarget]);
+
+  const nextShellSelection = useCallback((
+    shellId: string,
+    operation: 'REPLACE' | 'TOGGLE',
+  ): string[] => {
+    if (operation === 'REPLACE') return [shellId];
+    return selectedShellIds.includes(shellId)
+      ? selectedShellIds.filter(id => id !== shellId)
+      : [...selectedShellIds, shellId];
+  }, [selectedShellIds]);
+
+  const handleShellSelect = useCallback((
+    shellId: string,
+    operation: 'REPLACE' | 'TOGGLE' = 'REPLACE',
+  ) => {
+    const next = nextShellSelection(shellId, operation);
+    // A Mesh Shell transform is a vertex-domain transform. The hierarchy keeps
+    // the user-facing scope as SHELL while the normal component/gizmo pipeline
+    // receives exactly the vertices owned by the selected shell(s).
+    applyShellSelection(next, 'VERTEX');
+    setHierarchySection(next.length > 0 ? 'SHELL' : 'GEOMETRY');
+  }, [applyShellSelection, nextShellSelection]);
+
+  const handleShellComponentSelect = useCallback((
+    shellId: string,
+    mode: Exclude<MeshComponentMode, 'OBJECT'>,
+    operation: 'REPLACE' | 'TOGGLE' = 'REPLACE',
+  ) => {
+    const next = nextShellSelection(shellId, operation);
+    applyShellSelection(next, mode);
+    setHierarchySection(
+      next.length === 0
+        ? 'GEOMETRY'
+        : mode === 'VERTEX'
+          ? 'VERTICES'
+          : mode === 'EDGE'
+            ? 'EDGES'
+            : 'FACES',
+    );
+  }, [applyShellSelection, nextShellSelection]);
+
+  const handleGlobalComponentSelect = useCallback((mode: Exclude<MeshComponentMode, 'OBJECT'>) => {
+    const asset = assetManager.getAsset(assetId);
+    const engine = previewEngineRef.current;
+    if (!asset || asset.type !== 'MESH' || !engine) return;
+
+    ensurePreviewSelectionTarget(engine);
+    applyComponentSelection(engine, mode, getStaticMeshComponentSelection(asset as StaticMeshAsset));
+    changeMeshComponentMode(mode);
+    setSelectedShellIds([]);
+  }, [applyComponentSelection, assetId, changeMeshComponentMode, ensurePreviewSelectionTarget]);
+
+  const handleHierarchyObjectSelect = useCallback(() => {
+    const engine = previewEngineRef.current;
+    if (!engine) return;
+    const previewEntityId = engine.entityId;
+    engine.api.commands.mesh.setComponentMode('OBJECT');
+    changeMeshComponentMode('OBJECT');
+    setSelectedShellIds([]);
+    if (previewEntityId) engine.api.commands.selection.setSelected([previewEntityId]);
+    else engine.api.commands.selection.clear();
+  }, [changeMeshComponentMode]);
+
   const handleAppendMesh = useCallback((sourceAssetId: string) => {
     const target = assetManager.getAsset(assetId);
     if (!target || target.type !== 'MESH') return;
@@ -1190,22 +1318,13 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
 
     const updated = assetManager.getAsset(target.id) as StaticMeshAsset;
     const appendedShells = resolveStaticMeshShells(updated).filter(shell => !previousShellIds.has(shell.id));
-    const appendedShell = appendedShells[appendedShells.length - 1] ?? null;
-    if (appendedShell) {
-      setSelectedShellId(appendedShell.id);
+    if (appendedShells.length > 0) {
+      applyShellSelection(appendedShells.map(shell => shell.id), 'VERTEX');
       setHierarchySection('SHELL');
-      setMeshComponentMode('OBJECT');
     }
+
     dirtyRef.current = 'FULL';
     previewEngineRef.current?.clearDeformation();
-    const previewEntityId = previewEngineRef.current?.entityId;
-    if (previewEngineRef.current && previewEntityId) {
-      previewEngineRef.current.selectionSystem.setSelected([previewEntityId], false);
-      previewEngineRef.current.selectionSystem.subSelection.vertexIds.clear();
-      previewEngineRef.current.selectionSystem.subSelection.edgeIds.clear();
-      previewEngineRef.current.selectionSystem.subSelection.faceIds.clear();
-      previewEngineRef.current.recalculateSoftSelection();
-    }
     setStats({
       verts: updated.geometry.vertices.length / 3,
       tris: updated.geometry.indices.length / 3,
@@ -1213,37 +1332,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     const fit = computeFitCamera(updated);
     setFitCamera(fit);
     setAssetRevision(value => value + 1);
-  }, [assetId]);
-
-  const handleShellComponentSelect = useCallback((
-    shellId: string,
-    mode: Exclude<MeshComponentMode, 'OBJECT'>,
-  ) => {
-    const asset = assetManager.getAsset(assetId);
-    if (!asset || asset.type !== 'MESH') return;
-    const shell = resolveStaticMeshShells(asset as StaticMeshAsset).find(candidate => candidate.id === shellId);
-    if (!shell) return;
-
-    const engine = previewEngineRef.current;
-    if (!engine) return;
-    const previewEntityId = engine.entityId;
-    if (previewEntityId && !engine.selectionSystem.isSelected(previewEntityId)) {
-      engine.api.commands.selection.setSelected([previewEntityId]);
-    }
-
-    // Keep this as the same public command path used by other editor surfaces:
-    // hierarchy selection changes mode first, then replaces that mode's IDs.
-    engine.api.commands.mesh.setComponentMode(mode);
-    const shellSelection = getStaticMeshShellComponentSelection(asset as StaticMeshAsset, shell);
-    if (mode === 'VERTEX') {
-      engine.api.commands.selection.setMeshComponents({ mode, ids: shellSelection.vertexIds });
-    } else if (mode === 'EDGE') {
-      engine.api.commands.selection.setMeshComponents({ mode, ids: shellSelection.edgeIds });
-    } else {
-      engine.api.commands.selection.setMeshComponents({ mode, ids: shellSelection.faceIds });
-    }
-    setSelectedShellId(shellId);
-  }, [assetId]);
+  }, [applyShellSelection, assetId]);
 
   const handleAddReferenceMesh = useCallback((sourceAssetId: string) => {
     const target = assetManager.getAsset(assetId);
@@ -1275,14 +1364,18 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const _tick = selectionTick;
   const isSelected = useMemo(() => {
     const engine = previewEngineRef.current;
-    return !!engine && engine.selectionSystem.selectedIndices.size > 0;
-  }, [selectionTick]);
+    if (!engine) return false;
+    if (meshComponentMode === 'VERTEX') return engine.selectionSystem.subSelection.vertexIds.size > 0;
+    if (meshComponentMode === 'EDGE') return engine.selectionSystem.subSelection.edgeIds.size > 0;
+    if (meshComponentMode === 'FACE') return engine.selectionSystem.subSelection.faceIds.size > 0;
+    return engine.selectionSystem.selectedIndices.size > 0;
+  }, [meshComponentMode, selectionTick]);
 
   const handleSelectLoop = (mode: MeshComponentMode = meshComponentMode) => {
     if (mode === 'OBJECT') return;
     const engine = previewEngineRef.current;
     if (!engine) return;
-    setSelectedShellId(null);
+    setSelectedShellIds([]);
     engine.meshComponentMode = mode;
     engine.selectionSystem.selectLoop(mode);
   };
@@ -1335,7 +1428,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       },
       services: {
         setTool,
-        setComponentMode: setMeshComponentMode,
+        setComponentMode: changeMeshComponentMode,
         focus: () => viewportRef.current?.focus(),
         resetCamera: focusCamera,
         toggleGrid: () => setShowGrid(value => !value),
@@ -1349,21 +1442,21 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         expandSelection: mode => {
           const engine = previewEngineRef.current;
           if (!engine || mode === 'OBJECT') return;
-          setSelectedShellId(null);
+          setSelectedShellIds([]);
           engine.meshComponentMode = mode;
           engine.selectionSystem.expandSelection(mode);
         },
         shrinkSelection: mode => {
           const engine = previewEngineRef.current;
           if (!engine || mode === 'OBJECT') return;
-          setSelectedShellId(null);
+          setSelectedShellIds([]);
           engine.meshComponentMode = mode;
           engine.selectionSystem.shrinkSelection(mode);
         },
         selectRing: mode => {
           const engine = previewEngineRef.current;
           if (!engine || mode !== 'EDGE') return;
-          setSelectedShellId(null);
+          setSelectedShellIds([]);
           engine.meshComponentMode = mode;
           engine.selectionSystem.selectRing(mode);
         },
@@ -1382,7 +1475,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     softSelectionConnectivity,
     softSelectionHeatmapVisible,
     setTool,
-    setMeshComponentMode,
+    changeMeshComponentMode,
     configureSoftSelection,
   ]);
 
@@ -1438,8 +1531,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           icon: mode === 'OBJECT' ? 'Box' : mode === 'VERTEX' ? 'CircleDot' : mode === 'EDGE' ? 'Spline' : 'Square',
           active: meshComponentMode === mode,
           onTrigger: () => {
-            setSelectedShellId(null);
-            setMeshComponentMode(mode);
+            setSelectedShellIds([]);
+            changeMeshComponentMode(mode);
             setHierarchySection(
               mode === 'VERTEX' ? 'VERTICES' : mode === 'EDGE' ? 'EDGES' : mode === 'FACE' ? 'FACES' : 'GEOMETRY',
             );
@@ -1486,10 +1579,15 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             activeSection={hierarchySection}
             meshComponentMode={meshComponentMode}
             onSectionChange={setHierarchySection}
-            onMeshComponentModeChange={setMeshComponentMode}
-            selectedShellId={selectedShellId}
-            onShellSelect={setSelectedShellId}
+            onMeshComponentModeChange={changeMeshComponentMode}
+            selectedShellIds={selectedShellIds}
+            onShellSelect={(shellId, operation) => {
+              if (shellId) handleShellSelect(shellId, operation ?? 'REPLACE');
+              else setSelectedShellIds([]);
+            }}
             onShellComponentSelect={handleShellComponentSelect}
+            onGlobalComponentSelect={handleGlobalComponentSelect}
+            onObjectSelect={handleHierarchyObjectSelect}
             assetRevision={assetRevision}
             selectionCounts={selectionCounts}
             softSelectionEnabled={softSelectionEnabled}
@@ -1513,7 +1611,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             activeSection={hierarchySection}
             meshComponentMode={meshComponentMode}
             onSectionChange={setHierarchySection}
-            onMeshComponentModeChange={setMeshComponentMode}
+            onMeshComponentModeChange={changeMeshComponentMode}
             assetRevision={assetRevision}
           />
         )
@@ -1532,7 +1630,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           referenceMeshes={referenceMeshes}
           onAddReferenceMesh={handleAddReferenceMesh}
           onRemoveReferenceMesh={handleRemoveReferenceMesh}
-          selectedShellId={selectedShellId}
+          selectedShellIds={selectedShellIds}
           assetRevision={assetRevision}
         />
       }
@@ -1595,8 +1693,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
                   currentMode={meshComponentMode}
                   onSelectMode={m => {
                     if (assetViewportAllows(currentAsset.type, meshModeActionId(m))) {
-                      setSelectedShellId(null);
-                      setMeshComponentMode(m);
+                      setSelectedShellIds([]);
+                      changeMeshComponentMode(m);
                       setHierarchySection(
                         m === 'VERTEX' ? 'VERTICES' : m === 'EDGE' ? 'EDGES' : m === 'FACE' ? 'FACES' : 'GEOMETRY',
                       );

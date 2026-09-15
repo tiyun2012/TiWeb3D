@@ -94,7 +94,7 @@ export class AssetViewportEngine implements IEngine {
     }
 
     /** Ensure a single preview mesh entity exists and points at the given mesh asset. */
-    setPreviewMesh(meshAssetId: string): string {
+    setPreviewMesh(meshAssetId: string, options: { select?: boolean } = {}): string {
         const meshIntId = assetManager.getMeshID(meshAssetId);
 
         if (!this.previewEntityId) {
@@ -110,8 +110,10 @@ export class AssetViewportEngine implements IEngine {
             this.ecs.store.meshType[idx] = meshIntId;
         }
 
-        // Default to selected in object mode for UX parity with scene viewport
-        this.selectionSystem.setSelected([this.previewEntityId]);
+        // Selection is host-owned. Static Mesh Editor opens with no actionable
+        // selection so the gizmo cannot appear at the origin before the user
+        // chooses an object, Mesh Shell, or component scope.
+        if (options.select !== false) this.selectionSystem.setSelected([this.previewEntityId]);
         return this.previewEntityId;
     }
 

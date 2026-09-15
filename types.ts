@@ -153,6 +153,11 @@ export interface LogicalMesh {
     faces: number[][];
     triangleToFaceIndex: Int32Array;
     vertexToFaces: Map<number, number[]>;
+    /**
+     * Explicit logical-weld groups for render vertices split by an authored/imported
+     * seam (for example UV or normals). Equal XYZ positions alone never create a
+     * sibling relationship. Mesh Shell connectivity may use these groups.
+     */
     siblings?: Map<number, number[]>;
     graph?: MeshTopology;
     bvh?: any;
@@ -164,8 +169,9 @@ export interface StaticMeshIdRange {
 }
 
 /**
- * Authored geometry part inside a Static Mesh. Shells reference component ID
- * ranges owned by geometry/topology; they never duplicate vertex or face data.
+ * Authored Mesh Shell metadata inside a Static Mesh. A Mesh Shell is a connected
+ * component of polygon topology. Metadata references component IDs owned by the
+ * geometry/topology and never duplicates vertex or face data.
  */
 export interface StaticMeshShell {
     id: string;
@@ -190,7 +196,7 @@ export interface StaticMeshAsset extends Asset {
     type: 'MESH' | 'SKELETAL_MESH';
     topology: LogicalMesh;
     geometry: MeshGeometry;
-    /** Optional shell naming/provenance metadata. Actual shell membership is detected from logical topology. */
+    /** Optional Mesh Shell naming/provenance metadata. Actual membership is detected from logical topology. */
     shells?: StaticMeshShell[];
     /** Optional asset-default material. Empty/undefined uses built-in Standard Lambert. */
     materialId?: string;

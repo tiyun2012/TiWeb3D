@@ -25,9 +25,11 @@ export interface StaticMeshToolDockProps {
   meshComponentMode: MeshComponentMode;
   onSectionChange: (section: MeshHierarchySection) => void;
   onMeshComponentModeChange: (mode: MeshComponentMode) => void;
-  selectedShellId?: string | null;
-  onShellSelect?: (shellId: string | null) => void;
-  onShellComponentSelect?: (shellId: string, mode: Exclude<MeshComponentMode, 'OBJECT'>) => void;
+  selectedShellIds?: readonly string[];
+  onShellSelect?: (shellId: string | null, operation?: 'REPLACE' | 'TOGGLE') => void;
+  onShellComponentSelect?: (shellId: string, mode: Exclude<MeshComponentMode, 'OBJECT'>, operation?: 'REPLACE' | 'TOGGLE') => void;
+  onGlobalComponentSelect?: (mode: Exclude<MeshComponentMode, 'OBJECT'>) => void;
+  onObjectSelect?: () => void;
   assetRevision?: number;
   selectionCounts: MeshSelectionCounts;
   softSelectionEnabled: boolean;
@@ -190,9 +192,11 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   meshComponentMode,
   onSectionChange,
   onMeshComponentModeChange,
-  selectedShellId = null,
+  selectedShellIds = [],
   onShellSelect,
   onShellComponentSelect,
+  onGlobalComponentSelect,
+  onObjectSelect,
   assetRevision = 0,
   selectionCounts,
   softSelectionEnabled,
@@ -376,9 +380,12 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
               meshComponentMode={meshComponentMode}
               onSectionChange={onSectionChange}
               onMeshComponentModeChange={onMeshComponentModeChange}
-              selectedShellId={selectedShellId}
+              selectedShellIds={selectedShellIds}
               onShellSelect={onShellSelect}
               onShellComponentSelect={onShellComponentSelect}
+              onGlobalComponentSelect={onGlobalComponentSelect}
+              onObjectSelect={onObjectSelect}
+              selectionCounts={selectionCounts}
               assetRevision={assetRevision}
               showHeader={false}
             />
@@ -419,7 +426,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                   />
                   {appendSource && (
                     <div className="px-0.5 text-[8px] leading-3 text-text-secondary/70">
-                      {appendSource.shellCount} shell{appendSource.shellCount === 1 ? '' : 's'} • {appendSource.vertexCount} vertices • {appendSource.triangleCount} triangles • {appendSource.faceCount} faces
+                      {appendSource.shellCount} Mesh Shell{appendSource.shellCount === 1 ? '' : 's'} • {appendSource.vertexCount} vertices • {appendSource.triangleCount} triangles • {appendSource.faceCount} faces
                     </div>
                   )}
                   <button
@@ -555,7 +562,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                   />
                   <div className="text-[8px] leading-3 text-text-secondary/70">
                     {softSelectionConnectivity === 'NONE'
-                      ? 'Distance only; disconnected shells may be influenced.'
+                      ? 'Distance only; disconnected Mesh Shells may be influenced.'
                       : softSelectionConnectivity === 'SAME_ISLAND'
                         ? 'Restrict influence to topology connected to the selection.'
                         : 'Flood connected neighbors only while they remain inside the spatial radius.'}

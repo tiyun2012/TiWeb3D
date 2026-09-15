@@ -10,7 +10,6 @@ import { eventBus } from './EventBus';
 import { createDefaultCameraSettings } from './camera/CameraSettings';
 import { createDefaultViewportProfileSettings } from './viewport/ViewportProfileSettings';
 import { materializeStaticMeshShell, resolveStaticMeshShells } from './mesh-editing/StaticMeshShells';
-import { MESH_SIBLING_POSITION_QUANTIZATION } from './mesh-editing/MeshConnectivity';
 
 export interface RigTemplate {
     name: string;
@@ -100,35 +99,10 @@ class AssetManagerService {
         };
     }
 
-    // Helper to identify coincident vertices
-    private computeSiblings(vertices: Float32Array | number[]): Map<number, number[]> {
-        const siblings = new Map<number, number[]>();
-        const posMap = new Map<string, number[]>();
-        
-        const v = vertices instanceof Float32Array ? vertices : new Float32Array(vertices);
-        const count = v.length / 3;
-
-        for(let i=0; i<count; i++) {
-            // Quantize to merge close vertices
-            const x = Math.round(v[i*3] * MESH_SIBLING_POSITION_QUANTIZATION);
-            const y = Math.round(v[i*3+1] * MESH_SIBLING_POSITION_QUANTIZATION);
-            const z = Math.round(v[i*3+2] * MESH_SIBLING_POSITION_QUANTIZATION);
-            const key = `${x},${y},${z}`;
-            
-            if(!posMap.has(key)) posMap.set(key, []);
-            posMap.get(key)!.push(i);
-        }
-
-        posMap.forEach(group => {
-            if (group.length > 1) {
-                group.forEach(idx => {
-                    siblings.set(idx, group);
-                });
-            }
-        });
-        
-        return siblings;
-    }
+    // Mesh connectivity is authored explicitly. Coincident XYZ positions are not
+    // treated as a topological weld; importers/generators may provide sibling
+    // groups only when the source format explicitly says the render vertices
+    // represent the same logical mesh vertex.
 
     private createDefaultPhysicsMaterials() {
         this.createPhysicsMaterial('Concrete', { staticFriction: 0.8, dynamicFriction: 0.7, bounciness: 0.1, density: 2.4 });
@@ -533,7 +507,9 @@ class AssetManagerService {
         }
 
         const v2f = new Map<number, number[]>();
-        const siblings = this.computeSiblings(geometryData.v);
+        const siblings: Map<number, number[]> = geometryData.siblings instanceof Map
+            ? new Map(Array.from(geometryData.siblings.entries(), ([vertexId, group]) => [vertexId, [...group]]))
+            : new Map<number, number[]>();
 
         if (geometryData.faces) {
             geometryData.faces.forEach((f: number[], i: number) => {
@@ -542,7 +518,7 @@ class AssetManagerService {
                     if(!v2f.has(vIdx)) v2f.set(vIdx, []);
                     if(!v2f.get(vIdx)!.includes(i)) v2f.get(vIdx)!.push(i);
 
-                    // Propagate to siblings (Spatial Welding for connectivity)
+                    // Propagate only through authored/imported logical welds.
                     if (siblings.has(vIdx)) {
                         siblings.get(vIdx)!.forEach(sib => {
                             if(!v2f.has(sib)) v2f.set(sib, []);
@@ -557,7 +533,7 @@ class AssetManagerService {
             faces: geometryData.faces || [],
             triangleToFaceIndex: new Int32Array(geometryData.triToFace || []),
             vertexToFaces: v2f,
-            siblings // Store siblings map for edge walking
+            siblings // Explicit logical weld groups only; never inferred from position.
         };
         
         if (geometryData.v.length > 0) {
@@ -661,6 +637,10 @@ eventBus.emit('ASSET_CREATED', { id: skeletonAsset.id, type: 'SKELETON' });
         const logicalFaces: number[][] = [];
         const triToFace: number[] = [];
         const cache = new Map<string, number>();
+        // OBJ position indices are source-authored logical vertex identity. If one
+        // position index is split into multiple render vertices by UV/normal seams,
+        // preserve that relationship explicitly instead of guessing from XYZ.
+        const renderVerticesByPositionIndex = new Map<number, number[]>();
         let nextIdx = 0;
         
         const lines = text.split('\n');
@@ -681,18 +661,27 @@ eventBus.emit('ASSET_CREATED', { id: skeletonAsset.id, type: 'SKELETON' });
                     return idx < 0 ? arrayLength + idx : idx - 1;
                 };
                 for (const vertStr of poly) {
-                    if (cache.has(vertStr)) {
-                        polyVertIndices.push(cache.get(vertStr)!);
+                    const subParts = vertStr.split('/');
+                    const vI = resolveIndex(subParts[0], positions.length);
+                    const tI = subParts.length > 1 && subParts[1] ? resolveIndex(subParts[1], uvs.length) : -1;
+                    const nI = subParts.length > 2 && subParts[2] ? resolveIndex(subParts[2], normals.length) : -1;
+                    // Cache by resolved source indices, not the raw token. This keeps
+                    // negative OBJ indices correct and preserves source topology identity.
+                    const renderKey = `${vI}/${tI}/${nI}`;
+                    if (cache.has(renderKey)) {
+                        polyVertIndices.push(cache.get(renderKey)!);
                     } else {
-                        const subParts = vertStr.split('/');
-                        const vI = resolveIndex(subParts[0], positions.length);
-                        const tI = subParts.length > 1 ? resolveIndex(subParts[1], uvs.length) : -1;
-                        const nI = subParts.length > 2 ? resolveIndex(subParts[2], normals.length) : -1;
                         const pos = positions[vI] || [0,0,0];
                         const uv = (tI !== -1 && uvs[tI]) ? uvs[tI] : [0,0];
                         const norm = (nI !== -1 && normals[nI]) ? normals[nI] : [0,1,0];
                         finalV.push(...pos); finalN.push(...norm); finalU.push(...uv);
-                        cache.set(vertStr, nextIdx);
+                        cache.set(renderKey, nextIdx);
+                        let logicalGroup = renderVerticesByPositionIndex.get(vI);
+                        if (!logicalGroup) {
+                            logicalGroup = [];
+                            renderVerticesByPositionIndex.set(vI, logicalGroup);
+                        }
+                        logicalGroup.push(nextIdx);
                         polyVertIndices.push(nextIdx++);
                     }
                 }
@@ -705,7 +694,16 @@ eventBus.emit('ASSET_CREATED', { id: skeletonAsset.id, type: 'SKELETON' });
             }
         }
         this.generateMissingNormals(finalV, finalN, finalIdx);
-        return { v: finalV, n: finalN, u: finalU, idx: finalIdx, faces: logicalFaces, triToFace };
+
+        const siblings = new Map<number, number[]>();
+        renderVerticesByPositionIndex.forEach(group => {
+            const normalized = Array.from(new Set(group)).sort((a, b) => a - b);
+            if (normalized.length < 2) return;
+            normalized.forEach(vertexId => siblings.set(vertexId, normalized));
+        });
+
+        return { v: finalV, n: finalN, u: finalU, idx: finalIdx, faces: logicalFaces, triToFace, siblings };
+
     }
 
     private async parseFBX(content: ArrayBuffer | string, importScale: number, detectQuads: boolean) {
@@ -1134,15 +1132,19 @@ private reconstructQuads(
         const data = generator();
         const v2f = new Map<number, number[]>();
         
-        // Compute siblings for hard-edge traversal support
-        const siblings = this.computeSiblings(data.v);
+        // Procedural generators may provide explicit logical weld groups. The
+        // current Cube intentionally provides none: its six faces use 24 distinct
+        // vertices and therefore resolve as six Mesh Shells.
+        const siblings: Map<number, number[]> = data.siblings instanceof Map
+            ? new Map(Array.from(data.siblings.entries(), ([vertexId, group]) => [vertexId, [...group]]))
+            : new Map<number, number[]>();
 
         data.faces?.forEach((f: number[], i: number) => {
             f.forEach(vIdx => {
                 if(!v2f.has(vIdx)) v2f.set(vIdx, []);
                 if(!v2f.get(vIdx)!.includes(i)) v2f.get(vIdx)!.push(i);
                 
-                // Propagate to siblings
+                // Propagate only through explicit logical welds.
                 if (siblings.has(vIdx)) {
                     siblings.get(vIdx)!.forEach(sib => {
                         if(!v2f.has(sib)) v2f.set(sib, []);
@@ -1159,7 +1161,7 @@ private reconstructQuads(
             faces: data.faces, 
             triangleToFaceIndex: new Int32Array(data.triToFace), 
             vertexToFaces: v2f,
-            siblings // Store siblings map
+            siblings // Explicit logical weld groups only.
         };
         
         if (data.faces) topology.graph = MeshTopologyUtils.buildTopology(topology, data.v.length / 3);

@@ -21,9 +21,15 @@ export interface MeshAssetHierarchyProps {
   meshComponentMode: MeshComponentMode;
   onSectionChange: (section: MeshHierarchySection) => void;
   onMeshComponentModeChange: (mode: MeshComponentMode) => void;
-  selectedShellId?: string | null;
-  onShellSelect?: (shellId: string | null) => void;
-  onShellComponentSelect?: (shellId: string, mode: Exclude<MeshComponentMode, 'OBJECT'>) => void;
+  selectedShellIds?: readonly string[];
+  onShellSelect?: (shellId: string | null, operation?: 'REPLACE' | 'TOGGLE') => void;
+  onShellComponentSelect?: (shellId: string, mode: Exclude<MeshComponentMode, 'OBJECT'>, operation?: 'REPLACE' | 'TOGGLE') => void;
+  /** Static Mesh global Components rows select every component of the requested type. */
+  onGlobalComponentSelect?: (mode: Exclude<MeshComponentMode, 'OBJECT'>) => void;
+  /** Select the whole preview object when Asset/Geometry is explicitly clicked. */
+  onObjectSelect?: () => void;
+  /** Live selection counts distinguish mode-only switches from asset-wide select-all scopes. */
+  selectionCounts?: { object: number; vertices: number; edges: number; faces: number };
   /** Reactive revision for AssetManager assets, which are mutated in place. */
   assetRevision?: number;
   showHeader?: boolean;
@@ -65,9 +71,12 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
   meshComponentMode,
   onSectionChange,
   onMeshComponentModeChange,
-  selectedShellId = null,
+  selectedShellIds = [],
   onShellSelect,
   onShellComponentSelect,
+  onGlobalComponentSelect,
+  onObjectSelect,
+  selectionCounts,
   assetRevision = 0,
   showHeader = true,
 }) => {
@@ -98,40 +107,48 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
   }, [asset, shells, assetRevision]);
 
   useEffect(() => {
-    if (!selectedShellId) return;
+    if (selectedShellIds.length === 0) return;
     setGeometryExpanded(true);
     setShellsExpanded(true);
     setExpandedShellIds(current => {
-      if (current.has(selectedShellId)) return current;
       const next = new Set(current);
-      next.add(selectedShellId);
-      return next;
+      let changed = false;
+      selectedShellIds.forEach(shellId => {
+        if (!next.has(shellId)) {
+          next.add(shellId);
+          changed = true;
+        }
+      });
+      return changed ? next : current;
     });
-  }, [selectedShellId]);
+  }, [selectedShellIds]);
 
   const selectMeshMode = (section: MeshHierarchySection, mode: MeshComponentMode) => {
     if (!assetViewportAllows(asset.type, meshModeActionId(mode))) return;
     onShellSelect?.(null);
     onSectionChange(section);
     onMeshComponentModeChange(mode);
+    if (mode !== 'OBJECT') onGlobalComponentSelect?.(mode);
   };
 
-  const selectShell = (shellId: string) => {
+  const selectShell = (shellId: string, event: React.MouseEvent) => {
+    if (!assetViewportAllows(asset.type, meshModeActionId('VERTEX'))) return;
     onSectionChange('SHELL');
-    if (assetViewportAllows(asset.type, 'mesh.object')) onMeshComponentModeChange('OBJECT');
-    onShellSelect?.(shellId);
+    // Mesh Shell transforms intentionally use the existing vertex deformation path.
+    onMeshComponentModeChange('VERTEX');
+    onShellSelect?.(shellId, event.shiftKey ? 'TOGGLE' : 'REPLACE');
   };
 
   const selectShellComponent = (
     shellId: string,
     section: Extract<MeshHierarchySection, 'VERTICES' | 'EDGES' | 'FACES'>,
     mode: Exclude<MeshComponentMode, 'OBJECT'>,
+    event: React.MouseEvent,
   ) => {
     if (!assetViewportAllows(asset.type, meshModeActionId(mode))) return;
-    onShellSelect?.(shellId);
     onSectionChange(section);
     onMeshComponentModeChange(mode);
-    onShellComponentSelect?.(shellId, mode);
+    onShellComponentSelect?.(shellId, mode, event.shiftKey ? 'TOGGLE' : 'REPLACE');
   };
 
   const toggleShell = (shellId: string) => {
@@ -164,6 +181,7 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
             onShellSelect?.(null);
             onSectionChange('ASSET');
             if (assetViewportAllows(asset.type, 'mesh.object')) onMeshComponentModeChange('OBJECT');
+            onObjectSelect?.();
           }}
         />
 
@@ -182,12 +200,13 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
             onShellSelect?.(null);
             onSectionChange('GEOMETRY');
             if (assetViewportAllows(asset.type, 'mesh.object')) onMeshComponentModeChange('OBJECT');
+            onObjectSelect?.();
           }}
         >
           {asset.type === 'MESH' && (
             <HierarchyTreeItem
               id={`${asset.id}:shells`}
-              name="Shells"
+              name="Mesh Shells"
               depth={2}
               icon="Layers3"
               badge={<CountBadge value={shells.length} />}
@@ -203,17 +222,17 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
                   <HierarchyTreeItem
                     key={shell.id}
                     id={`${asset.id}:shell:${shell.id}`}
-                    name={`Shell ${index} · ${shell.name}`}
+                    name={`Mesh Shell ${index} · ${shell.name}`}
                     depth={3}
                     icon="Box"
                     iconColor="text-blue-300"
                     badge={<ShellSummaryBadge vertices={shellCount.vertices} faces={shellCount.faces} />}
                     hasChildren
                     isExpanded={expanded}
-                    isSelected={activeSection === 'SHELL' && selectedShellId === shell.id}
+                    isSelected={activeSection === 'SHELL' && selectedShellIds.includes(shell.id)}
                     canRename={false}
                     onToggleExpand={() => toggleShell(shell.id)}
-                    onSelect={() => selectShell(shell.id)}
+                    onSelect={event => selectShell(shell.id, event)}
                   >
                     <HierarchyTreeItem
                       id={`${asset.id}:shell:${shell.id}:vertices`}
@@ -221,9 +240,9 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
                       depth={4}
                       icon="CircleDot"
                       badge={<CountBadge value={shellCount.vertices} />}
-                      isSelected={selectedShellId === shell.id && activeSection === 'VERTICES' && meshComponentMode === 'VERTEX'}
+                      isSelected={selectedShellIds.includes(shell.id) && activeSection === 'VERTICES' && meshComponentMode === 'VERTEX'}
                       canRename={false}
-                      onSelect={() => selectShellComponent(shell.id, 'VERTICES', 'VERTEX')}
+                      onSelect={event => selectShellComponent(shell.id, 'VERTICES', 'VERTEX', event)}
                     />
                     <HierarchyTreeItem
                       id={`${asset.id}:shell:${shell.id}:edges`}
@@ -231,9 +250,9 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
                       depth={4}
                       icon="Spline"
                       badge={<CountBadge value={shellCount.edges} />}
-                      isSelected={selectedShellId === shell.id && activeSection === 'EDGES' && meshComponentMode === 'EDGE'}
+                      isSelected={selectedShellIds.includes(shell.id) && activeSection === 'EDGES' && meshComponentMode === 'EDGE'}
                       canRename={false}
-                      onSelect={() => selectShellComponent(shell.id, 'EDGES', 'EDGE')}
+                      onSelect={event => selectShellComponent(shell.id, 'EDGES', 'EDGE', event)}
                     />
                     <HierarchyTreeItem
                       id={`${asset.id}:shell:${shell.id}:faces`}
@@ -241,9 +260,9 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
                       depth={4}
                       icon="Square"
                       badge={<CountBadge value={shellCount.faces} />}
-                      isSelected={selectedShellId === shell.id && activeSection === 'FACES' && meshComponentMode === 'FACE'}
+                      isSelected={selectedShellIds.includes(shell.id) && activeSection === 'FACES' && meshComponentMode === 'FACE'}
                       canRename={false}
-                      onSelect={() => selectShellComponent(shell.id, 'FACES', 'FACE')}
+                      onSelect={event => selectShellComponent(shell.id, 'FACES', 'FACE', event)}
                     />
                   </HierarchyTreeItem>
                 );
@@ -264,31 +283,31 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
             >
               <HierarchyTreeItem
                 id={`${asset.id}:vertices`}
-                name="Vertices"
+                name="All Vertices"
                 depth={3}
                 icon="CircleDot"
                 badge={<CountBadge value={counts.vertices} />}
-                isSelected={!selectedShellId && (activeSection === 'VERTICES' || meshComponentMode === 'VERTEX')}
+                isSelected={selectedShellIds.length === 0 && meshComponentMode === 'VERTEX' && (selectionCounts?.vertices ?? 0) === counts.vertices && counts.vertices > 0}
                 canRename={false}
                 onSelect={() => selectMeshMode('VERTICES', 'VERTEX')}
               />
               <HierarchyTreeItem
                 id={`${asset.id}:edges`}
-                name="Edges"
+                name="All Edges"
                 depth={3}
                 icon="Spline"
                 badge={<CountBadge value={counts.edges} />}
-                isSelected={!selectedShellId && (activeSection === 'EDGES' || meshComponentMode === 'EDGE')}
+                isSelected={selectedShellIds.length === 0 && meshComponentMode === 'EDGE' && (selectionCounts?.edges ?? 0) === counts.edges && counts.edges > 0}
                 canRename={false}
                 onSelect={() => selectMeshMode('EDGES', 'EDGE')}
               />
               <HierarchyTreeItem
                 id={`${asset.id}:faces`}
-                name="Faces"
+                name="All Faces"
                 depth={3}
                 icon="Square"
                 badge={<CountBadge value={counts.faces} />}
-                isSelected={!selectedShellId && (activeSection === 'FACES' || meshComponentMode === 'FACE')}
+                isSelected={selectedShellIds.length === 0 && meshComponentMode === 'FACE' && (selectionCounts?.faces ?? 0) === counts.faces && counts.faces > 0}
                 canRename={false}
                 onSelect={() => selectMeshMode('FACES', 'FACE')}
               />

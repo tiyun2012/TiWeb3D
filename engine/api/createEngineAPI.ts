@@ -27,7 +27,7 @@ export function createEngineAPI(engine: any = engineInstance): EngineAPI {
         },
         setMeshComponents(args) {
           if (!engine.selectionSystem?.setMeshComponentSelection) return;
-          engine.selectionSystem.setMeshComponentSelection(args.mode, args.ids);
+          engine.selectionSystem.setMeshComponentSelection(args.mode, args.ids, args.operation ?? 'REPLACE');
         },
         selectMeshComponentsInRect(args) {
           if (!engine.selectionSystem?.selectMeshComponentsInRect) return 0;

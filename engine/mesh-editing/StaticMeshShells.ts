@@ -126,10 +126,12 @@ interface DetectedShellComponent {
 }
 
 /**
- * Detect actual mesh shells from authored topology, not from asset metadata.
- * Faces are connected only through a logical polygon edge. Persistent sibling
- * groups make hard-normal/UV seams behave as welded topology without using
- * current positions, so a 24-render-vertex cube still resolves as one shell.
+ * Detect actual Mesh Shells from authored topology, not from asset metadata.
+ * Faces are connected only through a logical polygon edge. `siblings` are allowed
+ * to bridge a render seam only when that relationship was explicitly authored or
+ * imported. Coincident XYZ positions never create connectivity. Therefore the
+ * built-in 24-vertex Cube (six independent quads, no authored welds) resolves as
+ * six Mesh Shells.
  */
 function detectStaticMeshShellComponents(asset: StaticMeshAsset): DetectedShellComponent[] {
   const vertexCount = Math.floor(asset.geometry.vertices.length / 3);
@@ -232,7 +234,7 @@ const overlapCount = (a: readonly number[], b: readonly number[]): number => {
 };
 
 /**
- * Resolve hierarchy shells from actual topology. Saved `asset.shells` data is
+ * Resolve hierarchy Mesh Shells from actual topology. Saved `asset.shells` data is
  * treated only as naming/provenance metadata and is validated against detected
  * connected components, so stale/imported metadata cannot hide real shells.
  */
@@ -281,7 +283,7 @@ export function resolveStaticMeshShells(asset: StaticMeshAsset): ResolvedStaticM
   });
 }
 
-/** Materialize a resolved shell back into saved metadata after composition. */
+/** Materialize a resolved Mesh Shell back into saved metadata after composition. */
 export function materializeStaticMeshShell(shell: ResolvedStaticMeshShell): StaticMeshShell {
   return {
     id: shell.id,
@@ -339,6 +341,48 @@ export interface StaticMeshShellComponentSelection {
   faceIds: number[];
 }
 
+/** Resolve every editable mesh component ID in the asset. */
+export function getStaticMeshComponentSelection(asset: StaticMeshAsset): StaticMeshShellComponentSelection {
+  const vertexCount = Math.floor(asset.geometry.vertices.length / 3);
+  const vertexIds = Array.from({ length: vertexCount }, (_, id) => id);
+  const faceIds: number[] = [];
+  const edgeIds = new Set<string>();
+  const faces = logicalFacesForAsset(asset).faces;
+
+  faces.forEach((face, faceId) => {
+    faceIds.push(faceId);
+    if (!face || face.length < 2) return;
+    for (let i = 0; i < face.length; i += 1) {
+      edgeIds.add(meshEdgeKey(face[i], face[(i + 1) % face.length]));
+    }
+  });
+
+  return { vertexIds, edgeIds: Array.from(edgeIds), faceIds };
+}
+
+/** Union component IDs across multiple resolved Mesh Shells. */
+export function getStaticMeshShellsComponentSelection(
+  asset: StaticMeshAsset,
+  shells: Iterable<ResolvedStaticMeshShell>,
+): StaticMeshShellComponentSelection {
+  const vertexIds = new Set<number>();
+  const edgeIds = new Set<string>();
+  const faceIds = new Set<number>();
+
+  for (const shell of shells) {
+    const selection = getStaticMeshShellComponentSelection(asset, shell);
+    selection.vertexIds.forEach(id => vertexIds.add(id));
+    selection.edgeIds.forEach(id => edgeIds.add(id));
+    selection.faceIds.forEach(id => faceIds.add(id));
+  }
+
+  return {
+    vertexIds: Array.from(vertexIds).sort((a, b) => a - b),
+    edgeIds: Array.from(edgeIds),
+    faceIds: Array.from(faceIds).sort((a, b) => a - b),
+  };
+}
+
 /**
  * Resolves the existing global component IDs owned by one detected shell. The
  * hierarchy can therefore switch mode + select the shell without maintaining a
@@ -369,7 +413,7 @@ export function getStaticMeshShellComponentSelection(
 /**
  * Transaction-boundary maintenance for direct Static Mesh deformation. Existing
  * render-vertex welds are allowed to split when their members were edited apart,
- * then shell metadata is rematerialized from the repaired topology. This never
+ * then Mesh Shell metadata is rematerialized from the repaired topology. This never
  * creates new welds from positional contact.
  */
 export function finalizeStaticMeshTopologyAfterGeometryEdit(asset: StaticMeshAsset) {
