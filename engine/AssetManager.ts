@@ -9,6 +9,8 @@ import * as THREE from 'three';
 import { eventBus } from './EventBus';
 import { createDefaultCameraSettings } from './camera/CameraSettings';
 import { createDefaultViewportProfileSettings } from './viewport/ViewportProfileSettings';
+import { materializeStaticMeshShell, resolveStaticMeshShells } from './mesh-editing/StaticMeshShells';
+import { MESH_SIBLING_POSITION_QUANTIZATION } from './mesh-editing/MeshConnectivity';
 
 export interface RigTemplate {
     name: string;
@@ -108,9 +110,9 @@ class AssetManagerService {
 
         for(let i=0; i<count; i++) {
             // Quantize to merge close vertices
-            const x = Math.round(v[i*3] * 10000);
-            const y = Math.round(v[i*3+1] * 10000);
-            const z = Math.round(v[i*3+2] * 10000);
+            const x = Math.round(v[i*3] * MESH_SIBLING_POSITION_QUANTIZATION);
+            const y = Math.round(v[i*3+1] * MESH_SIBLING_POSITION_QUANTIZATION);
+            const z = Math.round(v[i*3+2] * MESH_SIBLING_POSITION_QUANTIZATION);
             const key = `${x},${y},${z}`;
             
             if(!posMap.has(key)) posMap.set(key, []);
@@ -184,6 +186,7 @@ class AssetManagerService {
                 aabb: undefined,
             },
             topology,
+            shells: [],
         };
 
         this.registerAsset(asset);
@@ -628,7 +631,20 @@ eventBus.emit('ASSET_CREATED', { id: skeletonAsset.id, type: 'SKELETON' });
              return skelAsset;
         }
 
-        const staticAsset: StaticMeshAsset = { ...assetBase, type: 'MESH' };
+        const staticAsset: StaticMeshAsset = {
+            ...assetBase,
+            type: 'MESH',
+            shells: vertexCount > 0 ? [{
+                id: crypto.randomUUID(),
+                name,
+                vertexIds: { start: 0, endExclusive: vertexCount },
+                triangleIds: { start: 0, endExclusive: Math.floor(geometryData.idx.length / 3) },
+                faceIds: { start: 0, endExclusive: topology.faces.length > 0 ? topology.faces.length : Math.floor(geometryData.idx.length / 3) },
+            }] : [],
+        };
+        // Persist the topology-detected shell set at import time. The broad range
+        // above is only a naming hint for backward-compatible metadata matching.
+        staticAsset.shells = resolveStaticMeshShells(staticAsset).map(materializeStaticMeshShell);
         this.registerAsset(staticAsset);
         eventBus.emit('ASSET_CREATED', { id: staticAsset.id, type: 'MESH' });
         return staticAsset;
@@ -1148,7 +1164,7 @@ private reconstructQuads(
         
         if (data.faces) topology.graph = MeshTopologyUtils.buildTopology(topology, data.v.length / 3);
 
-        return { 
+        const primitiveAsset: StaticMeshAsset = { 
             id: crypto.randomUUID(), name: `SM_${name}`, type: 'MESH', isProtected: true, path: '/Content/Meshes',
             geometry: { 
                 vertices: new Float32Array(data.v), 
@@ -1158,8 +1174,17 @@ private reconstructQuads(
                 indices: new Uint16Array(data.idx),
                 aabb
             },
-            topology
+            topology,
+            shells: data.v.length > 0 ? [{
+                id: crypto.randomUUID(),
+                name: `SM_${name}`,
+                vertexIds: { start: 0, endExclusive: Math.floor(data.v.length / 3) },
+                triangleIds: { start: 0, endExclusive: Math.floor(data.idx.length / 3) },
+                faceIds: { start: 0, endExclusive: data.faces?.length ? data.faces.length : Math.floor(data.idx.length / 3) },
+            }] : [],
         };
+        primitiveAsset.shells = resolveStaticMeshShells(primitiveAsset).map(materializeStaticMeshShell);
+        return primitiveAsset;
     }
 
     private registerDefaultAssets() {

@@ -1,6 +1,8 @@
 import { assetManager } from '@/engine/AssetManager';
 import { MeshTopologyUtils } from '@/engine/MeshTopologyUtils';
-import type { LogicalMesh, MeshGeometry, StaticMeshAsset } from '@/types';
+import type { LogicalMesh, MeshGeometry, StaticMeshAsset, StaticMeshIdRange } from '@/types';
+import { materializeStaticMeshShell, offsetStaticMeshShell, resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
+export type { StaticMeshIdRange } from '@/types';
 
 export interface CreateStaticMeshArgs {
   name: string;
@@ -24,11 +26,7 @@ export interface StaticMeshCompositionSource {
   vertexCount: number;
   triangleCount: number;
   faceCount: number;
-}
-
-export interface StaticMeshIdRange {
-  start: number;
-  endExclusive: number;
+  shellCount: number;
 }
 
 /**
@@ -193,6 +191,7 @@ const compositionSourceDescriptor = (asset: StaticMeshAsset): StaticMeshComposit
   vertexCount: Math.floor(asset.geometry.vertices.length / 3),
   triangleCount: Math.floor(asset.geometry.indices.length / 3),
   faceCount: sourceFaces(asset).length,
+  shellCount: resolveStaticMeshShells(asset).length,
 });
 
 const makeAppendAllocation = (
@@ -274,6 +273,7 @@ class StaticMeshAssetAPIService {
     const triToFace: number[] = Array.from(sourceTriangleToFace(target, faces.length));
     const siblings = new Map<number, number[]>();
     copySiblingGroups(siblings, target.topology?.siblings, 0);
+    const shells = resolveStaticMeshShells(target).map(shell => materializeStaticMeshShell(shell));
 
     let vertexCount = Math.floor(vertices.length / 3);
     let triangleCount = Math.floor(indices.length / 3);
@@ -307,6 +307,13 @@ class StaticMeshAssetAPIService {
       for (const faceId of sourceTriMap) triToFace.push(faceId + faceOffset);
 
       copySiblingGroups(siblings, source.topology?.siblings, vertexOffset);
+      resolveStaticMeshShells(source).forEach(shell => {
+        shells.push(offsetStaticMeshShell(
+          shell,
+          { vertex: vertexOffset, triangle: triangleOffset, face: faceOffset },
+          source.id,
+        ));
+      });
 
       const sourceTriangleCount = Math.floor(source.geometry.indices.length / 3);
       vertexCount += sourceVertexCount;
@@ -346,7 +353,16 @@ class StaticMeshAssetAPIService {
       aabb: computeAABB(vertices),
     };
 
-    assetManager.updateAsset(target.id, { geometry, topology });
+    // Re-detect from the final topology before saving shell metadata. The appended
+    // metadata above is provenance/naming input only; connectivity is authoritative.
+    const validatedShells = resolveStaticMeshShells({
+      ...target,
+      geometry,
+      topology,
+      shells,
+    }).map(shell => materializeStaticMeshShell(shell));
+
+    assetManager.updateAsset(target.id, { geometry, topology, shells: validatedShells });
 
     return {
       targetAssetId: target.id,

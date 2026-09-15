@@ -70,6 +70,19 @@ A small pointer wobble may cross the marquee promotion threshold before mouse-up
 
 Selection does not own viewport navigation. Changing `selectedIds` or mesh sub-selection must not reframe a camera. Explicit Focus commands query selection state through context adapters instead. Mesh component focus reuses `getSelectionAsVertices()` so VERTEX, EDGE, and FACE selection all resolve to a common set of vertex positions; the shared viewport framing implementation then handles camera distance/orthographic scale. See [`VIEWPORT_FOCUS.md`](./VIEWPORT_FOCUS.md).
 
+## Programmatic mesh-component selection
+
+UI surfaces that need to select known mesh component IDs (for example `Shell > Faces` in the Static Mesh
+hierarchy) must use `engine.api.commands.selection.setMeshComponents(...)`. The command delegates to
+`SelectionSystem.setMeshComponentSelection(...)`, which replaces the active sub-selection, clears deformation
+and hover state, recalculates soft selection, and publishes the normal UI notification. Do not assign or mutate
+`subSelection.vertexIds`, `edgeIds`, or `faceIds` from hierarchy/Inspector code.
+
+Mode switching remains a separate command: call `engine.api.commands.mesh.setComponentMode(...)` before
+programmatic selection when the action also changes component domain. Edge IDs must use the canonical
+`meshEdgeKey(a, b)` format so hierarchy-driven selection renders through the same edge overlay contract as
+viewport picking.
+
 ## Component hover contract
 
 Mesh component hover is resolved by `SelectionSystem.hoverMeshComponentAt(...)` for vertex, edge, and face modes. Viewports should call that single API and render `hoveredMeshComponent`; they should not implement mode-specific picking. `hoveredVertex` remains a compatibility view only. Hover changes visual feedback only and must never modify selection, transforms, or camera state.

@@ -17,6 +17,11 @@ export type EngineAPI = {
     selection: {
       setSelected(ids: string[]): void;
       clear(): void;
+      setMeshComponents(args:
+        | { mode: 'VERTEX'; ids: number[] }
+        | { mode: 'EDGE'; ids: string[] }
+        | { mode: 'FACE'; ids: number[] }
+      ): void;
       selectMeshComponentsInRect(args: {
         entityId: string;
         mode: MeshComponentMode;

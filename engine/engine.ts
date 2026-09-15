@@ -26,6 +26,7 @@ import { compileShader } from './ShaderCompiler';
 import * as THREE from 'three'; 
 import { MeshDeformationSession } from './mesh-editing/MeshDeformationSession';
 import type { SoftSelectionMode, SoftSelectionSettings } from './mesh-editing/SoftSelection';
+import { finalizeStaticMeshTopologyAfterGeometryEdit } from './mesh-editing/StaticMeshShells';
 
 export type { SoftSelectionMode } from './mesh-editing/SoftSelection';
 
@@ -1345,6 +1346,8 @@ export class Engine {
     endVertexDrag() {
         this.meshDeformationSession.end();
         if (this.activeDeformationEntity) {
+            const context = this.getSoftSelectionContext(this.activeDeformationEntity);
+            if (context) finalizeStaticMeshTopologyAfterGeometryEdit(context.asset);
             this.notifyMeshGeometryFinalized(this.activeDeformationEntity);
         }
     }

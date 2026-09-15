@@ -158,10 +158,40 @@ export interface LogicalMesh {
     bvh?: any;
 }
 
+export interface StaticMeshIdRange {
+    start: number;
+    endExclusive: number;
+}
+
+/**
+ * Authored geometry part inside a Static Mesh. Shells reference component ID
+ * ranges owned by geometry/topology; they never duplicate vertex or face data.
+ */
+export interface StaticMeshShell {
+    id: string;
+    name: string;
+    /**
+     * Legacy/allocation bounds kept for saved-asset compatibility and append provenance.
+     * They are hints only: actual shell membership is resolved from mesh topology.
+     */
+    vertexIds: StaticMeshIdRange;
+    triangleIds: StaticMeshIdRange;
+    faceIds: StaticMeshIdRange;
+    /**
+     * Exact logical-face membership hint for non-contiguous/imported shells. New writes
+     * should populate this, but readers must still accept older range-only metadata.
+     */
+    faceIdsExact?: number[];
+    /** Optional provenance used by append/composition tooling. */
+    sourceAssetId?: string;
+}
+
 export interface StaticMeshAsset extends Asset {
     type: 'MESH' | 'SKELETAL_MESH';
     topology: LogicalMesh;
     geometry: MeshGeometry;
+    /** Optional shell naming/provenance metadata. Actual shell membership is detected from logical topology. */
+    shells?: StaticMeshShell[];
     /** Optional asset-default material. Empty/undefined uses built-in Standard Lambert. */
     materialId?: string;
 }

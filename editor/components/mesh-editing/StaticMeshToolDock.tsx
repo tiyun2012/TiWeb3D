@@ -25,6 +25,10 @@ export interface StaticMeshToolDockProps {
   meshComponentMode: MeshComponentMode;
   onSectionChange: (section: MeshHierarchySection) => void;
   onMeshComponentModeChange: (mode: MeshComponentMode) => void;
+  selectedShellId?: string | null;
+  onShellSelect?: (shellId: string | null) => void;
+  onShellComponentSelect?: (shellId: string, mode: Exclude<MeshComponentMode, 'OBJECT'>) => void;
+  assetRevision?: number;
   selectionCounts: MeshSelectionCounts;
   softSelectionEnabled: boolean;
   softSelectionRadius: number;
@@ -186,6 +190,10 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   meshComponentMode,
   onSectionChange,
   onMeshComponentModeChange,
+  selectedShellId = null,
+  onShellSelect,
+  onShellComponentSelect,
+  assetRevision = 0,
   selectionCounts,
   softSelectionEnabled,
   softSelectionRadius,
@@ -368,6 +376,10 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
               meshComponentMode={meshComponentMode}
               onSectionChange={onSectionChange}
               onMeshComponentModeChange={onMeshComponentModeChange}
+              selectedShellId={selectedShellId}
+              onShellSelect={onShellSelect}
+              onShellComponentSelect={onShellComponentSelect}
+              assetRevision={assetRevision}
               showHeader={false}
             />
           </div>
@@ -407,7 +419,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                   />
                   {appendSource && (
                     <div className="px-0.5 text-[8px] leading-3 text-text-secondary/70">
-                      {appendSource.vertexCount} vertices • {appendSource.triangleCount} triangles • {appendSource.faceCount} faces
+                      {appendSource.shellCount} shell{appendSource.shellCount === 1 ? '' : 's'} • {appendSource.vertexCount} vertices • {appendSource.triangleCount} triangles • {appendSource.faceCount} faces
                     </div>
                   )}
                   <button

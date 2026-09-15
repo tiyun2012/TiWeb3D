@@ -154,3 +154,49 @@ export const MyTreePanel: React.FC = () => {
 
 3. **`ProjectPanel.tsx` (Asset Browser):**
    - Enforces key event isolation and accessible labels on asset renaming inputs.
+
+## Static Mesh shell hierarchy
+
+`MeshAssetHierarchy` uses the shared `HierarchyTreeItem` rows for Static Mesh composition parts.
+`Geometry` contains two related branches: `Shells` for topology-detected surface islands and `Components`
+for asset-wide Vertex / Edge / Face mode entry. Saved shell metadata may supply names/provenance, but it is not
+the source of truth for shell count or membership.
+
+Selecting a shell row itself sets the hierarchy section to `SHELL` and keeps mesh component mode at
+`OBJECT`, so the Inspector can show shell provenance, resolved component IDs, and counts without pretending a shell
+is a fourth component mode.
+
+
+Shell membership is resolved through the shared logical connectivity contract (`LogicalMesh.faces` + persistent
+`siblings`). This is intentionally not inferred from current world/local positions during hierarchy rendering. A
+hard-edge cube with duplicated render vertices remains one shell because its imported/authored sibling groups weld
+those seams logically; disconnected appended parts remain separate because append does not create cross-part sibling
+groups.
+
+The editable child rows under a shell are active selection presets:
+
+```text
+Shell 1 · AppendedMesh
+├─ Vertices   -> switch to VERTEX mode + select every shell vertex
+├─ Edges      -> switch to EDGE mode   + select every shell edge
+└─ Faces      -> switch to FACE mode   + select every shell face
+```
+
+These actions must use the same public component-mode and selection APIs as the viewport. The hierarchy
+must not mutate `SelectionSystem.subSelection` directly. `getStaticMeshShellComponentSelection()` resolves
+the existing global component IDs for a shell; `engine.api.commands.mesh.setComponentMode(...)` switches
+mode and `engine.api.commands.selection.setMeshComponents(...)` replaces that mode's selection.
+
+`Triangles` remain shell metadata/Inspector information because there is no Triangle `MeshComponentMode`.
+Do not add a clickable Triangles hierarchy row until the editor has a real triangle component mode.
+
+`Components -> Vertices / Edges / Faces` remains the asset-wide entry point. Choosing one of those rows
+clears the active shell scope and only changes component mode. Likewise, once viewport picking, marquee,
+loop/ring, expand, or shrink changes a shell-wide selection, the shell selection scope is released so the
+hierarchy never claims that the full shell is still selected.
+
+`AssetManager.updateAsset()` currently mutates an asset object in place. Hierarchy/Inspector memoization must
+therefore not rely on `[asset]` alone. Asset editors pass a reactive `assetRevision` into these views and include it
+in asset-derived memo dependencies. Without this explicit invalidation, append succeeds in the engine/viewport
+while the hierarchy remains stuck on the pre-append shell/component counts.
+

@@ -9,6 +9,7 @@ import { EngineAPI } from '@/engine/api/EngineAPI';
 import { createEngineAPI } from '@/engine/api/createEngineAPI';
 import { MeshDeformationSession } from '@/engine/mesh-editing/MeshDeformationSession';
 import type { SoftSelectionMode, SoftSelectionSettings } from '@/engine/mesh-editing/SoftSelection';
+import { finalizeStaticMeshTopologyAfterGeometryEdit } from '@/engine/mesh-editing/StaticMeshShells';
 
 type GizmoRendererFacade = {
     renderGizmos: (
@@ -227,6 +228,7 @@ export class AssetViewportEngine implements IEngine {
         if (!this.activeDeformationEntity) return;
         const context = this.getSoftSelectionContext(this.activeDeformationEntity);
         if (!context) return;
+        finalizeStaticMeshTopologyAfterGeometryEdit(context.asset);
         this.onGeometryFinalized?.(context.assetId);
     }
 

@@ -235,6 +235,41 @@ export class SelectionSystem {
         this.hoveredMeshComponent = null;
     }
 
+    /**
+     * Replaces the active mesh sub-selection with explicit component IDs.
+     * Hierarchy scopes and future automation should use this instead of
+     * mutating subSelection sets directly so deformation/soft-selection/UI
+     * invalidation stays identical to viewport picking.
+     */
+    setMeshComponentSelection(
+        mode: Exclude<MeshComponentMode, 'OBJECT'>,
+        ids: Iterable<number | string>,
+        notify: boolean = true,
+    ) {
+        this.engine.clearDeformation();
+        this.subSelection.vertexIds.clear();
+        this.subSelection.edgeIds.clear();
+        this.subSelection.faceIds.clear();
+
+        if (mode === 'VERTEX') {
+            for (const id of ids) {
+                if (typeof id === 'number' && Number.isInteger(id) && id >= 0) this.subSelection.vertexIds.add(id);
+            }
+        } else if (mode === 'EDGE') {
+            for (const id of ids) {
+                if (typeof id === 'string') this.subSelection.edgeIds.add(id);
+            }
+        } else {
+            for (const id of ids) {
+                if (typeof id === 'number' && Number.isInteger(id) && id >= 0) this.subSelection.faceIds.add(id);
+            }
+        }
+
+        this.hoveredMeshComponent = null;
+        this.engine.recalculateSoftSelection();
+        if (notify) this.engine.notifyUI();
+    }
+
     get selectedEntities(): Set<string> {
         const set = new Set<string>();
         this.selectedIndices.forEach(idx => {
@@ -1060,16 +1095,18 @@ export class SelectionSystem {
         }
         if (this.engine.meshComponentMode === 'FACE') {
             const topo = asset.topology;
-            if (topo) {
+            if (topo?.faces?.length) {
                 this.subSelection.faceIds.forEach(fIdx => {
-                    topo.faces[fIdx].forEach(v => result.add(v));
+                    topo.faces[fIdx]?.forEach(v => result.add(v));
                 });
             } else {
                 const indices = asset.geometry.indices;
                 this.subSelection.faceIds.forEach(fIdx => {
-                    result.add(indices[fIdx * 3]);
-                    result.add(indices[fIdx * 3 + 1]);
-                    result.add(indices[fIdx * 3 + 2]);
+                    const offset = fIdx * 3;
+                    if (offset + 2 >= indices.length) return;
+                    result.add(indices[offset]);
+                    result.add(indices[offset + 1]);
+                    result.add(indices[offset + 2]);
                 });
             }
         }
