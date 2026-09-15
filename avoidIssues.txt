@@ -399,16 +399,6 @@ CAMERA RESOLUTION / PRESET RULES
 - **GIZMO DRAG OWNS ITS TARGET UNTIL MOUSE-UP:** Capture drag entity + component/object mode at gizmo mouse-down. Do not re-resolve selection on every pointer sample or clear `activeAxis` because of transient UI/selection notifications.
 - **NO REACT INVALIDATION PER GIZMO SAMPLE:** Asset mesh deformation updates GPU/geometry state through revisions/events. Do not call `notifyUI()` on every `updateVertexDrag()` sample when selection/UI state did not change.
 
-<<<<<<< HEAD
-### 31. STATIC MESH SHELL COMPOSITION / HIERARCHY
-- **SHELLS REFERENCE IDS; THEY DO NOT DUPLICATE GEOMETRY:** `StaticMeshAsset.shells` stores authored vertex/triangle/logical-face ID ranges and optional source provenance. Vertex/index/topology buffers remain the source of truth.
-- **APPEND MUST OFFSET SHELL METADATA WITH GEOMETRY:** When Static Mesh append offsets component IDs, preserve source shell boundaries with the exact same vertex/triangle/face offsets. Existing target shell ranges must never be renumbered by append.
-- **BACKWARD COMPATIBILITY FOR PRE-SHELL ASSETS:** Assets without `shells` resolve as one virtual legacy shell. Do not require migration just to open/edit old meshes; materialize shell metadata when composition first mutates the asset.
-- **SHELL ORGANIZATION != COMPONENT MODE:** Keep `MeshComponentMode` as OBJECT/VERTEX/EDGE/FACE until shell-scoped picking/deformation exists. The hierarchy must separate `Shells` from the global `Components` branch so UI nesting never falsely implies shell-filtered selection.
-- **USE SHARED HIERARCHY ROWS:** Shells and their count rows must use `HierarchyTreeItem`; do not fork indentation/selection/expand behavior for Static Mesh parts.
-- **INVALIDATE MEMOS FOR IN-PLACE ASSET UPDATES:** `AssetManager.updateAsset()` uses `Object.assign()` and keeps the same asset object identity. Static Mesh hierarchy/inspector derivations must include the editor `assetRevision` (or equivalent changed field references) instead of memoizing on `[asset]` alone; otherwise append renders in the viewport but shell/component counts remain stale.
-- **AUTO-REVEAL THE ACTIVE SHELL:** When append or hierarchy selection chooses a shell, expand `Geometry`, `Shells`, and that shell row so the new authored part and its component summaries are immediately visible.
-=======
 ### 31. STATIC MESH SHELL DETECTION / COMPOSITION / HIERARCHY
 - **USER-FACING TERM:** Use **Mesh Shell** for connected polygon geometry and reserve **UV Shell** for UV topology. Avoid bare `Shell` in Static Mesh hierarchy/Inspector labels where the distinction matters.
 - **TOPOLOGY IS AUTHORITATIVE:** A Mesh Shell is a connected logical surface component. Resolve it from `LogicalMesh.faces` plus only explicit authored/imported `siblings`; never trust `StaticMeshAsset.shells` metadata as count/membership truth.
@@ -427,4 +417,17 @@ CAMERA RESOLUTION / PRESET RULES
 - **GLOBAL COMPONENT ROWS MEAN SELECT ALL:** `Components > All Vertices/All Edges/All Faces` switches domain and selects every component in that domain. Toolbar/pie mode switches remain mode-only; do not conflate the two interactions.
 - **PREVIEW ENTITY != ACTIONABLE SELECTION:** Static Mesh asset preview may keep/select its internal entity only as a component edit target. Opening the editor with no object/component selection must show no gizmo. Asset/Geometry hierarchy clicks explicitly opt into whole-object selection.
 - **GIZMO CHECKS ONLY THE ACTIVE COMPONENT DOMAIN:** In VERTEX mode require selected vertices, in EDGE mode selected edges, and in FACE mode selected faces. Never let stale IDs from another domain pass the visibility guard and place a gizmo at `(0,0,0)`.
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
+
+---
+
+### 32. STATIC MESH AI CONSTRUCTION POINTS / SEMANTIC MODELING
+- **CONSTRUCTION POINT != VERTEX:** `StaticMeshConstructionPoint` is a stable semantic/planning handle. `addPoint()` / `addPoints()` must never allocate `MeshGeometry` vertices just because a point exists.
+- **SEMANTIC IDS OUTLIVE NUMERIC TOPOLOGY IDS:** AI/scripts should retain Construction Point/Face/Loop IDs returned by `StaticMeshAssetAPI`, not raw vertex/face/triangle array indices. Numeric topology IDs are compiled implementation details and may change after later topology work.
+- **ONE POINT MAY BIND MANY VERTICES:** Keep `ConstructionPoint.vertexIds` one-to-many. UV seams, hard normals, material splits, or future topology edits may require multiple render vertices for one semantic location. `movePoint()` must propagate to every valid binding.
+- **COMPILE INTO THE EXISTING TOPOLOGY:** Face/extrude/bridge operations must rebuild the normal `LogicalMesh`, half-edge graph, vertex-to-face map, normals, AABB, and topology-derived Mesh Shell metadata. Never create a parallel modeling-connectivity graph that disagrees with the Static Mesh topology system.
+- **MUTATE THROUGH STATIC MESH API / ASSET MANAGER:** Construction changes belong in `StaticMeshAssetAPI` and commit through `assetManager.updateAsset()` so editor/scene invalidation follows the existing asset event flow.
+- **POINT ORDER DEFINES FACE WINDING:** `createFaceFromPoints()` consumes an ordered polygon boundary. The current implementation is for planar, non-self-intersecting convex polygons and fan-triangulates them. Do not silently claim general concave n-gon support until a robust triangulator exists.
+- **LOOPS ARE SEMANTIC HANDLES, NOT IMPLICIT GEOMETRY:** `createLoop()` records ordered point IDs only. The current `bridgeLoops()` requires equal point counts and matching open/closed state.
+- **KEEP CONSTRUCTION SELECTION SEPARATE:** Construction Points use a separate viewport VBO and selection domain. Do not stuff their IDs into mesh Vertex selection or show the normal component gizmo merely because a planning point is selected.
+- **EMPTY CONSTRUCTION POINTS MUST STILL FRAME/RENDER:** An otherwise empty Static Mesh can contain planning points. Camera fit/focus and viewport overlays must work before any compiled mesh vertex exists.
+- **TEST THE SEMANTIC CONTRACT:** Keep `npm run test:mesh-construction` covering point-without-vertex creation, face compilation, point-to-bound-vertex movement, stable extrusion handles, deletion guards, and loop bridging.

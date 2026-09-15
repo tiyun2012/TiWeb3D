@@ -161,6 +161,11 @@ class AssetManagerService {
             },
             topology,
             shells: [],
+            construction: {
+                points: [],
+                faces: [],
+                loops: [],
+            },
         };
 
         this.registerAsset(asset);
@@ -618,12 +623,9 @@ eventBus.emit('ASSET_CREATED', { id: skeletonAsset.id, type: 'SKELETON' });
                 faceIds: { start: 0, endExclusive: topology.faces.length > 0 ? topology.faces.length : Math.floor(geometryData.idx.length / 3) },
             }] : [],
         };
-<<<<<<< HEAD
-=======
         // Persist the topology-detected shell set at import time. The broad range
         // above is only a naming hint for backward-compatible metadata matching.
         staticAsset.shells = resolveStaticMeshShells(staticAsset).map(materializeStaticMeshShell);
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
         this.registerAsset(staticAsset);
         eventBus.emit('ASSET_CREATED', { id: staticAsset.id, type: 'MESH' });
         return staticAsset;

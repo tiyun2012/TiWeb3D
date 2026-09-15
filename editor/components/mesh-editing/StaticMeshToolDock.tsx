@@ -25,17 +25,14 @@ export interface StaticMeshToolDockProps {
   meshComponentMode: MeshComponentMode;
   onSectionChange: (section: MeshHierarchySection) => void;
   onMeshComponentModeChange: (mode: MeshComponentMode) => void;
-<<<<<<< HEAD
-  selectedShellId?: string | null;
-  onShellSelect?: (shellId: string) => void;
-=======
   selectedShellIds?: readonly string[];
   onShellSelect?: (shellId: string | null, operation?: 'REPLACE' | 'TOGGLE') => void;
   onShellComponentSelect?: (shellId: string, mode: Exclude<MeshComponentMode, 'OBJECT'>, operation?: 'REPLACE' | 'TOGGLE') => void;
   onGlobalComponentSelect?: (mode: Exclude<MeshComponentMode, 'OBJECT'>) => void;
   onObjectSelect?: () => void;
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
   assetRevision?: number;
+  selectedConstructionPointIds?: readonly string[];
+  onConstructionPointSelect?: (pointId: string | null, operation?: 'REPLACE' | 'TOGGLE') => void;
   selectionCounts: MeshSelectionCounts;
   softSelectionEnabled: boolean;
   softSelectionRadius: number;
@@ -197,17 +194,14 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   meshComponentMode,
   onSectionChange,
   onMeshComponentModeChange,
-<<<<<<< HEAD
-  selectedShellId = null,
-  onShellSelect,
-=======
   selectedShellIds = [],
   onShellSelect,
   onShellComponentSelect,
   onGlobalComponentSelect,
   onObjectSelect,
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
   assetRevision = 0,
+  selectedConstructionPointIds = [],
+  onConstructionPointSelect,
   selectionCounts,
   softSelectionEnabled,
   softSelectionRadius,
@@ -390,18 +384,15 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
               meshComponentMode={meshComponentMode}
               onSectionChange={onSectionChange}
               onMeshComponentModeChange={onMeshComponentModeChange}
-<<<<<<< HEAD
-              selectedShellId={selectedShellId}
-              onShellSelect={onShellSelect}
-=======
               selectedShellIds={selectedShellIds}
               onShellSelect={onShellSelect}
               onShellComponentSelect={onShellComponentSelect}
               onGlobalComponentSelect={onGlobalComponentSelect}
               onObjectSelect={onObjectSelect}
               selectionCounts={selectionCounts}
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
               assetRevision={assetRevision}
+              selectedConstructionPointIds={selectedConstructionPointIds}
+              onConstructionPointSelect={onConstructionPointSelect}
               showHeader={false}
             />
           </div>
@@ -441,11 +432,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                   />
                   {appendSource && (
                     <div className="px-0.5 text-[8px] leading-3 text-text-secondary/70">
-<<<<<<< HEAD
-                      {appendSource.shellCount} shell{appendSource.shellCount === 1 ? '' : 's'} • {appendSource.vertexCount} vertices • {appendSource.triangleCount} triangles • {appendSource.faceCount} faces
-=======
                       {appendSource.shellCount} Mesh Shell{appendSource.shellCount === 1 ? '' : 's'} • {appendSource.vertexCount} vertices • {appendSource.triangleCount} triangles • {appendSource.faceCount} faces
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
                     </div>
                   )}
                   <button

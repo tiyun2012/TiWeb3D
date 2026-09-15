@@ -155,20 +155,6 @@ export const MyTreePanel: React.FC = () => {
 3. **`ProjectPanel.tsx` (Asset Browser):**
    - Enforces key event isolation and accessible labels on asset renaming inputs.
 
-<<<<<<< HEAD
-## Static Mesh shell hierarchy
-
-`MeshAssetHierarchy` uses the shared `HierarchyTreeItem` rows for Static Mesh composition parts.
-`Geometry` contains two distinct branches: `Shells` for authored mesh-part organization and
-`Components` for the existing global Vertex / Edge / Face modes. Do not nest the live component-mode
-commands under a shell unless the selection system also enforces that shell as the active selection
-scope.
-
-Selecting a shell sets the hierarchy section to `SHELL` and keeps mesh component mode at `OBJECT`.
-The selected shell is automatically expanded so its `Vertices / Edges / Faces / Triangles` summary rows are
-visible. The Inspector may show shell provenance and component ID ranges, while viewport object selection and
-component picking keep their existing contracts.
-=======
 ## Static Mesh: Mesh Shell hierarchy
 
 `MeshAssetHierarchy` uses the shared `HierarchyTreeItem` rows for Static Mesh composition parts.
@@ -219,14 +205,9 @@ change: it clears the active component set and Mesh Shell scope. `Shift+LMB` on 
 Static Mesh preview creation does not imply an object selection. Asset/Geometry rows explicitly select the whole preview
 object; component and Mesh Shell rows install the preview entity only as the component edit target. With no actionable
 object/component selection, the gizmo must remain hidden.
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
 
 `AssetManager.updateAsset()` currently mutates an asset object in place. Hierarchy/Inspector memoization must
 therefore not rely on `[asset]` alone. Asset editors pass a reactive `assetRevision` into these views and include it
 in asset-derived memo dependencies. Without this explicit invalidation, append succeeds in the engine/viewport
-<<<<<<< HEAD
-while the hierarchy remains stuck on the pre-append shell/component counts.
-=======
 while the hierarchy remains stuck on the pre-append Mesh Shell/component counts.
 
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820

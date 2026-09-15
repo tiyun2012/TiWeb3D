@@ -8,7 +8,6 @@ import { resolveMeshFocusTarget } from '@/editor/viewports/focusTargetResolvers'
 import type { EditorCommandCapability, EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
 import '@/editor/commands/StaticMeshCommandCatalogue';
 import { resolveAssetStaticMeshEditTarget } from '@/engine/mesh-editing/StaticMeshEditTarget';
-import { resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
 import {
   getStaticMeshComponentSelection,
   getStaticMeshShellsComponentSelection,
@@ -21,7 +20,7 @@ import {
   selectionPoliciesMatch,
   type SelectionPolicy,
 } from '@/editor/selection/SelectionPolicy';
-import type { ViewportFocusProvider } from '@/editor/viewports/viewportFocus';
+import { createFocusTargetFromPoints, type ViewportFocusProvider } from '@/editor/viewports/viewportFocus';
 import { assetManager } from '@/engine/AssetManager';
 import { staticMeshAssetAPI } from '@/engine/api/StaticMeshAssetAPI';
 import { eventBus } from '@/engine/EventBus';
@@ -71,6 +70,11 @@ const REFERENCE_MESH_SURFACE_MATERIAL = {
   smoothness: 0.42,
 };
 
+const CONSTRUCTION_POINT_COLORS = {
+  base: { r: 0.15, g: 0.82, b: 0.95, a: 1.0 },
+  selected: { r: 1.0, g: 0.9, b: 0.1, a: 1.0 },
+} as const;
+
 type ReferenceMeshGpuResource = {
   vao: WebGLVertexArrayObject;
   vbo: WebGLBuffer;
@@ -115,34 +119,45 @@ const EMPTY_STATIC_MESH_CAMERA = {
 function computeFitCamera(
   asset: StaticMeshAsset | SkeletalMeshAsset
 ): { radius: number; target: { x: number; y: number; z: number } } {
-  // An empty Static Mesh is a valid authoring workspace, not a zero-size mesh.
-  // Do not frame its synthetic/legacy zero AABB: that puts the camera only
-  // centimeters from the origin and makes the normal 1m editor grid appear
-  // to have disappeared. Keep a useful default workspace view until geometry
-  // is appended/imported.
-  if (asset.geometry.vertices.length === 0) {
+  const constructionPoints = asset.type === 'MESH' ? asset.construction?.points ?? [] : [];
+  const aabb = asset.geometry.aabb;
+  const hasGeometry = asset.geometry.vertices.length > 0 && !!aabb;
+  if (!hasGeometry && constructionPoints.length === 0) {
     return {
       radius: EMPTY_STATIC_MESH_CAMERA.radius,
       target: { ...EMPTY_STATIC_MESH_CAMERA.target },
     };
   }
 
-  const aabb = asset.geometry.aabb;
-  if (!aabb) {
+  let minX = hasGeometry && aabb ? aabb.min.x : Infinity;
+  let minY = hasGeometry && aabb ? aabb.min.y : Infinity;
+  let minZ = hasGeometry && aabb ? aabb.min.z : Infinity;
+  let maxX = hasGeometry && aabb ? aabb.max.x : -Infinity;
+  let maxY = hasGeometry && aabb ? aabb.max.y : -Infinity;
+  let maxZ = hasGeometry && aabb ? aabb.max.z : -Infinity;
+
+  constructionPoints.forEach(point => {
+    minX = Math.min(minX, point.position.x);
+    minY = Math.min(minY, point.position.y);
+    minZ = Math.min(minZ, point.position.z);
+    maxX = Math.max(maxX, point.position.x);
+    maxY = Math.max(maxY, point.position.y);
+    maxZ = Math.max(maxZ, point.position.z);
+  });
+
+  if (![minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite)) {
     return {
       radius: EMPTY_STATIC_MESH_CAMERA.radius,
       target: { ...EMPTY_STATIC_MESH_CAMERA.target },
     };
   }
-  const size = Vec3Utils.subtract(aabb.max, aabb.min, { x: 0, y: 0, z: 0 });
+
+  const size = { x: maxX - minX, y: maxY - minY, z: maxZ - minZ };
   const maxDim = Math.max(size.x, Math.max(size.y, size.z));
-  const center = Vec3Utils.scale(Vec3Utils.add(aabb.min, aabb.max, { x: 0, y: 0, z: 0 }), 0.5, {
-    x: 0,
-    y: 0,
-    z: 0,
-  });
+  const center = { x: (minX + maxX) * 0.5, y: (minY + maxY) * 0.5, z: (minZ + maxZ) * 0.5 };
   return { radius: Math.max(maxDim * 1.5, 0.25), target: center };
 }
+
 
 export interface StaticMeshEditorProps {
   assetId: string;
@@ -186,11 +201,9 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const [stats, setStats] = useState<{ verts: number; tris: number }>({ verts: 0, tris: 0 });
   const [pieMenu, setPieMenu] = useState<{ x: number; y: number } | null>(null);
   const [hierarchySection, setHierarchySection] = useState<MeshHierarchySection>('ASSET');
-<<<<<<< HEAD
-  const [selectedShellId, setSelectedShellId] = useState<string | null>(null);
-=======
   const [selectedShellIds, setSelectedShellIds] = useState<string[]>([]);
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
+  const [selectedConstructionPointIds, setSelectedConstructionPointIds] = useState<string[]>([]);
+  const constructionPointScreenRef = useRef<Array<{ id: string; x: number; y: number }>>([]);
   const [leftDockCollapsed, setLeftDockCollapsed] = useState(false);
   const [materialId, setMaterialId] = useState<string>('');
   const materialIdRef = useRef<string>('');
@@ -276,6 +289,11 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     commitSelectionBoxState(null);
   }, [assetId, meshComponentMode, commitSelectionBoxState]);
 
+  useEffect(() => {
+    setSelectedConstructionPointIds([]);
+    constructionPointScreenRef.current = [];
+  }, [assetId]);
+
   // Camera state
   const [camera, setCamera] = useState<CameraState>({
     theta: 0.5,
@@ -287,6 +305,27 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     radius: number;
     target: { x: number; y: number; z: number };
   } | null>(null);
+
+
+  // Construction can be changed by AI/scripts while this editor remains open.
+  // Keep framing/statistics and semantic selection synchronized with asset events
+  // without resetting the user's current camera on every modeling operation.
+  useEffect(() => {
+    const asset = assetManager.getAsset(assetId) as StaticMeshAsset | SkeletalMeshAsset | undefined;
+    if (!asset || (asset.type !== 'MESH' && asset.type !== 'SKELETAL_MESH')) return;
+    setStats({
+      verts: asset.geometry.vertices.length / 3,
+      tris: asset.geometry.indices.length / 3,
+    });
+    setFitCamera(computeFitCamera(asset));
+    if (asset.type === 'MESH') {
+      const validPointIds = new Set((asset.construction?.points ?? []).map(point => point.id));
+      setSelectedConstructionPointIds(current => {
+        const next = current.filter(pointId => validPointIds.has(pointId));
+        return next.length === current.length ? current : next;
+      });
+    }
+  }, [assetId, assetRevision]);
 
   const viewportRef = useRef<AssetViewport3DHandle | null>(null);
   const viewportInputId = `static-mesh:${assetId}`;
@@ -304,6 +343,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     selectedEdgeOverlay: MeshEdgeOverlay;
     hoveredEdgeOverlay: MeshEdgeOverlay;
     vertexOverlay: MeshVertexOverlay;
+    constructionPointVbo: WebGLBuffer | null;
+    constructionPointOverlay: MeshVertexOverlay;
+    constructionPointRevision: number;
+    constructionPointSelectionSignature: string;
     materialPreview: MaterialPreviewRenderer;
     selectionEdgeRevision: number;
     selectionEdgeMode: MeshComponentMode | null;
@@ -324,6 +367,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     selectedEdgeOverlay: new MeshEdgeOverlay(),
     hoveredEdgeOverlay: new MeshEdgeOverlay(),
     vertexOverlay: new MeshVertexOverlay(),
+    constructionPointVbo: null,
+    constructionPointOverlay: new MeshVertexOverlay(),
+    constructionPointRevision: -1,
+    constructionPointSelectionSignature: '',
     materialPreview: new MaterialPreviewRenderer(),
     selectionEdgeRevision: -1,
     selectionEdgeMode: null,
@@ -372,6 +419,21 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       const engine = previewEngineRef.current;
       const entityId = engine?.entityId ?? null;
       const world = entityId ? engine?.sceneGraph.getWorldMatrix(entityId) ?? null : null;
+
+      if (hierarchySection === 'CONSTRUCTION_POINTS' && selectedConstructionPointIds.length > 0 && asset.type === 'MESH') {
+        const selected = new Set(selectedConstructionPointIds);
+        const worldPoint = { x: 0, y: 0, z: 0 };
+        const points = (asset.construction?.points ?? [])
+          .filter(point => selected.has(point.id))
+          .map(point => {
+            if (!world) return { ...point.position };
+            Vec3Utils.transformMat4(point.position, world, worldPoint);
+            return { ...worldPoint };
+          });
+        const constructionTarget = createFocusTargetFromPoints(points, { minWorldRadius: 0.12, padding: 1.35 });
+        if (constructionTarget) return constructionTarget;
+      }
+
       const componentVertices = meshComponentModeRef.current !== 'OBJECT'
         ? engine?.selectionSystem.getSelectionAsVertices() ?? null
         : null;
@@ -382,7 +444,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         world,
       );
     },
-  }), [assetId]);
+  }), [assetId, hierarchySection, selectedConstructionPointIds]);
 
   // Create / dispose local preview engine
   useEffect(() => {
@@ -468,7 +530,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     const colorbo = gl.createBuffer();
     const softWeightBo = gl.createBuffer();
     const ibo = gl.createBuffer();
-    if (!meshVao || !vbo || !nbo || !uvbo || !colorbo || !softWeightBo || !ibo) return;
+    const constructionPointVbo = gl.createBuffer();
+    if (!meshVao || !vbo || !nbo || !uvbo || !colorbo || !softWeightBo || !ibo || !constructionPointVbo) return;
 
     gl.bindVertexArray(meshVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
@@ -531,6 +594,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     );
     const vertexOverlay = new MeshVertexOverlay();
     vertexOverlay.init(gl, vbo);
+    gl.bindBuffer(gl.ARRAY_BUFFER, constructionPointVbo);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(0), gl.DYNAMIC_DRAW);
+    const constructionPointOverlay = new MeshVertexOverlay();
+    constructionPointOverlay.init(gl, constructionPointVbo);
     const materialPreview = new MaterialPreviewRenderer();
     materialPreview.init(gl);
     gl.bindVertexArray(null);
@@ -547,6 +614,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       selectedEdgeOverlay,
       hoveredEdgeOverlay,
       vertexOverlay,
+      constructionPointVbo,
+      constructionPointOverlay,
+      constructionPointRevision: -1,
+      constructionPointSelectionSignature: '',
       materialPreview,
       selectionEdgeRevision: -1,
       selectionEdgeMode: null,
@@ -571,6 +642,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     res.selectedEdgeOverlay.dispose(gl);
     res.hoveredEdgeOverlay.dispose(gl);
     res.vertexOverlay.dispose(gl);
+    res.constructionPointOverlay.dispose(gl);
+    if (res.constructionPointVbo) gl.deleteBuffer(res.constructionPointVbo);
     res.referenceMeshes.forEach(reference => {
       gl.deleteVertexArray(reference.vao);
       gl.deleteBuffer(reference.vbo);
@@ -583,7 +656,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   };
 
   const handleRender = (args: AssetViewportRenderArgs) => {
-    const { gl, vp, meshProgram, lineProgram, viewportSize, eye } = args;
+    const { gl, vp, meshProgram, lineProgram, viewportSize, eye, project } = args;
     const asset = assetManager.getAsset(assetId) as StaticMeshAsset | SkeletalMeshAsset | undefined;
     if (!asset || (asset.type !== 'MESH' && asset.type !== 'SKELETAL_MESH')) return;
 
@@ -900,8 +973,102 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       );
     }
 
+    // Construction Points are semantic planning handles and deliberately use a
+    // separate VBO from mesh vertices. They remain visible in every mesh mode.
+    if (asset.type === 'MESH' && res.constructionPointVbo) {
+      const points = asset.construction?.points ?? [];
+      if (res.constructionPointRevision !== assetRevision) {
+        const positions = new Float32Array(points.length * 3);
+        points.forEach((point, index) => {
+          positions[index * 3] = point.position.x;
+          positions[index * 3 + 1] = point.position.y;
+          positions[index * 3 + 2] = point.position.z;
+        });
+        gl.bindBuffer(gl.ARRAY_BUFFER, res.constructionPointVbo);
+        gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
+        res.constructionPointRevision = assetRevision;
+        res.constructionPointSelectionSignature = '';
+      }
+
+      const selectedSet = new Set(selectedConstructionPointIds);
+      const selectedIndices = points
+        .map((point, index) => selectedSet.has(point.id) ? index : -1)
+        .filter(index => index >= 0);
+      const selectionSignature = selectedConstructionPointIds.slice().sort().join('|');
+      if (res.constructionPointSelectionSignature !== selectionSignature) {
+        res.constructionPointOverlay.updateSelected(gl, selectedIndices, points.length);
+        res.constructionPointSelectionSignature = selectionSignature;
+      }
+
+      const pointSizes = getMeshVertexPointSizes(
+        Math.max(1.15, vertexSize * 1.25),
+        getViewportPixelRatio(viewportSize.pixelWidth, viewportSize.cssWidth),
+      );
+      res.constructionPointOverlay.drawAll(
+        gl,
+        lineProgram,
+        mvp,
+        points.length,
+        CONSTRUCTION_POINT_COLORS.base,
+        pointSizes.base,
+      );
+      res.constructionPointOverlay.drawSelected(
+        gl,
+        lineProgram,
+        mvp,
+        CONSTRUCTION_POINT_COLORS.selected,
+        pointSizes.selected,
+      );
+
+      const projected: Array<{ id: string; x: number; y: number }> = [];
+      const worldPoint = { x: 0, y: 0, z: 0 };
+      points.forEach(point => {
+        Vec3Utils.transformMat4(point.position, model, worldPoint);
+        const screen = project(worldPoint.x, worldPoint.y, worldPoint.z);
+        if (screen) projected.push({ id: point.id, x: screen.x, y: screen.y });
+      });
+      constructionPointScreenRef.current = projected;
+    } else {
+      constructionPointScreenRef.current = [];
+    }
+
     gl.bindVertexArray(null);
   };
+
+  const handleConstructionPointSelect = useCallback((
+    pointId: string | null,
+    operation: 'REPLACE' | 'TOGGLE' = 'REPLACE',
+  ) => {
+    setSelectedShellIds([]);
+    const engine = previewEngineRef.current;
+    if (meshComponentModeRef.current !== 'OBJECT') changeMeshComponentMode('OBJECT');
+    engine?.api.commands.selection.clear();
+
+    setSelectedConstructionPointIds(current => {
+      if (!pointId) return [];
+      if (operation === 'TOGGLE') {
+        return current.includes(pointId)
+          ? current.filter(id => id !== pointId)
+          : [...current, pointId];
+      }
+      return [pointId];
+    });
+  }, [changeMeshComponentMode]);
+
+  const pickConstructionPoint = useCallback((x: number, y: number, threshold = 11): string | null => {
+    let bestId: string | null = null;
+    let bestDistanceSq = threshold * threshold;
+    for (const point of constructionPointScreenRef.current) {
+      const dx = point.x - x;
+      const dy = point.y - y;
+      const distanceSq = dx * dx + dy * dy;
+      if (distanceSq <= bestDistanceSq) {
+        bestDistanceSq = distanceSq;
+        bestId = point.id;
+      }
+    }
+    return bestId;
+  }, []);
 
   const focusCamera = () => {
     if (fitCamera) setCamera(p => ({ ...p, radius: fitCamera.radius, target: { ...fitCamera.target } }));
@@ -971,6 +1138,13 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
 
     const engine = previewEngineRef.current;
     if (!engine) return;
+
+    if (e.button === 0 && !e.altKey && hierarchySection === 'CONSTRUCTION_POINTS') {
+      const pointId = pickConstructionPoint(coords.x, coords.y);
+      if (pointId) handleConstructionPointSelect(pointId, e.shiftKey ? 'TOGGLE' : 'REPLACE');
+      else if (!e.shiftKey) handleConstructionPointSelect(null);
+      return;
+    }
 
     // RMB opens Pie Menu (Alt+RMB reserved for zoom in AssetViewport3D).
     // In component mode the preview entity is already the edit target; object
@@ -1263,6 +1437,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     operation: 'REPLACE' | 'TOGGLE' = 'REPLACE',
   ) => {
     const next = nextShellSelection(shellId, operation);
+    setSelectedConstructionPointIds([]);
     // A Mesh Shell transform is a vertex-domain transform. The hierarchy keeps
     // the user-facing scope as SHELL while the normal component/gizmo pipeline
     // receives exactly the vertices owned by the selected shell(s).
@@ -1276,6 +1451,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     operation: 'REPLACE' | 'TOGGLE' = 'REPLACE',
   ) => {
     const next = nextShellSelection(shellId, operation);
+    setSelectedConstructionPointIds([]);
     applyShellSelection(next, mode);
     setHierarchySection(
       next.length === 0
@@ -1293,6 +1469,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     const engine = previewEngineRef.current;
     if (!asset || asset.type !== 'MESH' || !engine) return;
 
+    setSelectedConstructionPointIds([]);
     ensurePreviewSelectionTarget(engine);
     applyComponentSelection(engine, mode, getStaticMeshComponentSelection(asset as StaticMeshAsset));
     changeMeshComponentMode(mode);
@@ -1306,6 +1483,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     engine.api.commands.mesh.setComponentMode('OBJECT');
     changeMeshComponentMode('OBJECT');
     setSelectedShellIds([]);
+    setSelectedConstructionPointIds([]);
     if (previewEntityId) engine.api.commands.selection.setSelected([previewEntityId]);
     else engine.api.commands.selection.clear();
   }, [changeMeshComponentMode]);
@@ -1323,20 +1501,12 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
 
     const updated = assetManager.getAsset(target.id) as StaticMeshAsset;
     const appendedShells = resolveStaticMeshShells(updated).filter(shell => !previousShellIds.has(shell.id));
-<<<<<<< HEAD
-    const appendedShell = appendedShells[appendedShells.length - 1] ?? null;
-    if (appendedShell) {
-      setSelectedShellId(appendedShell.id);
-      setHierarchySection('SHELL');
-      setMeshComponentMode('OBJECT');
-    }
-=======
     if (appendedShells.length > 0) {
+      setSelectedConstructionPointIds([]);
       applyShellSelection(appendedShells.map(shell => shell.id), 'VERTEX');
       setHierarchySection('SHELL');
     }
 
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
     dirtyRef.current = 'FULL';
     previewEngineRef.current?.clearDeformation();
     setStats({
@@ -1546,6 +1716,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           active: meshComponentMode === mode,
           onTrigger: () => {
             setSelectedShellIds([]);
+            setSelectedConstructionPointIds([]);
             changeMeshComponentMode(mode);
             setHierarchySection(
               mode === 'VERTEX' ? 'VERTICES' : mode === 'EDGE' ? 'EDGES' : mode === 'FACE' ? 'FACES' : 'GEOMETRY',
@@ -1592,18 +1763,14 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             onCollapsedChange={setLeftDockCollapsed}
             activeSection={hierarchySection}
             meshComponentMode={meshComponentMode}
-<<<<<<< HEAD
-            onSectionChange={section => {
-              setHierarchySection(section);
-              if (section !== 'SHELL') setSelectedShellId(null);
-            }}
-            onMeshComponentModeChange={setMeshComponentMode}
-            selectedShellId={selectedShellId}
-            onShellSelect={setSelectedShellId}
-=======
             onSectionChange={setHierarchySection}
             onMeshComponentModeChange={changeMeshComponentMode}
             selectedShellIds={selectedShellIds}
+            selectedConstructionPointIds={selectedConstructionPointIds}
+            onConstructionPointSelect={(pointId, operation) => {
+              if (pointId) setHierarchySection('CONSTRUCTION_POINTS');
+              handleConstructionPointSelect(pointId, operation);
+            }}
             onShellSelect={(shellId, operation) => {
               if (shellId) handleShellSelect(shellId, operation ?? 'REPLACE');
               else setSelectedShellIds([]);
@@ -1611,7 +1778,6 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             onShellComponentSelect={handleShellComponentSelect}
             onGlobalComponentSelect={handleGlobalComponentSelect}
             onObjectSelect={handleHierarchyObjectSelect}
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
             assetRevision={assetRevision}
             selectionCounts={selectionCounts}
             softSelectionEnabled={softSelectionEnabled}
@@ -1635,11 +1801,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             activeSection={hierarchySection}
             meshComponentMode={meshComponentMode}
             onSectionChange={setHierarchySection}
-<<<<<<< HEAD
-            onMeshComponentModeChange={setMeshComponentMode}
-=======
             onMeshComponentModeChange={changeMeshComponentMode}
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
             assetRevision={assetRevision}
           />
         )
@@ -1658,11 +1820,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           referenceMeshes={referenceMeshes}
           onAddReferenceMesh={handleAddReferenceMesh}
           onRemoveReferenceMesh={handleRemoveReferenceMesh}
-<<<<<<< HEAD
-          selectedShellId={selectedShellId}
-=======
           selectedShellIds={selectedShellIds}
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
           assetRevision={assetRevision}
         />
       }
@@ -1682,11 +1840,16 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         stats={[
           { label: 'Verts', value: stats.verts, color: 'text-accent' },
           { label: 'Tris', value: stats.tris, color: 'text-accent' },
+          ...(currentAsset.type === 'MESH' ? [{ label: 'Points', value: currentAsset.construction?.points.length ?? 0, color: 'text-cyan-300' }] : []),
           { label: 'Mode', value: meshComponentMode, color: 'text-accent' },
         ]}
         selectionBadge={{
-          text: isAdjustingBrush ? `Radius ${softSelectionRadius.toFixed(2)}` : isSelected ? 'Selected' : 'No Sel',
-          active: isSelected,
+          text: isAdjustingBrush
+            ? `Radius ${softSelectionRadius.toFixed(2)}`
+            : selectedConstructionPointIds.length > 0
+              ? `${selectedConstructionPointIds.length} Point${selectedConstructionPointIds.length === 1 ? '' : 's'}`
+              : isSelected ? 'Selected' : 'No Sel',
+          active: selectedConstructionPointIds.length > 0 || isSelected,
         }}
         engine={previewEngine}
         gizmoSystem={gizmoSystem}

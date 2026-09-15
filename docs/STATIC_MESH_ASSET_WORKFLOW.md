@@ -95,13 +95,6 @@ geometry. References intentionally do not draw a topology cage by default.
 This keeps the UI replaceable: future search, drag/drop, transforms, context menus, automation, or
 agent workflows should call the same stable asset API.
 
-<<<<<<< HEAD
-## Shell composition metadata
-
-Static Mesh composition now tracks authored parts through `StaticMeshAsset.shells`.
-A shell is metadata over existing dense component IDs; it does **not** copy geometry or topology.
-Each shell stores vertex, triangle, and logical-face ID ranges plus optional append provenance.
-=======
 ## Mesh Shell detection and composition metadata
 
 A **Mesh Shell** is one connected component of polygon topology. It is not an append record,
@@ -136,52 +129,21 @@ creates a new weld, so moving two unrelated Mesh Shells into contact cannot merg
 `StaticMeshAsset.shells` remains lightweight naming/provenance metadata. It never overrides actual
 topology. Older range-only metadata is accepted, while new composition writes also persist
 `faceIdsExact` so a Mesh Shell can be matched safely even when imported face IDs are not contiguous.
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
 
 ```ts
 interface StaticMeshShell {
   id: string;
   name: string;
-<<<<<<< HEAD
-  vertexIds: { start: number; endExclusive: number };
-  triangleIds: { start: number; endExclusive: number };
-  faceIds: { start: number; endExclusive: number };
-=======
   // compatibility / allocation bounds, not authoritative membership
   vertexIds: { start: number; endExclusive: number };
   triangleIds: { start: number; endExclusive: number };
   faceIds: { start: number; endExclusive: number };
   // exact logical-face membership hint for non-contiguous Mesh Shells
   faceIdsExact?: number[];
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
   sourceAssetId?: string;
 }
 ```
 
-<<<<<<< HEAD
-Empty Static Mesh assets start with no shells. Imported/generated Static Mesh assets start with one
-base shell. `appendMesh()` preserves source shell boundaries and offsets their component ranges by the
-same allocation used for appended geometry. A source with one shell therefore contributes one new
-shell; a source that is already composed from several shells keeps those authored parts separate.
-
-Older assets that predate shell metadata remain valid. `resolveStaticMeshShells()` exposes their
-existing geometry as one virtual legacy shell, and the next append materializes that shell metadata.
-
-### Hierarchy contract
-
-The Static Mesh hierarchy separates organization from edit mode:
-
-```text
-Static Mesh
-└─ Geometry                      [shell count]
-   ├─ Shells
-   │  ├─ Shell 0 · BaseMesh
-   │  │  ├─ Vertices               [shell-local count]
-   │  │  ├─ Edges                  [shell-local count]
-   │  │  ├─ Faces                  [shell-local count]
-   │  │  └─ Triangles              [shell-local count]
-   │  └─ Shell 1 · AppendedMesh
-=======
 The resolver first detects connected components from logical faces and explicit sibling groups,
 then uses saved metadata only to recover stable names, IDs, and append provenance. If metadata says
 "one Mesh Shell" but topology contains three disconnected components, the hierarchy shows three.
@@ -216,20 +178,12 @@ Static Mesh
    │  │  ├─ Edges                [Mesh Shell-local count]
    │  │  └─ Faces                [Mesh Shell-local count]
    │  └─ Mesh Shell 1 · AppendedMesh
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
    └─ Components
       ├─ Vertices                [global]
       ├─ Edges                   [global]
       └─ Faces                   [global]
 ```
 
-<<<<<<< HEAD
-Shell children are descriptive component summaries. Selecting/appending a shell expands `Geometry -> Shells`
-and the selected shell automatically so its local counts are visible immediately. `Components` remains the
-authoritative entry point for the current asset-wide Vertex / Edge / Face edit modes. Shell selection is intentionally **not** a new
-`MeshComponentMode` yet; adding shell-scoped picking/deformation requires a separate selection-scope
-contract so the hierarchy never implies filtering that the viewport does not enforce.
-=======
 A Mesh Shell row is an **actionable transform scope**, not a fourth mesh component mode. Selecting a Mesh Shell
 keeps the user-facing hierarchy/Inspector context as `SHELL`, but internally enters `VERTEX` mode and selects every
 vertex owned by that Mesh Shell. The normal component gizmo therefore moves only that Mesh Shell instead of moving
@@ -262,7 +216,6 @@ stale selections from another component mode must never make a gizmo appear at t
 
 Triangles remain visible as a Mesh Shell count in the Inspector, but are not a hierarchy action because the editor
 currently has no Triangle component mode.
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
 
 ### React invalidation for composed assets
 
@@ -273,3 +226,17 @@ and `MeshAssetInspector`. Any memo that derives geometry counts, shell lists, sh
 metadata must include that revision (or an equivalent changed field reference). This is what makes the hierarchy
 advance from 0 -> 1 -> 2 shells after successive append operations even though the asset object reference itself
 does not change.
+
+### AI construction layer: Points are not Vertices
+
+`StaticMeshAsset.construction` is a semantic modeling layer above `MeshGeometry` / `LogicalMesh`. Its
+Construction Points are stable planning handles for agents and tools, not mesh Vertex IDs. Adding a point
+must not allocate render topology. Modeling operations in `StaticMeshAssetAPI` materialize/reuse backend
+vertices only when a face/extrude/bridge needs them, and a semantic point may bind to multiple render
+vertices later when topology splits require it.
+
+The Static Mesh hierarchy therefore exposes `Construction > Points / Faces / Loops` separately from
+`Geometry > Mesh Shells / Components`. Construction Points use their own viewport overlay and selection
+domain; selecting them must not masquerade as Vertex component selection or make the normal mesh-component
+gizmo operate on them. See `docs/STATIC_MESH_CONSTRUCTION_API.md` for the persistence model, API examples,
+current operation limits, and the focused `npm run test:mesh-construction` contract.

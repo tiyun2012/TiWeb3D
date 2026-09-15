@@ -8,7 +8,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "check": "npm run audit && npm run typecheck && npm run build",
-    "audit": "node scripts/project-audit.mjs"
+    "audit": "node scripts/project-audit.mjs",
+    "test:mesh-construction": "node --loader ./scripts/test-ts-loader.mjs ./scripts/test-static-mesh-construction.ts"
   },
   "dependencies": {
     "lucide-react": "^0.372.0",

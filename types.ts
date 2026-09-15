@@ -169,23 +169,13 @@ export interface StaticMeshIdRange {
 }
 
 /**
-<<<<<<< HEAD
- * Authored geometry part inside a Static Mesh. Shells reference component ID
- * ranges owned by geometry/topology; they never duplicate vertex or face data.
-=======
  * Authored Mesh Shell metadata inside a Static Mesh. A Mesh Shell is a connected
  * component of polygon topology. Metadata references component IDs owned by the
  * geometry/topology and never duplicates vertex or face data.
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
  */
 export interface StaticMeshShell {
     id: string;
     name: string;
-<<<<<<< HEAD
-    vertexIds: StaticMeshIdRange;
-    triangleIds: StaticMeshIdRange;
-    faceIds: StaticMeshIdRange;
-=======
     /**
      * Legacy/allocation bounds kept for saved-asset compatibility and append provenance.
      * They are hints only: actual shell membership is resolved from mesh topology.
@@ -198,21 +188,59 @@ export interface StaticMeshShell {
      * should populate this, but readers must still accept older range-only metadata.
      */
     faceIdsExact?: number[];
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
     /** Optional provenance used by append/composition tooling. */
     sourceAssetId?: string;
+}
+
+export type StaticMeshConstructionPointRole = 'ANCHOR' | 'CORNER' | 'CENTER' | 'OPENING' | 'GUIDE' | 'CUSTOM';
+
+/**
+ * Semantic authoring point used by procedural/AI mesh construction. This is not
+ * a render/topology vertex. `vertexIds` records any mesh vertices currently bound
+ * to the point so one semantic point may drive several render vertices later.
+ */
+export interface StaticMeshConstructionPoint {
+    id: string;
+    position: Vector3;
+    name?: string;
+    role?: StaticMeshConstructionPointRole;
+    groupId?: string;
+    tags?: string[];
+    data?: Record<string, string | number | boolean | null>;
+    vertexIds?: number[];
+}
+
+/** Stable semantic face handle produced from Construction Points. */
+export interface StaticMeshConstructionFace {
+    id: string;
+    pointIds: string[];
+    /** Current logical topology face id. It is an implementation mapping, not the stable handle. */
+    faceId: number;
+    name?: string;
+}
+
+/** Ordered Construction Point loop used by bridge and future modeling operations. */
+export interface StaticMeshConstructionLoop {
+    id: string;
+    pointIds: string[];
+    closed: boolean;
+    name?: string;
+}
+
+export interface StaticMeshConstructionData {
+    points: StaticMeshConstructionPoint[];
+    faces: StaticMeshConstructionFace[];
+    loops: StaticMeshConstructionLoop[];
 }
 
 export interface StaticMeshAsset extends Asset {
     type: 'MESH' | 'SKELETAL_MESH';
     topology: LogicalMesh;
     geometry: MeshGeometry;
-<<<<<<< HEAD
-    /** Authored mesh parts. Older assets without this field resolve as one legacy shell. */
-=======
     /** Optional Mesh Shell naming/provenance metadata. Actual membership is detected from logical topology. */
->>>>>>> 22095ed25f234a37a29434ca8482a4279c539820
     shells?: StaticMeshShell[];
+    /** Semantic construction layer used by procedural/AI modeling. Points are not mesh vertices. */
+    construction?: StaticMeshConstructionData;
     /** Optional asset-default material. Empty/undefined uses built-in Standard Lambert. */
     materialId?: string;
 }
