@@ -109,6 +109,22 @@ used as long-lived planning identity.
 The first implementation supports ordered, planar, non-self-intersecting convex polygons. It fan-
 triangulates the polygon while preserving one logical face in `LogicalMesh.faces`.
 
+### Face-core sharing invariant
+
+`LogicalMesh.faces` is the authoritative logical surface topology. Construction Points are semantic
+inputs to those faces; they are not independent topology islands. When two Construction Faces reference
+the same Construction Point ID, compilation reuses that point's existing mesh vertex binding. Therefore:
+
+- faces sharing one Construction Point share one actual/canonical mesh vertex,
+- adjacent faces sharing an authored edge reuse the same two mesh vertex IDs,
+- the half-edge graph pairs that shared edge when the two face windings traverse it in opposite directions,
+- separate Construction Point IDs at the same XYZ position remain separate vertices unless an explicit
+  sibling/weld relationship says otherwise.
+
+Do not introduce a separate "sibling face" identity table for ordinary adjacency. Face adjacency is derived
+from the shared vertex/edge topology. `LogicalMesh.siblings` is reserved for duplicated render vertices that
+represent one explicitly authored logical vertex (for example a UV/hard-normal seam).
+
 ### Create a loop
 
 ```ts
@@ -218,6 +234,7 @@ The test verifies:
 
 - adding points alone allocates no mesh vertices,
 - four points create one logical quad / two triangles,
+- adjacent faces that reuse Construction Points share the same actual mesh vertices and pair their oppositely wound half-edge,
 - moving a semantic point updates all bound mesh vertices,
 - extrusion returns stable generated handles and creates a closed wall volume,
 - referenced points cannot be silently deleted,

@@ -127,11 +127,12 @@ interface DetectedShellComponent {
 
 /**
  * Detect actual Mesh Shells from authored topology, not from asset metadata.
- * Faces are connected only through a logical polygon edge. `siblings` are allowed
- * to bridge a render seam only when that relationship was explicitly authored or
- * imported. Coincident XYZ positions never create connectivity. Therefore the
- * built-in 24-vertex Cube (six independent quads, no authored welds) resolves as
- * six Mesh Shells.
+ * A Mesh Shell is a vertex-connected logical surface component: two faces belong
+ * to the same shell when they share at least one actual/canonical topology vertex.
+ * `siblings` may bridge render seams only when that relationship was explicitly
+ * authored or imported. Coincident XYZ positions never create connectivity.
+ * Therefore the built-in 24-vertex Cube (six independent quads, no authored welds)
+ * still resolves as six Mesh Shells.
  */
 function detectStaticMeshShellComponents(asset: StaticMeshAsset): DetectedShellComponent[] {
   const vertexCount = Math.floor(asset.geometry.vertices.length / 3);
@@ -142,8 +143,12 @@ function detectStaticMeshShellComponents(asset: StaticMeshAsset): DetectedShellC
   const connectivity = getMeshConnectivity(topology, vertexCount);
   const neighbors = Array.from({ length: faceCount }, () => new Set<number>());
 
-  connectivity.edgeFacesByCanonicalEdge.forEach(edgeFaces => {
-    const validFaces = edgeFaces.filter(faceId => faceId >= 0 && faceId < faceCount);
+  // Shell connectivity is broader than edge adjacency. Faces touching at one
+  // authored/canonical vertex are still one connected mesh component. Reuse the
+  // shared connectivity index so explicit sibling/weld identity is honored while
+  // unrelated coincident positions remain disconnected.
+  connectivity.facesByCanonical.forEach(incidentFaces => {
+    const validFaces = incidentFaces.filter(faceId => faceId >= 0 && faceId < faceCount);
     for (let i = 0; i < validFaces.length; i += 1) {
       for (let j = i + 1; j < validFaces.length; j += 1) {
         neighbors[validFaces[i]].add(validFaces[j]);

@@ -102,11 +102,12 @@ not a UV Shell, and not a group inferred from coincident XYZ positions. `resolve
 derives Mesh Shells from `LogicalMesh.faces` plus only **explicit** logical-weld groups in
 `LogicalMesh.siblings`.
 
-Two faces are in the same Mesh Shell when they share a logical polygon edge. Render vertices may
-be split for UVs or normals and still belong to one logical vertex only when the generator/importer
-explicitly records that relationship in `siblings`. Equal positions alone never create a weld.
-Point contact alone is also not enough to merge Mesh Shells because shell traversal requires a
-shared logical edge.
+Two faces are in the same Mesh Shell when they are **vertex-connected**: sharing even one actual
+mesh vertex is enough, and an explicit sibling/canonical logical vertex also carries that connectivity
+across UV/normal render splits. Render vertices may be split for UVs or normals and still belong to one
+logical vertex only when the generator/importer explicitly records that relationship in `siblings`.
+Equal positions alone never create a weld, so two distinct vertex IDs that merely occupy the same XYZ
+position remain separate Mesh Shells.
 
 The built-in Cube intentionally remains unchanged: it has 24 render vertices arranged as six
 independent quads, and it provides no authored sibling/weld groups. It therefore resolves as

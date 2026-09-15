@@ -16,9 +16,12 @@ Connectivity therefore comes from:
 2. `LogicalMesh.siblings` for **explicit source-authored/imported** seam/hard-edge weld groups.
 
 Current vertex positions do not create connectivity. Equal XYZ values are not evidence of a weld,
-and moving unrelated vertices into the same position must never weld them automatically. Existing seam/hard-edge sibling welds are a
-persistent topology relationship, but direct component deformation can intentionally move only
-part of one render-vertex sibling group. At the geometry-edit transaction boundary,
+and moving unrelated vertices into the same position must never weld them automatically. For **Mesh Shell**
+resolution specifically, logical faces are grouped by **vertex connectivity**: sharing one actual vertex ID
+(or one explicit sibling/canonical logical vertex) is enough to belong to the same Mesh Shell, even when the
+faces do not share a full edge. Existing seam/hard-edge sibling welds are a persistent topology relationship,
+but direct component deformation can intentionally move only part of one render-vertex sibling group. At the
+geometry-edit transaction boundary,
 `reconcileMeshSiblingGroupsAfterGeometryEdit(...)` validates those **existing** welds and may
 split a group whose members no longer coincide. It never creates a new sibling relationship.
 
