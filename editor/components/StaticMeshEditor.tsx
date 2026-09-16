@@ -515,7 +515,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
 
     previewEngineRef.current = previewEngine;
     const gs = new GizmoSystem(previewEngine);
-    gs.renderInSelectTool = true;
+    // Select is selection-only in the Static Mesh editor. The transform gizmo
+    // becomes visible/interactable only after the user explicitly activates
+    // Move/Rotate/Scale; changing component mode or selection never opts in.
+    gs.renderInSelectTool = false;
     gs.setTool(tool);
     gizmoSystemRef.current = gs;
 

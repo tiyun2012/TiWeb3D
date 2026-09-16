@@ -346,6 +346,7 @@ const identityVp = new Float32Array([
   0, 0, 0, 1,
 ]);
 let renderedGizmoPosition = { x: Number.NaN, y: Number.NaN, z: Number.NaN };
+let renderedGizmoCount = 0;
 let dragStartX = 0;
 const selectedVertexIds = new Set<number>([gizmoVertexId]);
 const fakeGizmoEngine = {
@@ -379,6 +380,7 @@ const fakeGizmoEngine = {
   renderer: {
     renderGizmos: (_vp: Float32Array, position: { x: number; y: number; z: number }) => {
       renderedGizmoPosition = { ...position };
+      renderedGizmoCount += 1;
     },
   },
   syncTransforms: () => {},
@@ -400,9 +402,14 @@ const fakeGizmoEngine = {
   },
 };
 const localGizmo = new GizmoSystem(fakeGizmoEngine);
-localGizmo.renderInSelectTool = true;
+// SELECT is selection-only: an actionable component selection must not make a
+// transform gizmo appear until the user explicitly activates a transform tool.
 localGizmo.render();
-assert.equal(renderedGizmoPosition.x, 0, 'Gizmo must initially derive its pivot from the selected vertex.');
+assert.equal(renderedGizmoCount, 0, 'SELECT tool must keep the transform gizmo hidden.');
+localGizmo.setTool('MOVE');
+localGizmo.render();
+assert.equal(renderedGizmoCount, 1, 'MOVE must explicitly activate the transform gizmo.');
+assert.equal(renderedGizmoPosition.x, 0, 'Gizmo must derive its pivot from the selected vertex once activated.');
 
 // Center-screen ray hits the VIEW handle at the selected origin and begins a
 // component drag. Cancelling invokes the host's asset-transaction rollback.
@@ -431,6 +438,10 @@ assert.equal(gizmoAsset.geometry.vertices[gizmoVertexId * 3], 0);
 assert.equal(selectedVertexIds.has(gizmoVertexId), true, 'Undo must not require a separate gizmo-selection history.');
 localGizmo.render();
 assert.equal(renderedGizmoPosition.x, 0, 'Gizmo must follow the restored selected vertex after Undo.');
+localGizmo.setTool('SELECT');
+localGizmo.render();
+assert.equal(renderedGizmoCount, 2, 'Returning to SELECT must hide the gizmo without clearing selection.');
+assert.equal(selectedVertexIds.has(gizmoVertexId), true, 'Hiding the gizmo in SELECT must preserve component selection.');
 
 const bridgeAsset = staticMeshAssetAPI.create({ name: 'Construction API Bridge Test', path: '/Tests' });
 staticMeshAssetAPI.addPoints({

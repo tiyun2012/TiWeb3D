@@ -454,6 +454,7 @@ CAMERA RESOLUTION / PRESET RULES
 
 ### 28. STATIC MESH GIZMO / ASSET HISTORY SYNCHRONIZATION
 - **GIZMO IS DERIVED UI:** Never store gizmo position, visibility, active axis, or hover axis as an AssetHistory snapshot. The mesh/selection are authoritative; derive the gizmo pivot from the live restored selection every render.
+- **SELECT TOOL MUST NOT RENDER THE TRANSFORM GIZMO:** Static Mesh `SELECT` is selection-only. Keep `GizmoSystem.renderInSelectTool = false`; Object/Vertex/Edge/Face selection changes may preserve an already active MOVE/ROTATE/SCALE tool, but must never activate a transform tool or make the gizmo appear by themselves.
 - **ONE DRAG = ONE ASSET TRANSACTION:** Begin Static Mesh component history at gizmo drag start, mutate geometry live, and commit once on mouse-up. A zero-total-delta drag must close cleanly without creating Undo history.
 - **CANCEL UNFINISHED DRAGS:** `Esc` cancels an active component drag back to its drag-start state with no history entry. `Ctrl/Cmd+Z` during an unfinished drag cancels that drag first; do not consume the previous committed history step in the same key press.
 - **PRESERVE VALID SELECTION THROUGH HISTORY:** Undo/Redo must not blindly clear Vertex/Edge/Face, Construction Point, or Mesh Shell selection. Preserve ids that still exist in the restored asset and prune only stale ids, then recompute soft-selection weights.

@@ -211,9 +211,12 @@ keeps the current selection unchanged. Viewport `Shift+click` and hierarchy `Shi
 selection API (`REPLACE | ADD | SUBTRACT | TOGGLE`) rather than mutating `SelectionSystem.subSelection` directly.
 
 The Static Mesh editor opens with no actionable selection. Its hidden preview entity may be installed as an edit target
-when component selection is needed, but that target alone must never display a gizmo. The gizmo appears only when the
-whole object is explicitly selected or the **active** component domain contains selected components. In particular,
-stale selections from another component mode must never make a gizmo appear at the origin.
+when component selection is needed, but that target alone must never display a gizmo. **SELECT is selection-only**: even
+an actionable object/component selection does not display or pick the transform gizmo until the user explicitly activates
+MOVE, ROTATE, or SCALE. Changing Object/Vertex/Edge/Face mode never activates a transform tool; if a transform tool was
+already active, changing selection/component mode preserves that explicit tool choice. Gizmo visibility therefore requires
+both an active transform tool and an actionable selection in the current domain. Stale selections from another component
+mode must never make a gizmo appear at the origin.
 
 Triangles remain visible as a Mesh Shell count in the Inspector, but are not a hierarchy action because the editor
 currently has no Triangle component mode.
