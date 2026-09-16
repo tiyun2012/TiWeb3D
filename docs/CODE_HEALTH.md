@@ -83,6 +83,7 @@ The September 2026 strict-typecheck cleanup also codifies several editor/runtime
 - `AssetViewportEngine.entityId` is nullable until its preview entity exists. Render and picking paths must guard it before calling scene-graph or selection APIs.
 - The current `TransformSpace` runtime contract supports only `World` and `Local`. Tool option UIs must not advertise placeholder spaces such as Gimbal, Parent, VirtualPivot, Normal, or Average until the engine implements them.
 - Lucide icon names stay strongly typed. Use valid exported names such as `Wrench`; do not weaken `Icon` typing to accept invented names such as `Tool`.
+- `AssetManager.getAsset()` returns the generic `Asset` interface. Mesh-only editor restore/reconciliation paths must narrow to a typed `StaticMeshAsset` local after validating `asset.type === 'MESH'` before passing the value to topology helpers or iterating typed Construction data.
 
 `npm run audit` rejects the stale `ecs.setName`, `sceneGraph.detach`, invalid `Tool` icon, and unsupported transform-space options so these mismatches are caught before the dependency-backed typecheck.
 

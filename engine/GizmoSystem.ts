@@ -29,6 +29,9 @@ export interface IGizmoEngineContext {
     startVertexDrag: (entityId: string) => void;
     updateVertexDrag: (entityId: string, delta: Vector3) => void;
     endVertexDrag: () => void;
+    /** Asset editors can provide this to restore an unfinished component drag
+     * from their transaction snapshot instead of committing it. */
+    cancelVertexDrag?: () => void;
 }
 
 
@@ -44,11 +47,11 @@ export class GizmoSystem {
     private suppressedEntityIds = new Set<string>();
 
     setViewportEnabled(enabled: boolean) {
+        if (!enabled && this.isDragging) this.cancelActiveDrag();
         this.viewportEnabled = enabled;
         if (!enabled) {
             this.hoverAxis = null;
             this.activeAxis = null;
-            this.isDragging = false;
         }
     }
 
@@ -74,6 +77,54 @@ export class GizmoSystem {
     private planeNormal: Vector3 = { x: 0, y: 1, z: 0 };
     
     private dragOrigin: Vector3 = { x: 0, y: 0, z: 0 };
+
+    /** Host editors use this to tell an unfinished gesture from a committed
+     * history step. */
+    isActiveDrag(): boolean {
+        return this.isDragging;
+    }
+
+    /** Clear transient handle state after Undo/Redo. The target state is never
+     * stored on the gizmo, so this does not alter geometry or transforms. */
+    resetInteraction() {
+        if (this.isDragging) return;
+        this.activeAxis = null;
+        this.hoverAxis = null;
+        this.dragEntityId = null;
+        this.dragComponentMode = false;
+    }
+
+    /**
+     * Cancel, rather than commit, the active gesture. Component drags restore
+     * through the host asset transaction. Object translation restores the
+     * captured world-space start position.
+     */
+    cancelActiveDrag(): boolean {
+        if (!this.isDragging) {
+            this.resetInteraction();
+            return false;
+        }
+
+        const entityId = this.dragEntityId;
+        const wasComponentDrag = this.dragComponentMode;
+
+        this.isDragging = false;
+        this.activeAxis = null;
+        this.hoverAxis = null;
+        this.dragEntityId = null;
+        this.dragComponentMode = false;
+
+        if (wasComponentDrag) {
+            if (this.engine.cancelVertexDrag) this.engine.cancelVertexDrag();
+            else this.engine.endVertexDrag();
+        } else if (entityId) {
+            this.setWorldPosition(entityId, this.startPos);
+            this.engine.syncTransforms(false);
+        }
+
+        this.engine.notifyUI();
+        return true;
+    }
 
     setTool(tool: ToolType) {
         this.tool = tool;

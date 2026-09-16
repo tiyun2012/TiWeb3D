@@ -125,6 +125,59 @@ Do not introduce a separate "sibling face" identity table for ordinary adjacency
 from the shared vertex/edge topology. `LogicalMesh.siblings` is reserved for duplicated render vertices that
 represent one explicitly authored logical vertex (for example a UV/hard-normal seam).
 
+### Inset a face
+
+`insetFace()` keeps face identity stable. The selected Construction Face is not deleted/replaced with an
+unrelated handle; instead, its boundary becomes the new inner boundary and a ring of border faces is
+created around it.
+
+```ts
+const inset = staticMeshAssetAPI.insetFace({
+  assetId,
+  faceId: floor.id,
+  id: 'inset:floor-panel',
+  amount: 0.25,
+});
+```
+
+The first implementation uses a **constant world-space distance measured in the face plane** and follows
+the same ordered planar-convex polygon contract as `createFaceFromPoints()`.
+
+```ts
+{
+  id: 'inset:floor-panel',
+  sourceFaceId: 'face:ground-floor',
+  innerFaceId: 'face:ground-floor', // stable: same semantic face
+  innerLoopId: 'inset:floor-panel.innerLoop',
+  innerPointIds: [...],
+  borderFaceIds: [...],
+}
+```
+
+The stable-face rule is deliberate. AI/scripts can chain operations without rediscovering topology:
+
+```ts
+const inset = staticMeshAssetAPI.insetFace({
+  assetId,
+  faceId: wall.id,
+  amount: 0.15,
+});
+
+const recess = staticMeshAssetAPI.extrudeFace({
+  assetId,
+  faceId: inset.innerFaceId, // same id as wall.id
+  distance: -0.2,
+});
+```
+
+Internally the logical face ID is also preserved. Its old boundary remains available to the newly-created
+border ring, while the inner face gets newly-authored Construction Points. The border ring shares the
+correct vertices and opposite half-edge winding with the inner face and neighboring border faces.
+
+`insetFace()` rejects non-positive distances, non-planar/concave input, degenerate neighboring edges, and
+an inset amount large enough to collapse or cross the source polygon. It does not silently produce invalid
+topology.
+
 ### Create a loop
 
 ```ts
@@ -236,6 +289,7 @@ The test verifies:
 - four points create one logical quad / two triangles,
 - adjacent faces that reuse Construction Points share the same actual mesh vertices and pair their oppositely wound half-edge,
 - moving a semantic point updates all bound mesh vertices,
+- inset preserves the selected semantic/logical face id, creates a shared border ring, rejects collapse, and can feed the same face directly into extrusion,
 - extrusion returns stable generated handles and creates a closed wall volume,
 - referenced points cannot be silently deleted,
 - two equal four-point loops bridge into four logical quads.
@@ -245,6 +299,44 @@ browser renderer. In a normal project install it uses the local `typescript` dev
 
 ## Next modeling operations
 
-Keep future modeling commands at this semantic layer where practical. Good next additions are transaction/
-rollback support for multi-operation AI plans, point-gizmo transforms, face/loop deletion with safe topology
-rebuild, inset, bevel, cut/split, unequal-loop bridging, and robust concave n-gon triangulation.
+Keep future modeling commands at this semantic layer where practical. Asset transactions/rollback are now
+available. Good next additions are point-gizmo transforms, face/loop deletion with safe topology rebuild,
+bevel, cut/split, unequal-loop bridging, and robust concave n-gon triangulation.
+
+## Asset undo/redo and AI transactions
+
+Static Mesh construction mutations are recorded by the asset-level `AssetHistory` service. This history is separate from the Scene ECS `HistorySystem`: a modeling operation can change Construction Points/Faces/Loops, mesh geometry, logical topology, half-edge data and Mesh Shell metadata without changing any scene entity.
+
+Every public construction mutation (`addPoint(s)`, `movePoint`, `removePoint`, `createFaceFromPoints`, `createLoop`, `insetFace`, `extrudeFace`, `bridgeLoops`) creates one atomic undo step. Static Mesh append/reference mutations use the same history boundary. Snapshots preserve typed arrays and Maps rather than JSON-serializing them.
+
+The API exposes:
+
+```ts
+staticMeshAssetAPI.undo(assetId);
+staticMeshAssetAPI.redo(assetId);
+staticMeshAssetAPI.getHistoryState(assetId);
+
+staticMeshAssetAPI.beginTransaction(assetId, 'Build Window');
+// any number of construction primitives
+staticMeshAssetAPI.commitTransaction(assetId);
+// or cancelTransaction(assetId)
+```
+
+An AI should group one semantic intent into a transaction. For example, creating points, creating a face, insetting it and extruding it can become one `Build Window` undo step rather than four unrelated user undos. If an operation inside a transaction throws, the asset is restored to the transaction's starting snapshot.
+
+The Static Mesh editor maps `Ctrl/Cmd+Z` to asset undo, `Ctrl/Cmd+Shift+Z` and `Ctrl/Cmd+Y` to redo, and exposes Undo/Redo toolbar buttons. Plain `Z` remains the wireframe shortcut. Component gizmo drags capture one asset-history transaction from drag start through mouse-up.
+
+### Gizmo/history synchronization contract
+
+The gizmo is transient UI, not a second source of history. Mesh/component state is authoritative and the gizmo pivot is derived from the current selection every render.
+
+- A completed component drag is one asset-history entry.
+- A drag with no effective movement creates no history entry.
+- `Esc` during a component drag cancels the unfinished transaction and restores the drag-start asset state.
+- `Ctrl/Cmd+Z` during an unfinished drag cancels that drag first. A later Undo addresses the previous committed history entry.
+- Undo/Redo preserves still-valid Vertex/Edge/Face selection ids and prunes only ids that no longer exist in the restored topology.
+- Construction Point and Mesh Shell selection are likewise preserved when their semantic ids still exist.
+- After Undo/Redo, soft-selection weights are recomputed against restored geometry and gizmo hover/active-handle state is reset. The next gizmo render therefore follows the restored selected components automatically.
+- Cancelling a gizmo drag inside a broader API transaction must not cancel the outer transaction; only the live drag deformation is restored.
+
+Do not add separate "gizmo position" snapshots to `AssetHistory`. That would allow mesh state and gizmo state to diverge.

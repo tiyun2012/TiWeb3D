@@ -244,6 +244,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const dirtyRef = useRef<DirtyKind>('NONE');
   const referenceRevisionRef = useRef(0);
   const [assetRevision, setAssetRevision] = useState(0);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [selectionBox, setSelectionBox] = useState<SelectionBoxState | null>(null);
   const selectionBoxRef = useRef<SelectionBoxState | null>(null);
   const pendingComponentPressRef = useRef<PendingComponentPress | null>(null);
@@ -282,6 +283,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     selectionBoxRef.current = next;
     setSelectionBox(next);
   }, []);
+
+  useEffect(() => eventBus.on('ASSET_HISTORY_CHANGED', payload => {
+    if (payload?.id === assetId) setHistoryRevision(value => value + 1);
+  }), [assetId]);
 
   useEffect(() => {
     pendingComponentPressRef.current = null;
@@ -1363,6 +1368,65 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     [renderMode]
   );
 
+  const assetHistoryState = useMemo(() => {
+    const historyAsset = assetManager.getAsset(assetId);
+    return historyAsset?.type === 'MESH'
+      ? staticMeshAssetAPI.getHistoryState(assetId)
+      : { canUndo: false, canRedo: false, undoLabel: undefined, redoLabel: undefined, inTransaction: false };
+  }, [assetId, historyRevision]);
+
+  const reconcileSelectionAfterAssetRestore = useCallback(() => {
+    const restored = assetManager.getAsset(assetId);
+    if (!restored || restored.type !== 'MESH') return;
+    const restoredMesh = restored as StaticMeshAsset;
+
+    const validShellIds = new Set(resolveStaticMeshShells(restoredMesh).map(shell => shell.id));
+    setSelectedShellIds(current => current.filter(shellId => validShellIds.has(shellId)));
+
+    const validPointIds = new Set((restoredMesh.construction?.points ?? []).map(point => point.id));
+    setSelectedConstructionPointIds(current => current.filter(pointId => validPointIds.has(pointId)));
+
+    const engine = previewEngineRef.current;
+    engine?.refreshAfterAssetRestore();
+    gizmoSystemRef.current?.resetInteraction();
+  }, [assetId]);
+
+  const cancelActiveMeshDrag = useCallback((): boolean => {
+    const gizmo = gizmoSystemRef.current;
+    if (gizmo?.isActiveDrag()) {
+      const cancelled = gizmo.cancelActiveDrag();
+      if (cancelled) reconcileSelectionAfterAssetRestore();
+      return cancelled;
+    }
+
+    const engine = previewEngineRef.current;
+    if (engine?.hasActiveVertexDrag()) {
+      engine.cancelVertexDrag();
+      reconcileSelectionAfterAssetRestore();
+      return true;
+    }
+    return false;
+  }, [reconcileSelectionAfterAssetRestore]);
+
+  const undoAssetEdit = useCallback(() => {
+    if (assetManager.getAsset(assetId)?.type !== 'MESH') return;
+    // An unfinished gizmo gesture is not a history entry yet. First Ctrl/Cmd+Z
+    // cancels it back to the drag-start snapshot; a subsequent Undo addresses
+    // the previous committed asset edit.
+    if (cancelActiveMeshDrag()) return;
+    if (staticMeshAssetAPI.undo(assetId)) {
+      reconcileSelectionAfterAssetRestore();
+    }
+  }, [assetId, cancelActiveMeshDrag, reconcileSelectionAfterAssetRestore]);
+
+  const redoAssetEdit = useCallback(() => {
+    if (assetManager.getAsset(assetId)?.type !== 'MESH') return;
+    if (cancelActiveMeshDrag()) return;
+    if (staticMeshAssetAPI.redo(assetId)) {
+      reconcileSelectionAfterAssetRestore();
+    }
+  }, [assetId, cancelActiveMeshDrag, reconcileSelectionAfterAssetRestore]);
+
   const currentAsset = useMemo(() => {
     const asset = assetManager.getAsset(assetId);
     return asset && (asset.type === 'MESH' || asset.type === 'SKELETAL_MESH')
@@ -1701,6 +1765,22 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && cancelActiveMeshDrag()) {
+      e.preventDefault();
+      return;
+    }
+    const historyModifier = e.ctrlKey || e.metaKey;
+    if (historyModifier && (e.key === 'z' || e.key === 'Z')) {
+      e.preventDefault();
+      if (e.shiftKey) redoAssetEdit();
+      else undoAssetEdit();
+      return;
+    }
+    if (historyModifier && (e.key === 'y' || e.key === 'Y')) {
+      e.preventDefault();
+      redoAssetEdit();
+      return;
+    }
     if ((e.key === 'z' || e.key === 'Z') && currentAsset && assetViewportAllows(currentAsset.type, 'mesh.wireframe')) {
       setShowWireframe(v => !v);
     }
@@ -1723,6 +1803,24 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             );
           },
         })),
+        {
+          id: 'history.undo',
+          group: 'history',
+          label: assetHistoryState.undoLabel ? `Undo ${assetHistoryState.undoLabel} (Ctrl+Z)` : 'Undo (Ctrl+Z)',
+          icon: 'Undo2',
+          disabled: !assetHistoryState.canUndo,
+          className: !assetHistoryState.canUndo ? 'opacity-40 cursor-not-allowed' : undefined,
+          onTrigger: undoAssetEdit,
+        },
+        {
+          id: 'history.redo',
+          group: 'history',
+          label: assetHistoryState.redoLabel ? `Redo ${assetHistoryState.redoLabel} (Ctrl+Shift+Z)` : 'Redo (Ctrl+Shift+Z)',
+          icon: 'Redo2',
+          disabled: !assetHistoryState.canRedo,
+          className: !assetHistoryState.canRedo ? 'opacity-40 cursor-not-allowed' : undefined,
+          onTrigger: redoAssetEdit,
+        },
         {
           id: 'mesh.shading',
           group: 'display',
@@ -1854,7 +1952,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         engine={previewEngine}
         gizmoSystem={gizmoSystem}
         toolbarActions={meshToolbarActions}
-        shortcutsLegend="Drag Box Select • Shift+Drag Toggle • F Focus • B Radius • Alt+LMB Orbit • Alt+MMB Pan • Alt+RMB Zoom • RMB Pie"
+        shortcutsLegend="Drag Box Select • Shift+Drag Toggle • Esc Cancel Drag • Ctrl+Z Undo • F Focus • B Radius • Alt+LMB Orbit • Alt+MMB Pan • Alt+RMB Zoom • RMB Pie"
         onInitGl={handleInitGl}
         onCleanupGl={handleCleanupGl}
         onRender={handleRender}
