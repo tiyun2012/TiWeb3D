@@ -788,6 +788,7 @@ export const AssetViewport3D = React.forwardRef<AssetViewport3DHandle, AssetView
                   label={action.label}
                   active={action.active}
                   className={action.className}
+                  disabled={action.disabled}
                   onClick={action.onTrigger}
                 >
                   <Icon name={action.icon as any} size={14} />

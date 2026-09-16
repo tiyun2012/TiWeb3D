@@ -16,6 +16,8 @@ export type AssetViewportActionId =
   | 'mesh.face'
   | 'mesh.shading'
   | 'mesh.wireframe'
+  | 'history.undo'
+  | 'history.redo'
   | 'skeleton.joints'
   | 'skeleton.meshOverlay'
   | 'skeleton.wireframeOverlay';
@@ -27,6 +29,7 @@ export interface AssetViewportToolbarAction {
   icon: string;
   active?: boolean;
   className?: string;
+  disabled?: boolean;
   group?: string;
   onTrigger: () => void;
 }
@@ -60,6 +63,8 @@ const MESH_ACTIONS: AssetViewportActionId[] = [
   'mesh.face',
   'mesh.shading',
   'mesh.wireframe',
+  'history.undo',
+  'history.redo',
 ];
 
 const CAPABILITY_TABLE: Partial<Record<AssetType, AssetViewportCapabilities>> = {

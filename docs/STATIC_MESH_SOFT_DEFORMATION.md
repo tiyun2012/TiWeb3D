@@ -100,3 +100,13 @@ The Static Mesh asset viewport uploads the session's existing soft-selection wei
 While Vertex/Edge/Face mode is active, the Static Mesh viewport treats the preview entity as a fixed edit target. Component clicks must never fall through to object picking: `SelectionSystem.setSelected()` deliberately clears component sub-selection, which also clears the soft-selection weights and removes the component gizmo. A component-pick miss therefore preserves the current component selection rather than silently switching selection domains. RMB/Pie Menu opening must preserve component selection too.
 
 Gizmo drags capture their entity and component/object mode at mouse-down and keep that ownership until mouse-up. Pointer-move samples do not re-resolve mutable selection state, so UI notifications, hover changes, or other transient state cannot cancel `activeAxis` mid-gesture. `AssetViewportEngine.updateVertexDrag()` also avoids React UI invalidation per pointer sample; rendering reads geometry and soft-selection revisions directly, with normal UI/asset finalization at the gesture boundary.
+
+### Drag cancellation and Undo/Redo
+
+Static Mesh component deformation uses the asset transaction as the drag-start snapshot. The gizmo itself is never recorded in history.
+
+`Esc` cancels an active drag and restores the transaction-start mesh without creating an Undo entry. `Ctrl/Cmd+Z` while a drag is still active performs that cancellation first rather than consuming the previous committed history step. Once a drag has been committed, Undo/Redo restores the mesh snapshot, keeps any still-valid component selection, recomputes soft-selection state, and lets `GizmoSystem` derive its pivot from the restored selected vertices.
+
+No-op drags are not committed. If the final total gizmo delta returns to zero, `AssetViewportEngine` closes its transaction without marking it dirty.
+
+If a component drag begins while a broader asset transaction is already open, the viewport does not own that outer transaction. Commit marks the outer transaction dirty without closing it; cancel restores only the drag's geometry baseline rather than rolling back the caller's whole transaction.

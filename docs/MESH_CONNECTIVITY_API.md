@@ -149,3 +149,8 @@ A topology **loop** and a **shortest path** are different operations:
 
 Do not implement loop selection by repeatedly choosing the geometrically shortest
 neighbor; poles, triangles, and irregular valence need explicit loop rules.
+
+
+### Modeling validation in the Static Mesh UI
+
+Construction modeling APIs remain strict and atomic: invalid inputs such as an inset amount that collapses a face throw before topology is committed. The Static Mesh editor treats these expected validation failures as normal user feedback. It shows the API message inline beside the topology controls, leaves the entered value available for correction, creates no partial topology/history step, and does not emit a console error stack for expected inset validation. Unexpected failures are still logged for debugging.

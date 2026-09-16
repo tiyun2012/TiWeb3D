@@ -3,6 +3,7 @@ import { SoAEntitySystem } from '@/engine/ecs/EntitySystem';
 import { SceneGraph } from '@/engine/SceneGraph';
 import { SelectionSystem } from '@/engine/systems/SelectionSystem';
 import { assetManager } from '@/engine/AssetManager';
+import { assetHistory } from '@/engine/AssetHistory';
 import { COMPONENT_MASKS } from '@/engine/constants';
 import { StaticMeshAsset } from '@/types';
 import { EngineAPI } from '@/engine/api/EngineAPI';
@@ -10,6 +11,7 @@ import { createEngineAPI } from '@/engine/api/createEngineAPI';
 import { MeshDeformationSession } from '@/engine/mesh-editing/MeshDeformationSession';
 import type { SoftSelectionMode, SoftSelectionSettings } from '@/engine/mesh-editing/SoftSelection';
 import { finalizeStaticMeshTopologyAfterGeometryEdit } from '@/engine/mesh-editing/StaticMeshShells';
+import { meshEdgeKey } from '@/engine/MeshEdgeGeometry';
 
 type GizmoRendererFacade = {
     renderGizmos: (
@@ -69,6 +71,8 @@ export class AssetViewportEngine implements IEngine {
     // Deformation (vertex drag)
     private vertexSnapshot: Float32Array | null = null;
     private activeDeformationEntity: string | null = null;
+    private activeDeformationAssetId: string | null = null;
+    private ownsDeformationTransaction = false;
     private currentDeformationDelta: Vector3 = { x: 0, y: 0, z: 0 };
     private meshDeformationSession = new MeshDeformationSession();
 
@@ -149,6 +153,8 @@ export class AssetViewportEngine implements IEngine {
             this.meshDeformationSession.clear();
             this.vertexSnapshot = null;
             this.activeDeformationEntity = null;
+            this.activeDeformationAssetId = null;
+            this.ownsDeformationTransaction = false;
             this.currentDeformationDelta = { x: 0, y: 0, z: 0 };
             return;
         }
@@ -181,12 +187,22 @@ export class AssetViewportEngine implements IEngine {
     }
 
     pushUndoState() {
-        // Asset viewports currently rely on the main editor history.
+        // Generic GizmoSystem compatibility hook. Static Mesh component drags
+        // own their asset-history boundary in start/endVertexDrag instead of
+        // pushing a second, gizmo-specific history entry here.
     }
 
     startVertexDrag(entityId: string) {
         const context = this.getSoftSelectionContext(entityId);
         if (!context || context.selectedVertices.size === 0) return;
+
+        // Capture the whole authored mesh asset before live component deformation.
+        // The drag mutates geometry in place for responsive preview, then commits
+        // one asset-history transaction on mouse-up.
+        this.ownsDeformationTransaction = !assetHistory.getState(context.assetId).inTransaction;
+        if (this.ownsDeformationTransaction) {
+            assetHistory.begin(context.assetId, 'Move Mesh Components');
+        }
 
         this.publishSoftSelectionWeights(this.meshDeformationSession.begin(
             { vertices: context.asset.geometry.vertices, indices: context.asset.geometry.indices, topology: context.asset.topology },
@@ -195,6 +211,7 @@ export class AssetViewportEngine implements IEngine {
         ));
         this.vertexSnapshot = this.meshDeformationSession.baseline;
         this.activeDeformationEntity = entityId;
+        this.activeDeformationAssetId = context.assetId;
         this.currentDeformationDelta = { x: 0, y: 0, z: 0 };
         this.notifyUI();
     }
@@ -226,18 +243,148 @@ export class AssetViewportEngine implements IEngine {
     }
 
     endVertexDrag() {
-        this.meshDeformationSession.end();
-        if (!this.activeDeformationEntity) return;
+        if (!this.activeDeformationEntity || !this.activeDeformationAssetId) {
+            // `endVertexDrag` is also used as a gesture-boundary hook by brush
+            // controls. If no gizmo drag is active, do not destroy the retained
+            // FIXED/LIVE_FALLOFF/SLIDE operation used by post-drag adjustments.
+            this.meshDeformationSession.end();
+            return;
+        }
+
         const context = this.getSoftSelectionContext(this.activeDeformationEntity);
-        if (!context) return;
-        finalizeStaticMeshTopologyAfterGeometryEdit(context.asset);
-        this.onGeometryFinalized?.(context.assetId);
+        const assetId = this.activeDeformationAssetId;
+        const changed = Math.abs(this.currentDeformationDelta.x) > 1e-7 ||
+            Math.abs(this.currentDeformationDelta.y) > 1e-7 ||
+            Math.abs(this.currentDeformationDelta.z) > 1e-7;
+
+        this.meshDeformationSession.end();
+
+        if (!context) {
+            if (this.ownsDeformationTransaction) assetHistory.cancel(assetId);
+            this.clearDeformation();
+            this.notifyUI();
+            return;
+        }
+
+        if (changed) {
+            finalizeStaticMeshTopologyAfterGeometryEdit(context.asset);
+            assetHistory.markDirty(assetId);
+            this.onGeometryFinalized?.(assetId);
+        }
+        if (this.ownsDeformationTransaction) assetHistory.commit(assetId);
+        // End only the pointer gesture. Keep MeshDeformationSession's retained
+        // operation/reference state so FIXED/LIVE_FALLOFF/SLIDE behavior after
+        // mouse-up remains identical to the pre-history implementation.
+        this.activeDeformationEntity = null;
+        this.activeDeformationAssetId = null;
+        this.ownsDeformationTransaction = false;
+        this.vertexSnapshot = this.meshDeformationSession.baseline;
+        this.currentDeformationDelta = this.meshDeformationSession.currentDelta;
+        this.notifyUI();
+    }
+
+    /** Revert the currently live component drag to its transaction-start asset
+     * snapshot. This creates no history entry. */
+    cancelVertexDrag() {
+        const assetId = this.activeDeformationAssetId;
+        if (!assetId) {
+            this.clearDeformation();
+            return;
+        }
+
+        if (this.ownsDeformationTransaction) {
+            assetHistory.cancel(assetId);
+        } else {
+            // A caller may intentionally keep a broader semantic transaction
+            // open around several operations. Cancelling the gizmo must not
+            // cancel that outer transaction; restore only this drag's geometry.
+            const asset = assetManager.getAsset(assetId) as StaticMeshAsset | undefined;
+            if (asset?.type === 'MESH' && this.vertexSnapshot && asset.geometry.vertices.length === this.vertexSnapshot.length) {
+                asset.geometry.vertices.set(this.vertexSnapshot);
+                this.recomputeNormals(asset);
+                this.updateMeshBounds(asset);
+            }
+        }
+        this.clearDeformation();
+        // Scene mesh instances may have consumed live preview vertices while the
+        // drag was active, so explicitly invalidate their geometry after restore.
+        this.onGeometryUpdated?.(assetId);
+        this.refreshAfterAssetRestore();
+    }
+
+    hasActiveVertexDrag(): boolean {
+        return this.activeDeformationEntity !== null && this.activeDeformationAssetId !== null;
+    }
+
+    /**
+     * Undo/Redo restores the authoritative asset but selection belongs to this
+     * viewport. Preserve it when the referenced topology still exists, prune
+     * stale component ids, and recompute soft selection so the gizmo derives its
+     * position from the restored mesh instead of keeping transient drag state.
+     */
+    refreshAfterAssetRestore() {
+        this.clearDeformation();
+        this.selectionSystem.clearMeshComponentHover();
+
+        const entityId = this.previewEntityId;
+        if (!entityId) {
+            this.notifyUI();
+            return;
+        }
+        const idx = this.ecs.idToIndex.get(entityId);
+        if (idx == null) {
+            this.notifyUI();
+            return;
+        }
+        const assetId = assetManager.getMeshUUID(this.ecs.store.meshType[idx]);
+        const asset = assetId ? assetManager.getAsset(assetId) as StaticMeshAsset | undefined : undefined;
+        if (!asset || asset.type !== 'MESH') {
+            this.notifyUI();
+            return;
+        }
+
+        if (this.meshComponentMode !== 'OBJECT') {
+            // Component edit modes always keep the preview entity as the hidden
+            // edit target. This is not a separate gizmo state/history entry.
+            if (!this.selectionSystem.isSelected(entityId)) {
+                const entityIndex = this.ecs.idToIndex.get(entityId);
+                if (entityIndex !== undefined) this.selectionSystem.selectedIndices.add(entityIndex);
+            }
+
+            if (this.meshComponentMode === 'VERTEX') {
+                const vertexCount = asset.geometry.vertices.length / 3;
+                const valid = Array.from(this.selectionSystem.subSelection.vertexIds)
+                    .filter(vertexId => vertexId >= 0 && vertexId < vertexCount);
+                this.selectionSystem.setMeshComponentSelection('VERTEX', valid, 'REPLACE', false);
+            } else if (this.meshComponentMode === 'FACE') {
+                const faceCount = asset.topology?.faces.length ?? 0;
+                const valid = Array.from(this.selectionSystem.subSelection.faceIds)
+                    .filter(faceId => faceId >= 0 && faceId < faceCount);
+                this.selectionSystem.setMeshComponentSelection('FACE', valid, 'REPLACE', false);
+            } else if (this.meshComponentMode === 'EDGE') {
+                const validEdges = new Set<string>();
+                for (const face of asset.topology?.faces ?? []) {
+                    for (let i = 0; i < face.length; i += 1) {
+                        validEdges.add(meshEdgeKey(face[i], face[(i + 1) % face.length]));
+                    }
+                }
+                const valid = Array.from(this.selectionSystem.subSelection.edgeIds)
+                    .filter(edgeId => validEdges.has(edgeId));
+                this.selectionSystem.setMeshComponentSelection('EDGE', valid, 'REPLACE', false);
+            }
+        }
+
+        this.recalculateSoftSelection();
+        this.syncTransforms(false);
+        this.notifyUI();
     }
 
     clearDeformation() {
         this.meshDeformationSession.clear();
         this.vertexSnapshot = null;
         this.activeDeformationEntity = null;
+        this.activeDeformationAssetId = null;
+        this.ownsDeformationTransaction = false;
         this.currentDeformationDelta = { x: 0, y: 0, z: 0 };
     }
 

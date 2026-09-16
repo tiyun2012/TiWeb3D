@@ -42,6 +42,7 @@ import {
   collectFaceEdgeKeys,
   MESH_EDGE_COLORS,
   meshEdgeKey,
+  meshEdgePairFromKey,
 } from '@/engine/MeshEdgeGeometry';
 import { MeshEdgeOverlay } from '@/editor/viewports/MeshEdgeOverlay';
 import { MESH_VERTEX_COLORS, MeshVertexOverlay } from '@/editor/viewports/MeshVertexOverlay';
@@ -110,6 +111,7 @@ type PendingObjectPress = {
   hitId: string | null;
 };
 type SoftSelectionCommandSettings = Parameters<NonNullable<EditorCommandContext['services']['configureSoftSelection']>>[0];
+type TopologyCommand = Parameters<NonNullable<EditorCommandContext['services']['topologyCommand']>>[0];
 
 const EMPTY_STATIC_MESH_CAMERA = {
   radius: 3.5,
@@ -179,6 +181,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const [softSelectionSurfaceBlend, setSoftSelectionSurfaceBlend] = useState(0.5);
   const [softSelectionConnectivity, setSoftSelectionConnectivity] = useState<SoftSelectionConnectivity>('NONE');
   const [softSelectionHeatmapVisible, setSoftSelectionHeatmapVisible] = useState(true);
+  const [topologyInsetAmount, setTopologyInsetAmount] = useState(0.25);
+  const [topologyExtrudeDistance, setTopologyExtrudeDistance] = useState(1.0);
+  const [topologySplitPosition, setTopologySplitPosition] = useState(0.5);
+  const [topologyFeedback, setTopologyFeedback] = useState<string | null>(null);
 
   const meshComponentModeRef = useRef<MeshComponentMode>(meshComponentMode);
   useEffect(() => {
@@ -244,6 +250,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const dirtyRef = useRef<DirtyKind>('NONE');
   const referenceRevisionRef = useRef(0);
   const [assetRevision, setAssetRevision] = useState(0);
+  const [historyRevision, setHistoryRevision] = useState(0);
   const [selectionBox, setSelectionBox] = useState<SelectionBoxState | null>(null);
   const selectionBoxRef = useRef<SelectionBoxState | null>(null);
   const pendingComponentPressRef = useRef<PendingComponentPress | null>(null);
@@ -282,6 +289,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     selectionBoxRef.current = next;
     setSelectionBox(next);
   }, []);
+
+  useEffect(() => eventBus.on('ASSET_HISTORY_CHANGED', payload => {
+    if (payload?.id === assetId) setHistoryRevision(value => value + 1);
+  }), [assetId]);
 
   useEffect(() => {
     pendingComponentPressRef.current = null;
@@ -1363,6 +1374,65 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     [renderMode]
   );
 
+  const assetHistoryState = useMemo(() => {
+    const historyAsset = assetManager.getAsset(assetId);
+    return historyAsset?.type === 'MESH'
+      ? staticMeshAssetAPI.getHistoryState(assetId)
+      : { canUndo: false, canRedo: false, undoLabel: undefined, redoLabel: undefined, inTransaction: false };
+  }, [assetId, historyRevision]);
+
+  const reconcileSelectionAfterAssetRestore = useCallback(() => {
+    const restored = assetManager.getAsset(assetId);
+    if (!restored || restored.type !== 'MESH') return;
+    const restoredMesh = restored as StaticMeshAsset;
+
+    const validShellIds = new Set(resolveStaticMeshShells(restoredMesh).map(shell => shell.id));
+    setSelectedShellIds(current => current.filter(shellId => validShellIds.has(shellId)));
+
+    const validPointIds = new Set((restoredMesh.construction?.points ?? []).map(point => point.id));
+    setSelectedConstructionPointIds(current => current.filter(pointId => validPointIds.has(pointId)));
+
+    const engine = previewEngineRef.current;
+    engine?.refreshAfterAssetRestore();
+    gizmoSystemRef.current?.resetInteraction();
+  }, [assetId]);
+
+  const cancelActiveMeshDrag = useCallback((): boolean => {
+    const gizmo = gizmoSystemRef.current;
+    if (gizmo?.isActiveDrag()) {
+      const cancelled = gizmo.cancelActiveDrag();
+      if (cancelled) reconcileSelectionAfterAssetRestore();
+      return cancelled;
+    }
+
+    const engine = previewEngineRef.current;
+    if (engine?.hasActiveVertexDrag()) {
+      engine.cancelVertexDrag();
+      reconcileSelectionAfterAssetRestore();
+      return true;
+    }
+    return false;
+  }, [reconcileSelectionAfterAssetRestore]);
+
+  const undoAssetEdit = useCallback(() => {
+    if (assetManager.getAsset(assetId)?.type !== 'MESH') return;
+    // An unfinished gizmo gesture is not a history entry yet. First Ctrl/Cmd+Z
+    // cancels it back to the drag-start snapshot; a subsequent Undo addresses
+    // the previous committed asset edit.
+    if (cancelActiveMeshDrag()) return;
+    if (staticMeshAssetAPI.undo(assetId)) {
+      reconcileSelectionAfterAssetRestore();
+    }
+  }, [assetId, cancelActiveMeshDrag, reconcileSelectionAfterAssetRestore]);
+
+  const redoAssetEdit = useCallback(() => {
+    if (assetManager.getAsset(assetId)?.type !== 'MESH') return;
+    if (cancelActiveMeshDrag()) return;
+    if (staticMeshAssetAPI.redo(assetId)) {
+      reconcileSelectionAfterAssetRestore();
+    }
+  }, [assetId, cancelActiveMeshDrag, reconcileSelectionAfterAssetRestore]);
+
   const currentAsset = useMemo(() => {
     const asset = assetManager.getAsset(assetId);
     return asset && (asset.type === 'MESH' || asset.type === 'SKELETAL_MESH')
@@ -1555,6 +1625,160 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     return engine.selectionSystem.selectedIndices.size > 0;
   }, [meshComponentMode, selectionTick]);
 
+  const selectedConstructionFace = useMemo(() => {
+    if (!currentAsset || currentAsset.type !== 'MESH' || meshComponentMode !== 'FACE') return null;
+    const meshAsset = currentAsset as StaticMeshAsset;
+    const engine = previewEngineRef.current;
+    if (!engine) return null;
+    const selectedFaceIds = Array.from(engine.selectionSystem.subSelection.faceIds);
+    if (selectedFaceIds.length !== 1) return null;
+    return meshAsset.construction?.faces.find(face => face.faceId === selectedFaceIds[0]) ?? null;
+  }, [currentAsset, meshComponentMode, selectionTick, assetRevision]);
+
+  const selectedConstructionEdge = useMemo(() => {
+    if (!currentAsset || currentAsset.type !== 'MESH' || meshComponentMode !== 'EDGE') return null;
+    const engine = previewEngineRef.current;
+    if (!engine) return null;
+    const selectedEdgeIds = Array.from(engine.selectionSystem.subSelection.edgeIds);
+    if (selectedEdgeIds.length !== 1) return null;
+    const vertexIds = meshEdgePairFromKey(selectedEdgeIds[0]);
+    if (!vertexIds) return null;
+    const pointIds = staticMeshAssetAPI.getConstructionEdgePointIds(assetId, vertexIds[0], vertexIds[1]);
+    if (!pointIds) return null;
+    return { edgeId: selectedEdgeIds[0], vertexIds, pointIds };
+  }, [assetId, currentAsset, meshComponentMode, selectionTick, assetRevision]);
+
+  useEffect(() => {
+    // Validation feedback belongs to the current authored face. Never carry an
+    // old inset error onto a different selection or asset.
+    setTopologyFeedback(null);
+  }, [assetId, selectedConstructionFace?.id, selectedConstructionEdge?.edgeId]);
+
+  const selectLogicalFace = useCallback((logicalFaceId: number | null) => {
+    const engine = previewEngineRef.current;
+    if (!engine) return;
+    ensurePreviewSelectionTarget(engine);
+    engine.api.commands.mesh.setComponentMode('FACE');
+    engine.api.commands.selection.setMeshComponents({
+      mode: 'FACE',
+      ids: logicalFaceId == null ? [] : [logicalFaceId],
+      operation: 'REPLACE',
+    });
+    changeMeshComponentMode('FACE');
+    setSelectedShellIds([]);
+    setSelectedConstructionPointIds([]);
+    setHierarchySection('FACES');
+  }, [changeMeshComponentMode, ensurePreviewSelectionTarget]);
+
+  const selectLogicalEdges = useCallback((edgeIds: readonly string[]) => {
+    const engine = previewEngineRef.current;
+    if (!engine) return;
+    ensurePreviewSelectionTarget(engine);
+    engine.api.commands.mesh.setComponentMode('EDGE');
+    engine.api.commands.selection.setMeshComponents({
+      mode: 'EDGE',
+      ids: [...edgeIds],
+      operation: 'REPLACE',
+    });
+    changeMeshComponentMode('EDGE');
+    setSelectedShellIds([]);
+    setSelectedConstructionPointIds([]);
+    setHierarchySection('EDGES');
+  }, [changeMeshComponentMode, ensurePreviewSelectionTarget]);
+
+  const handleTopologyCommand = useCallback((command: TopologyCommand) => {
+    const asset = assetManager.getAsset(assetId);
+    const engine = previewEngineRef.current;
+    if (!asset || asset.type !== 'MESH' || !engine) return;
+    const meshAsset = asset as StaticMeshAsset;
+
+    setTopologyFeedback(null);
+
+    try {
+      if (command === 'SPLIT_EDGE') {
+        const selectedEdgeIds = Array.from(engine.selectionSystem.subSelection.edgeIds);
+        if (selectedEdgeIds.length !== 1) return;
+        const vertexPair = meshEdgePairFromKey(selectedEdgeIds[0]);
+        if (!vertexPair) return;
+        const pointIds = staticMeshAssetAPI.getConstructionEdgePointIds(assetId, vertexPair[0], vertexPair[1]);
+        if (!pointIds) return;
+        if (!Number.isFinite(topologySplitPosition) || topologySplitPosition <= 0 || topologySplitPosition >= 1) {
+          setTopologyFeedback('Split position must be greater than 0 and less than 1.');
+          return;
+        }
+        const result = staticMeshAssetAPI.splitEdge({
+          assetId,
+          pointAId: pointIds[0],
+          pointBId: pointIds[1],
+          t: topologySplitPosition,
+        });
+        selectLogicalEdges(result.edgeIds);
+        return;
+      }
+
+      const selectedFaceIds = Array.from(engine.selectionSystem.subSelection.faceIds);
+      if (selectedFaceIds.length !== 1) return;
+      const constructionFace = meshAsset.construction?.faces.find(face => face.faceId === selectedFaceIds[0]);
+      if (!constructionFace) return;
+
+      if (command === 'INSET') {
+        if (!Number.isFinite(topologyInsetAmount) || topologyInsetAmount <= 0) {
+          setTopologyFeedback('Inset amount must be greater than 0.');
+          return;
+        }
+        const result = staticMeshAssetAPI.insetFace({
+          assetId,
+          faceId: constructionFace.id,
+          amount: topologyInsetAmount,
+        });
+        const updated = assetManager.getAsset(assetId);
+        const updatedMesh = updated?.type === 'MESH' ? updated as StaticMeshAsset : null;
+        const logicalFaceId = updatedMesh?.construction?.faces.find(face => face.id === result.innerFaceId)?.faceId;
+        selectLogicalFace(logicalFaceId ?? null);
+      } else if (command === 'EXTRUDE') {
+        if (!Number.isFinite(topologyExtrudeDistance) || Math.abs(topologyExtrudeDistance) <= 1e-8) {
+          setTopologyFeedback('Extrude distance must be a non-zero finite number.');
+          return;
+        }
+        const result = staticMeshAssetAPI.extrudeFace({
+          assetId,
+          faceId: constructionFace.id,
+          distance: topologyExtrudeDistance,
+        });
+        const updated = assetManager.getAsset(assetId);
+        const updatedMesh = updated?.type === 'MESH' ? updated as StaticMeshAsset : null;
+        const logicalFaceId = updatedMesh?.construction?.faces.find(face => face.id === result.topFaceId)?.faceId;
+        selectLogicalFace(logicalFaceId ?? null);
+      } else if (command === 'DELETE_FACE') {
+        staticMeshAssetAPI.deleteFace({ assetId, faceId: constructionFace.id });
+        selectLogicalFace(null);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `${command} failed.`;
+      setTopologyFeedback(
+        command === 'INSET' && message === 'Inset amount is too large for this face.'
+          ? `${message} Enter a smaller value.`
+          : message,
+      );
+
+      // Expected modeling validation is normal user input, not an editor fault.
+      // Keep unexpected failures visible to developers while avoiding a noisy
+      // console stack for safe API rejections.
+      const expectedModelingValidation = error instanceof Error && (
+        (command === 'INSET' && (error.message.startsWith('Inset ') || error.message.startsWith('Inset currently')))
+        || (command === 'SPLIT_EDGE' && (error.message.startsWith('Split ') || error.message.startsWith('The Construction Points')))
+      );
+      if (!expectedModelingValidation) console.error(`[StaticMeshEditor] ${command} failed`, error);
+    }
+  }, [
+    assetId,
+    selectLogicalEdges,
+    selectLogicalFace,
+    topologyExtrudeDistance,
+    topologyInsetAmount,
+    topologySplitPosition,
+  ]);
+
   const handleSelectLoop = (mode: MeshComponentMode = meshComponentMode) => {
     if (mode === 'OBJECT') return;
     const engine = previewEngineRef.current;
@@ -1644,6 +1868,11 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           engine.meshComponentMode = mode;
           engine.selectionSystem.selectRing(mode);
         },
+        topologyCommand: handleTopologyCommand,
+        supportsTopologyCommand: command => command === 'SPLIT_EDGE'
+          ? Boolean(selectedConstructionEdge)
+          : Boolean(selectedConstructionFace)
+            && (command === 'EXTRUDE' || command === 'INSET' || command === 'DELETE_FACE'),
         configureSoftSelection,
       },
     };
@@ -1660,6 +1889,9 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     softSelectionHeatmapVisible,
     setTool,
     changeMeshComponentMode,
+    selectedConstructionFace,
+    selectedConstructionEdge,
+    handleTopologyCommand,
     configureSoftSelection,
   ]);
 
@@ -1701,6 +1933,22 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && cancelActiveMeshDrag()) {
+      e.preventDefault();
+      return;
+    }
+    const historyModifier = e.ctrlKey || e.metaKey;
+    if (historyModifier && (e.key === 'z' || e.key === 'Z')) {
+      e.preventDefault();
+      if (e.shiftKey) redoAssetEdit();
+      else undoAssetEdit();
+      return;
+    }
+    if (historyModifier && (e.key === 'y' || e.key === 'Y')) {
+      e.preventDefault();
+      redoAssetEdit();
+      return;
+    }
     if ((e.key === 'z' || e.key === 'Z') && currentAsset && assetViewportAllows(currentAsset.type, 'mesh.wireframe')) {
       setShowWireframe(v => !v);
     }
@@ -1723,6 +1971,24 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             );
           },
         })),
+        {
+          id: 'history.undo',
+          group: 'history',
+          label: assetHistoryState.undoLabel ? `Undo ${assetHistoryState.undoLabel} (Ctrl+Z)` : 'Undo (Ctrl+Z)',
+          icon: 'Undo2',
+          disabled: !assetHistoryState.canUndo,
+          className: !assetHistoryState.canUndo ? 'opacity-40 cursor-not-allowed' : undefined,
+          onTrigger: undoAssetEdit,
+        },
+        {
+          id: 'history.redo',
+          group: 'history',
+          label: assetHistoryState.redoLabel ? `Redo ${assetHistoryState.redoLabel} (Ctrl+Shift+Z)` : 'Redo (Ctrl+Shift+Z)',
+          icon: 'Redo2',
+          disabled: !assetHistoryState.canRedo,
+          className: !assetHistoryState.canRedo ? 'opacity-40 cursor-not-allowed' : undefined,
+          onTrigger: redoAssetEdit,
+        },
         {
           id: 'mesh.shading',
           group: 'display',
@@ -1793,6 +2059,23 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             onSoftSelectionConnectivityChange={connectivity => configureSoftSelection({ connectivity })}
             compositionSources={compositionSources}
             onAppendMesh={handleAppendMesh}
+            topologyInsetAmount={topologyInsetAmount}
+            topologyExtrudeDistance={topologyExtrudeDistance}
+            topologySplitPosition={topologySplitPosition}
+            topologySplitEndpointLabel={selectedConstructionEdge ? `${selectedConstructionEdge.pointIds[0]} → ${selectedConstructionEdge.pointIds[1]}` : null}
+            topologyFeedback={topologyFeedback}
+            onTopologyInsetAmountChange={amount => {
+              setTopologyInsetAmount(amount);
+              setTopologyFeedback(null);
+            }}
+            onTopologyExtrudeDistanceChange={distance => {
+              setTopologyExtrudeDistance(distance);
+              setTopologyFeedback(null);
+            }}
+            onTopologySplitPositionChange={position => {
+              setTopologySplitPosition(position);
+              setTopologyFeedback(null);
+            }}
             commandContext={commandContext}
           />
         ) : (
@@ -1854,7 +2137,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         engine={previewEngine}
         gizmoSystem={gizmoSystem}
         toolbarActions={meshToolbarActions}
-        shortcutsLegend="Drag Box Select • Shift+Drag Toggle • F Focus • B Radius • Alt+LMB Orbit • Alt+MMB Pan • Alt+RMB Zoom • RMB Pie"
+        shortcutsLegend="Drag Box Select • Shift+Drag Toggle • Esc Cancel Drag • Ctrl+Z Undo • F Focus • B Radius • Alt+LMB Orbit • Alt+MMB Pan • Alt+RMB Zoom • RMB Pie"
         onInitGl={handleInitGl}
         onCleanupGl={handleCleanupGl}
         onRender={handleRender}

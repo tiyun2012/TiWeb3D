@@ -125,6 +125,130 @@ Do not introduce a separate "sibling face" identity table for ordinary adjacency
 from the shared vertex/edge topology. `LogicalMesh.siblings` is reserved for duplicated render vertices that
 represent one explicitly authored logical vertex (for example a UV/hard-normal seam).
 
+### Inset a face
+
+`insetFace()` keeps face identity stable. The selected Construction Face is not deleted/replaced with an
+unrelated handle; instead, its boundary becomes the new inner boundary and a ring of border faces is
+created around it.
+
+```ts
+const inset = staticMeshAssetAPI.insetFace({
+  assetId,
+  faceId: floor.id,
+  id: 'inset:floor-panel',
+  amount: 0.25,
+});
+```
+
+The first implementation uses a **constant world-space distance measured in the face plane** and follows
+the same ordered planar-convex polygon contract as `createFaceFromPoints()`.
+
+```ts
+{
+  id: 'inset:floor-panel',
+  sourceFaceId: 'face:ground-floor',
+  innerFaceId: 'face:ground-floor', // stable: same semantic face
+  innerLoopId: 'inset:floor-panel.innerLoop',
+  innerPointIds: [...],
+  borderFaceIds: [...],
+}
+```
+
+The stable-face rule is deliberate. AI/scripts can chain operations without rediscovering topology:
+
+```ts
+const inset = staticMeshAssetAPI.insetFace({
+  assetId,
+  faceId: wall.id,
+  amount: 0.15,
+});
+
+const recess = staticMeshAssetAPI.extrudeFace({
+  assetId,
+  faceId: inset.innerFaceId, // same id as wall.id
+  distance: -0.2,
+});
+```
+
+Internally the logical face ID is also preserved. Its old boundary remains available to the newly-created
+border ring, while the inner face gets newly-authored Construction Points. The border ring shares the
+correct vertices and opposite half-edge winding with the inner face and neighboring border faces.
+
+`insetFace()` rejects non-positive distances, non-planar/concave input, degenerate neighboring edges, and
+an inset amount large enough to collapse or cross the source polygon. It does not silently produce invalid
+topology.
+
+### Delete a face / create an opening
+
+`deleteFace()` removes one authored Construction Face by its **semantic face id**. It deliberately keeps
+its Construction Points and Construction Loops, which makes it useful as a small architectural opening
+primitive after an inset.
+
+```ts
+const inset = staticMeshAssetAPI.insetFace({
+  assetId,
+  faceId: wall.id,
+  amount: 0.15,
+});
+
+staticMeshAssetAPI.deleteFace({
+  assetId,
+  faceId: inset.innerFaceId,
+});
+```
+
+This produces an inset border ring with the inner surface removed. The operation removes the deleted
+face's triangles, compacts `LogicalMesh.faces`, remaps every surviving Construction Face `faceId`, rebuilds
+`triangleToFaceIndex`, vertex-to-face adjacency, half-edges, normals, AABB and Mesh Shell metadata, and
+records one asset-history step. Numeric logical face ids are therefore still dense after deletion.
+
+The first delete primitive does **not** garbage-collect unused Construction Points or Loops. Those are
+semantic planning handles and may be intentionally reused by later AI/modeling operations. Explicit point
+removal remains guarded by face/loop references.
+
+### Split an authored edge
+
+`splitEdge()` inserts one new Construction Point between two **semantic endpoint Point IDs**. The AI-facing
+contract intentionally does not accept raw mesh vertex IDs. Every incident Construction Face that contains
+that authored boundary edge is updated to reuse the same new point, and any Construction Loop containing the
+same segment is updated as well. Face semantic IDs and logical `faceId` mappings remain stable.
+
+```ts
+const split = staticMeshAssetAPI.splitEdge({
+  assetId,
+  pointAId: 'wall.A',
+  pointBId: 'wall.B',
+  t: 0.5,
+});
+```
+
+The first implementation requires `0 < t < 1`, defaults to `0.5`, and supports manifold authored edges with
+at most two incident Construction Faces. For a shared edge, both adjacent faces receive the same semantic Point
+and therefore the same compiled mesh vertex; the two replacement half-edges on each side remain pairable. Because
+a split point is collinear with the original edge, Construction-face triangulation preserves the historical fan when
+possible but rotates/falls back to convex ear clipping when needed so the compiled render triangles are not degenerate.
+`getConstructionEdgePointIds(assetId, vertexAId, vertexBId)` exists only as an editor adapter so an Edge-mode
+selection can map current numeric topology back to stable Construction Point endpoints. AI/scripts should keep
+semantic Point IDs instead.
+
+The result returns the generated point/vertex plus the two replacement edge keys for transient editor selection:
+
+```ts
+{
+  id: 'split-1',
+  sourcePointIds: ['wall.A', 'wall.B'],
+  pointId: 'split-1.point',
+  vertexId: 12,
+  updatedFaceIds: ['face:wall-left', 'face:wall-right'],
+  updatedLoopIds: ['loop:wall'],
+  edgeIds: ['3-12', '7-12'],
+  t: 0.5,
+}
+```
+
+`splitEdge()` is one asset-history step. Undo restores the original edge, face boundaries, loops, render triangles,
+half-edge graph, and Mesh Shell metadata together.
+
 ### Create a loop
 
 ```ts
@@ -222,6 +346,24 @@ Construction Point selection currently does **not** use the mesh component gizmo
 already available through `staticMeshAssetAPI.movePoint()`; a dedicated semantic-point gizmo adapter can
 be added without pretending these points are mesh vertices.
 
+### Topology tools in the Static Mesh dock
+
+The `Mesh Workspace > Sculpt Tools > Topology` section now routes its first working face actions through
+the same Construction API used by browser-console scripts and AI:
+
+- **Extrude** calls `staticMeshAssetAPI.extrudeFace()` using the editable Extrude Distance.
+- **Inset** calls `staticMeshAssetAPI.insetFace()` using the editable Inset Amount.
+- **Delete Face** calls `staticMeshAssetAPI.deleteFace()` and leaves an opening.
+- **Split Edge** calls `staticMeshAssetAPI.splitEdge()` using the editable Split Position and updates every incident authored face/loop.
+
+Face actions intentionally require **Face mode + exactly one selected logical face that maps to an authored Construction Face**. Split Edge requires **Edge mode + exactly one selected edge whose current mesh vertices resolve back to an authored Construction Point pair**. Imported/appended topology without Construction identity remains disabled rather than receiving guessed planning identity. After Extrude, the generated top face becomes the
+active face selection; after Inset, the stable inner/source face remains selected; after Delete Face, face
+selection is cleared because the selected surface no longer exists.
+
+The dock dispatches through `EditorCommandRegistry` (`staticMesh.extrude`, `staticMesh.inset`,
+`staticMesh.deleteFace`, `staticMesh.splitEdge`) and the editor's `topologyCommand` service. React UI must not implement separate
+topology mutation logic.
+
 ## Automated test
 
 Run the focused construction step without starting the UI:
@@ -236,6 +378,10 @@ The test verifies:
 - four points create one logical quad / two triangles,
 - adjacent faces that reuse Construction Points share the same actual mesh vertices and pair their oppositely wound half-edge,
 - moving a semantic point updates all bound mesh vertices,
+- inset preserves the selected semantic/logical face id, creates a shared border ring, rejects collapse, and can feed the same face directly into extrusion,
+- delete-face removes only the selected authored surface, compacts logical/triangle mappings, preserves semantic points/loops, stays one shell for an inset ring, and supports undo/redo,
+- split-edge inserts one shared semantic point into both incident faces/loops, preserves shell/half-edge connectivity, and supports undo/redo,
+- the editor command catalogue resolves working Inset/Delete Face/Split Edge dispatch through the shared topology command service,
 - extrusion returns stable generated handles and creates a closed wall volume,
 - referenced points cannot be silently deleted,
 - two equal four-point loops bridge into four logical quads.
@@ -245,6 +391,61 @@ browser renderer. In a normal project install it uses the local `typescript` dev
 
 ## Next modeling operations
 
-Keep future modeling commands at this semantic layer where practical. Good next additions are transaction/
-rollback support for multi-operation AI plans, point-gizmo transforms, face/loop deletion with safe topology
-rebuild, inset, bevel, cut/split, unequal-loop bridging, and robust concave n-gon triangulation.
+Keep future modeling commands at this semantic layer where practical. Asset transactions/rollback are now
+available. Good next additions are point-gizmo transforms, loop deletion, cut-face, bevel, unequal-loop bridging, and robust concave n-gon triangulation.
+
+## Asset undo/redo and AI transactions
+
+Static Mesh construction mutations are recorded by the asset-level `AssetHistory` service. This history is separate from the Scene ECS `HistorySystem`: a modeling operation can change Construction Points/Faces/Loops, mesh geometry, logical topology, half-edge data and Mesh Shell metadata without changing any scene entity.
+
+Every public construction mutation (`addPoint(s)`, `movePoint`, `removePoint`, `createFaceFromPoints`, `createLoop`, `insetFace`, `deleteFace`, `splitEdge`, `extrudeFace`, `bridgeLoops`) creates one atomic undo step. Static Mesh append/reference mutations use the same history boundary. Snapshots preserve typed arrays and Maps rather than JSON-serializing them.
+
+The API exposes:
+
+```ts
+staticMeshAssetAPI.undo(assetId);
+staticMeshAssetAPI.redo(assetId);
+staticMeshAssetAPI.getHistoryState(assetId);
+
+staticMeshAssetAPI.beginTransaction(assetId, 'Build Window');
+// any number of construction primitives
+staticMeshAssetAPI.commitTransaction(assetId);
+// or cancelTransaction(assetId)
+```
+
+An AI should group one semantic intent into a transaction. For example, creating points, creating a face, insetting it and extruding it can become one `Build Window` undo step rather than four unrelated user undos. If an operation inside a transaction throws, the asset is restored to the transaction's starting snapshot.
+
+The Static Mesh editor maps `Ctrl/Cmd+Z` to asset undo, `Ctrl/Cmd+Shift+Z` and `Ctrl/Cmd+Y` to redo, and exposes Undo/Redo toolbar buttons. Plain `Z` remains the wireframe shortcut. Component gizmo drags capture one asset-history transaction from drag start through mouse-up.
+
+### Gizmo/history synchronization contract
+
+The gizmo is transient UI, not a second source of history. Mesh/component state is authoritative and the gizmo pivot is derived from the current selection every render.
+
+- A completed component drag is one asset-history entry.
+- A drag with no effective movement creates no history entry.
+- `Esc` during a component drag cancels the unfinished transaction and restores the drag-start asset state.
+- `Ctrl/Cmd+Z` during an unfinished drag cancels that drag first. A later Undo addresses the previous committed history entry.
+- Undo/Redo preserves still-valid Vertex/Edge/Face selection ids and prunes only ids that no longer exist in the restored topology.
+- Construction Point and Mesh Shell selection are likewise preserved when their semantic ids still exist.
+- After Undo/Redo, soft-selection weights are recomputed against restored geometry and gizmo hover/active-handle state is reset. The next gizmo render therefore follows the restored selected components automatically.
+- Cancelling a gizmo drag inside a broader API transaction must not cancel the outer transaction; only the live drag deformation is restored.
+
+Do not add separate "gizmo position" snapshots to `AssetHistory`. That would allow mesh state and gizmo state to diverge.
+
+## Repeatable browser-console fixtures
+
+Manual modeling checks should not require rebuilding throwaway assets after every app restart. Application bootstrap installs a small `smTest` browser-console command backed by `engine/dev/StaticMeshTestFixtures.ts`.
+
+```js
+smTest()            // fresh four-point panel / one Construction Face
+smTest('inset')     // panel with a 0.5 inset, center face still present
+smTest('opening')   // inset ring with the center face deleted
+smTest('box')       // simple extruded panel
+smTest('split')     // two authored triangles sharing one edge; Edge mode Split Edge test
+smTest.clear()      // delete only TEST_StaticMesh_* fixtures
+smTest.help()       // print the available fixture commands
+```
+
+Each creation first deletes earlier assets whose names start with `TEST_StaticMesh_`, so repeated checks do not accumulate stale runtime fixtures. User-authored assets and automated `/Tests` assets are untouched. The created asset appears under Content > Meshes and the command returns its `assetId`, semantic point/face/loop ids, `primaryFaceId` when one is available, and `primaryEdgePointIds` for the split-ready fixture.
+
+Fixture construction history is cleared before the command returns. The generated shape is therefore a clean baseline: the first manual Inset/Extrude/Delete/Split/Gizmo operation is also the first Ctrl+Z step. Keep fixture generation separate from the production modeling API; fixtures call `StaticMeshAssetAPI` rather than duplicating topology mutation logic.

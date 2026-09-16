@@ -126,6 +126,24 @@ class AssetManagerService {
         }
     }
 
+    /**
+     * Replace an existing asset's complete data while preserving the object
+     * identity stored in AssetManager. Asset History uses this for undo/redo so
+     * editor references remain valid and fields added by a later edit are also
+     * removed when an older snapshot is restored.
+     */
+    restoreAssetSnapshot(id: string, snapshot: Asset): boolean {
+        const asset = this.getAsset(id);
+        if (!asset || snapshot.id !== id || snapshot.type !== asset.type) return false;
+
+        for (const key of Object.keys(asset as Record<string, unknown>)) {
+            delete (asset as Record<string, unknown>)[key];
+        }
+        Object.assign(asset, snapshot);
+        eventBus.emit('ASSET_UPDATED', { id, type: asset.type });
+        return true;
+    }
+
     renameAsset(id: string, newName: string) {
         const asset = this.getAsset(id);
         if (asset && !asset.isProtected) {

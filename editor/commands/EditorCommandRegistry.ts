@@ -18,6 +18,8 @@ export interface MeshSelectionCounts {
   faces: number;
 }
 
+export type StaticMeshTopologyCommand = 'EXTRUDE' | 'INSET' | 'BEVEL' | 'WELD' | 'CONNECT' | 'DELETE_FACE' | 'SPLIT_EDGE';
+
 export interface EditorCommandServices {
   setTool?: (tool: ToolType) => void;
   setComponentMode?: (mode: MeshComponentMode) => void;
@@ -31,7 +33,8 @@ export interface EditorCommandServices {
   expandSelection?: (mode: MeshComponentMode) => void;
   shrinkSelection?: (mode: MeshComponentMode) => void;
   selectRing?: (mode: MeshComponentMode) => void;
-  topologyCommand?: (command: 'EXTRUDE' | 'BEVEL' | 'WELD' | 'CONNECT' | 'DELETE_FACE') => void;
+  topologyCommand?: (command: StaticMeshTopologyCommand) => void;
+  supportsTopologyCommand?: (command: StaticMeshTopologyCommand) => boolean;
   configureSoftSelection?: (settings: Partial<{
     enabled: boolean;
     radius: number;

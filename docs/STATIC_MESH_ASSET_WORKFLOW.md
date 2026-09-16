@@ -241,3 +241,11 @@ The Static Mesh hierarchy therefore exposes `Construction > Points / Faces / Loo
 domain; selecting them must not masquerade as Vertex component selection or make the normal mesh-component
 gizmo operate on them. See `docs/STATIC_MESH_CONSTRUCTION_API.md` for the persistence model, API examples,
 current operation limits, and the focused `npm run test:mesh-construction` contract.
+
+## Static Mesh asset history
+
+Static Mesh authoring uses `engine/AssetHistory.ts`, not the scene ECS history. Each modeling transaction snapshots the complete mesh asset so geometry, topology, Construction metadata and Mesh Shell state are restored together. The first implementation intentionally favors correctness over delta compression and keeps up to 50 undo snapshots per asset.
+
+Static Mesh Editor owns the asset-history shortcuts while its viewport is active: `Ctrl/Cmd+Z` undo, `Ctrl/Cmd+Shift+Z` or `Ctrl/Cmd+Y` redo. The viewport toolbar exposes the same commands. Live component drags remain preview-only during pointer movement and commit one history step on mouse-up.
+
+Agent/modeling workflows should use `beginTransaction` / `commitTransaction` around one semantic modeling goal so many low-level primitives remain one human undo step.

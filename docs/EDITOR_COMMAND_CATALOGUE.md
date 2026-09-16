@@ -56,13 +56,13 @@ Stable command IDs currently include:
 - `staticMesh.softTransform.live`
 - `staticMesh.sculpt.slide`
 - `staticMesh.softSelection.toggleHeatmap`
-- topology placeholders/commands such as `staticMesh.extrude`, `staticMesh.bevel`, `staticMesh.weld`, `staticMesh.connect`, `staticMesh.deleteFace`
+- topology commands such as `staticMesh.extrude`, `staticMesh.inset`, `staticMesh.deleteFace`, `staticMesh.splitEdge`, plus milestone placeholders such as `staticMesh.bevel`, `staticMesh.weld`, and `staticMesh.connect`
 
 ## UI reuse
 
-`PieMenu` resolves its Tool/View/Action entries from the catalogue when an `EditorCommandContext` is supplied. `StaticMeshToolDock` resolves its deformation and loop controls from the same definitions. Therefore labels, capability checks, and enabled state have one source of truth.
+`PieMenu` resolves its Tool/View/Action entries from the catalogue when an `EditorCommandContext` is supplied. `StaticMeshToolDock` resolves its deformation, loop, and working face-topology controls from the same definitions. Therefore labels, capability checks, and enabled state have one source of truth.
 
-Scene View and Static Mesh Editor create different service adapters but execute the same command IDs. Static Mesh Editor routes component selection to its local `AssetViewportEngine`; Scene View routes to the main engine.
+Scene View and Static Mesh Editor create different service adapters but execute the same command IDs. Static Mesh Editor routes component selection to its local `AssetViewportEngine`; Scene View routes to the main engine. The command service also exposes `supportsTopologyCommand(command)` for host-specific availability. The Static Mesh editor enables semantic Extrude/Inset/Delete only when exactly one selected logical face maps to an authored Construction Face. Scene View keeps `INSET` disabled until its legacy live-edit path is adapted to the Construction API, so adding the shared command does not create a no-op action in Scene View.
 
 ## API / agent use
 
