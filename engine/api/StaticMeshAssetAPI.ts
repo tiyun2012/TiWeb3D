@@ -136,6 +136,17 @@ export interface DeleteConstructionFaceArgs {
   faceId: string;
 }
 
+export interface CutConstructionFaceArgs {
+  assetId: string;
+  /** Stable authored face handle to split. */
+  faceId: string;
+  /** Two existing, non-adjacent boundary Construction Point ids. */
+  pointAId: string;
+  pointBId: string;
+  /** Optional stable operation prefix used for the generated second face. */
+  id?: string;
+}
+
 export interface SplitConstructionEdgeArgs {
   assetId: string;
   /** Stable semantic endpoint ids. Raw mesh vertex ids are intentionally not part of the AI-facing contract. */
@@ -188,6 +199,16 @@ export interface DeleteConstructionFaceResult {
   pointIds: string[];
   vertexIds: number[];
   triangleIds: number[];
+}
+
+export interface CutConstructionFaceResult {
+  id: string;
+  sourceFaceId: string;
+  newFaceId: string;
+  pointIds: [string, string];
+  cutEdgeId: string;
+  sourceLogicalFaceId: number;
+  newLogicalFaceId: number;
 }
 
 export interface SplitConstructionEdgeResult {
@@ -450,6 +471,21 @@ const insertPointOnBoundaryEdge = (
   const result = [...pointIds];
   result.splice(edgeIndex + 1, 0, newPointId);
   return result;
+};
+
+const constructionBoundaryPath = (
+  pointIds: readonly string[],
+  startIndex: number,
+  endIndex: number,
+): string[] => {
+  const result: string[] = [];
+  let index = startIndex;
+  for (let guard = 0; guard <= pointIds.length; guard += 1) {
+    result.push(pointIds[index]);
+    if (index === endIndex) return result;
+    index = (index + 1) % pointIds.length;
+  }
+  throw new Error('Cut Face boundary traversal failed.');
 };
 
 type ConstructionMutationState = {
@@ -1151,6 +1187,13 @@ class StaticMeshAssetAPIService {
     });
   }
 
+  /** Maps one current mesh vertex back to its stable semantic Construction Point. */
+  getConstructionPointId(assetId: string, vertexId: number): string | null {
+    const asset = requireStaticMesh(assetId, 'target');
+    if (!Number.isInteger(vertexId) || vertexId < 0) return null;
+    return asset.construction?.points.find(point => point.vertexIds?.includes(vertexId))?.id ?? null;
+  }
+
   /**
    * Maps one rendered/logical edge back to its semantic Construction Point endpoints.
    * This is an editor adapter only: procedural/AI callers should keep using stable
@@ -1168,6 +1211,72 @@ class StaticMeshAssetAPIService {
     if (!pointA || !pointB || pointA.id === pointB.id) return null;
     const isAuthoredEdge = construction.faces.some(face => findBoundaryEdgeIndex(face.pointIds, pointA.id, pointB.id, true) >= 0);
     return isAuthoredEdge ? [pointA.id, pointB.id] : null;
+  }
+
+  /**
+   * Cuts one authored polygon face between two existing non-adjacent boundary
+   * Construction Points. The source semantic/logical face survives as one side
+   * of the cut and one new semantic face is created for the other side.
+   *
+   * This deliberately composes with Split Edge: callers can first insert exact
+   * boundary points, then cut between those stable point handles.
+   */
+  cutFace(args: CutConstructionFaceArgs): CutConstructionFaceResult {
+    return assetHistory.execute(args.assetId, 'Cut Construction Face', () => {
+      const asset = requireStaticMesh(args.assetId, 'target');
+      const state = createConstructionMutationState(asset);
+      const sourceFace = findConstructionFace(state.construction, args.faceId);
+      if (args.pointAId === args.pointBId) throw new Error('Cut Face requires two different Construction Points.');
+
+      const pointAIndex = sourceFace.pointIds.indexOf(args.pointAId);
+      const pointBIndex = sourceFace.pointIds.indexOf(args.pointBId);
+      if (pointAIndex < 0 || pointBIndex < 0) {
+        throw new Error('Cut Face points must both lie on the selected Construction Face boundary.');
+      }
+      if (sourceFace.pointIds.length < 4) {
+        throw new Error('Cut Face requires a polygon with at least 4 boundary points.');
+      }
+      if (findBoundaryEdgeIndex(sourceFace.pointIds, args.pointAId, args.pointBId, true) >= 0) {
+        throw new Error('Cut Face points must be non-adjacent boundary points.');
+      }
+
+      const sourceBoundary = constructionBoundaryPath(sourceFace.pointIds, pointAIndex, pointBIndex);
+      const newBoundary = constructionBoundaryPath(sourceFace.pointIds, pointBIndex, pointAIndex);
+      if (sourceBoundary.length < 3 || newBoundary.length < 3) {
+        throw new Error('Cut Face would create a degenerate face.');
+      }
+
+      const operationId = makeUniqueOperationId(
+        args.id,
+        'cut',
+        [
+          ...state.construction.faces.map(face => face.id),
+          ...state.construction.loops.map(loop => loop.id),
+          ...state.construction.points.map(point => point.id),
+        ],
+      );
+
+      const sourceResult = replaceConstructionFaceBoundaryInState(state, sourceFace, sourceBoundary);
+      const newFace = addConstructionFaceToState(state, {
+        id: `${operationId}.face`,
+        name: sourceFace.name ? `${sourceFace.name} Cut` : undefined,
+        pointIds: newBoundary,
+      });
+      const pointAVertexId = ensurePointVertex(state, args.pointAId);
+      const pointBVertexId = ensurePointVertex(state, args.pointBId);
+      const cutEdgeId = meshEdgeKey(pointAVertexId, pointBVertexId);
+      finalizeConstructionMutation(state);
+
+      return {
+        id: operationId,
+        sourceFaceId: sourceFace.id,
+        newFaceId: newFace.id,
+        pointIds: [args.pointAId, args.pointBId],
+        cutEdgeId,
+        sourceLogicalFaceId: sourceResult.faceId,
+        newLogicalFaceId: newFace.faceId,
+      };
+    });
   }
 
   /**

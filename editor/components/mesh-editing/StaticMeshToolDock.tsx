@@ -51,6 +51,7 @@ export interface StaticMeshToolDockProps {
   topologyExtrudeDistance: number;
   topologySplitPosition: number;
   topologySplitEndpointLabel?: string | null;
+  topologyCutEndpointLabel?: string | null;
   topologyFeedback?: string | null;
   onTopologyInsetAmountChange: (amount: number) => void;
   onTopologyExtrudeDistanceChange: (distance: number) => void;
@@ -228,6 +229,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   topologyExtrudeDistance,
   topologySplitPosition,
   topologySplitEndpointLabel = null,
+  topologyCutEndpointLabel = null,
   topologyFeedback = null,
   onTopologyInsetAmountChange,
   onTopologyExtrudeDistanceChange,
@@ -325,6 +327,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
       { key: 'inset', command: maybeCommand('staticMesh.inset'), label: 'Inset', icon: 'Shrink', badge: 'API', hint: 'Inset the selected authored Construction Face.' },
       { key: 'deleteFace', command: maybeCommand('staticMesh.deleteFace'), label: 'Delete Face', icon: 'Trash2', badge: 'API', hint: 'Delete the selected authored Construction Face and leave an opening.' },
       { key: 'splitEdge', command: maybeCommand('staticMesh.splitEdge'), label: 'Split Edge', icon: 'Scissors', badge: 'API', hint: 'Insert one Construction Point on the selected authored edge.' },
+      { key: 'cutFace', command: maybeCommand('staticMesh.cutFace'), label: 'Cut Face', icon: 'Scissors', badge: 'API', hint: 'Cut one authored face between two selected non-adjacent Construction-backed vertices.' },
       { key: 'bevel', command: maybeCommand('staticMesh.bevel'), label: 'Bevel', icon: 'Ungroup', badge: 'M3', hint: 'Bevel selected edges or faces.' },
       { key: 'connect', command: maybeCommand('staticMesh.connect'), label: 'Connect', icon: 'GitCommit', badge: 'M3', hint: 'Connect selected components with new topology.' },
     ];
@@ -715,6 +718,25 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                     )}
                     <div className="text-[8px] leading-3 text-text-secondary/70">0 = first endpoint, 1 = second endpoint. Default 0.5 splits at the midpoint.</div>
                   </label>
+                  {topologyFeedback && (
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      className="rounded border border-red-400/25 bg-red-500/10 px-2 py-1.5 text-[8px] leading-relaxed text-red-200"
+                    >
+                      {topologyFeedback}
+                    </div>
+                  )}
+                </div>
+              )}
+              {meshComponentMode === 'VERTEX' && (
+                <div className="grid grid-cols-1 gap-1.5 rounded border border-white/5 bg-black/15 p-2">
+                  <div className="text-[8px] leading-3 text-text-secondary/70">
+                    Select exactly two non-adjacent authored vertices on one Construction Face, then use Cut Face.
+                  </div>
+                  {topologyCutEndpointLabel && (
+                    <div className="font-mono text-[8px] leading-3 text-text-secondary/80">{topologyCutEndpointLabel}</div>
+                  )}
                   {topologyFeedback && (
                     <div
                       role="status"

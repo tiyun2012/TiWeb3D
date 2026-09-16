@@ -17,6 +17,7 @@ const HELP = [
   "smTest('opening')  // inset ring with center face deleted",
   "smTest('box')      // simple extruded box",
   "smTest('split')    // two authored triangles sharing one edge; use Edge mode + Split Edge",
+  "smTest('cut')      // one authored quad; select opposite vertices A/C + Cut Face",
   'smTest.clear()     // remove TEST_StaticMesh_* fixtures',
 ].join('\n');
 
@@ -32,6 +33,9 @@ export function installStaticMeshTestConsoleCommand(): StaticMeshTestConsoleComm
     }
     if (result.primaryEdgePointIds) {
       console.info(`[smTest] primaryEdgePoints: ${result.primaryEdgePointIds[0]} <-> ${result.primaryEdgePointIds[1]}`);
+    }
+    if (result.primaryCutPointIds) {
+      console.info(`[smTest] primaryCutPoints: ${result.primaryCutPointIds[0]} <-> ${result.primaryCutPointIds[1]}`);
     }
     return result;
   }) as StaticMeshTestConsoleCommand;

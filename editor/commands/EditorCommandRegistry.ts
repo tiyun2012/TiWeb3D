@@ -18,7 +18,7 @@ export interface MeshSelectionCounts {
   faces: number;
 }
 
-export type StaticMeshTopologyCommand = 'EXTRUDE' | 'INSET' | 'BEVEL' | 'WELD' | 'CONNECT' | 'DELETE_FACE' | 'SPLIT_EDGE';
+export type StaticMeshTopologyCommand = 'EXTRUDE' | 'INSET' | 'BEVEL' | 'WELD' | 'CONNECT' | 'DELETE_FACE' | 'SPLIT_EDGE' | 'CUT_FACE';
 
 export interface EditorCommandServices {
   setTool?: (tool: ToolType) => void;

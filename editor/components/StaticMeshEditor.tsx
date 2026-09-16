@@ -1648,11 +1648,36 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     return { edgeId: selectedEdgeIds[0], vertexIds, pointIds };
   }, [assetId, currentAsset, meshComponentMode, selectionTick, assetRevision]);
 
+  const selectedConstructionCut = useMemo(() => {
+    if (!currentAsset || currentAsset.type !== 'MESH' || meshComponentMode !== 'VERTEX') return null;
+    const meshAsset = currentAsset as StaticMeshAsset;
+    const engine = previewEngineRef.current;
+    if (!engine) return null;
+    const vertexIds = Array.from(engine.selectionSystem.subSelection.vertexIds);
+    if (vertexIds.length !== 2) return null;
+    const pointIds = vertexIds.map(vertexId => staticMeshAssetAPI.getConstructionPointId(assetId, vertexId));
+    if (!pointIds[0] || !pointIds[1] || pointIds[0] === pointIds[1]) return null;
+
+    const candidateFaces = (meshAsset.construction?.faces ?? []).filter(face => {
+      const pointAIndex = face.pointIds.indexOf(pointIds[0]!);
+      const pointBIndex = face.pointIds.indexOf(pointIds[1]!);
+      if (pointAIndex < 0 || pointBIndex < 0 || face.pointIds.length < 4) return false;
+      const distance = Math.abs(pointAIndex - pointBIndex);
+      return distance > 1 && distance < face.pointIds.length - 1;
+    });
+    if (candidateFaces.length !== 1) return null;
+    return {
+      vertexIds: [vertexIds[0], vertexIds[1]] as [number, number],
+      pointIds: [pointIds[0], pointIds[1]] as [string, string],
+      face: candidateFaces[0],
+    };
+  }, [assetId, currentAsset, meshComponentMode, selectionTick, assetRevision]);
+
   useEffect(() => {
     // Validation feedback belongs to the current authored face. Never carry an
     // old inset error onto a different selection or asset.
     setTopologyFeedback(null);
-  }, [assetId, selectedConstructionFace?.id, selectedConstructionEdge?.edgeId]);
+  }, [assetId, selectedConstructionFace?.id, selectedConstructionEdge?.edgeId, selectedConstructionCut?.face.id]);
 
   const selectLogicalFace = useCallback((logicalFaceId: number | null) => {
     const engine = previewEngineRef.current;
@@ -1716,6 +1741,18 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         return;
       }
 
+      if (command === 'CUT_FACE') {
+        if (!selectedConstructionCut) return;
+        const result = staticMeshAssetAPI.cutFace({
+          assetId,
+          faceId: selectedConstructionCut.face.id,
+          pointAId: selectedConstructionCut.pointIds[0],
+          pointBId: selectedConstructionCut.pointIds[1],
+        });
+        selectLogicalEdges([result.cutEdgeId]);
+        return;
+      }
+
       const selectedFaceIds = Array.from(engine.selectionSystem.subSelection.faceIds);
       if (selectedFaceIds.length !== 1) return;
       const constructionFace = meshAsset.construction?.faces.find(face => face.faceId === selectedFaceIds[0]);
@@ -1767,6 +1804,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       const expectedModelingValidation = error instanceof Error && (
         (command === 'INSET' && (error.message.startsWith('Inset ') || error.message.startsWith('Inset currently')))
         || (command === 'SPLIT_EDGE' && (error.message.startsWith('Split ') || error.message.startsWith('The Construction Points')))
+        || (command === 'CUT_FACE' && error.message.startsWith('Cut Face'))
       );
       if (!expectedModelingValidation) console.error(`[StaticMeshEditor] ${command} failed`, error);
     }
@@ -1774,6 +1812,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     assetId,
     selectLogicalEdges,
     selectLogicalFace,
+    selectedConstructionCut,
     topologyExtrudeDistance,
     topologyInsetAmount,
     topologySplitPosition,
@@ -1871,8 +1910,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         topologyCommand: handleTopologyCommand,
         supportsTopologyCommand: command => command === 'SPLIT_EDGE'
           ? Boolean(selectedConstructionEdge)
-          : Boolean(selectedConstructionFace)
-            && (command === 'EXTRUDE' || command === 'INSET' || command === 'DELETE_FACE'),
+          : command === 'CUT_FACE'
+            ? Boolean(selectedConstructionCut)
+            : Boolean(selectedConstructionFace)
+              && (command === 'EXTRUDE' || command === 'INSET' || command === 'DELETE_FACE'),
         configureSoftSelection,
       },
     };
@@ -1891,6 +1932,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     changeMeshComponentMode,
     selectedConstructionFace,
     selectedConstructionEdge,
+    selectedConstructionCut,
     handleTopologyCommand,
     configureSoftSelection,
   ]);
@@ -2063,6 +2105,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             topologyExtrudeDistance={topologyExtrudeDistance}
             topologySplitPosition={topologySplitPosition}
             topologySplitEndpointLabel={selectedConstructionEdge ? `${selectedConstructionEdge.pointIds[0]} → ${selectedConstructionEdge.pointIds[1]}` : null}
+            topologyCutEndpointLabel={selectedConstructionCut ? `${selectedConstructionCut.pointIds[0]} ↔ ${selectedConstructionCut.pointIds[1]} on ${selectedConstructionCut.face.id}` : null}
             topologyFeedback={topologyFeedback}
             onTopologyInsetAmountChange={amount => {
               setTopologyInsetAmount(amount);

@@ -293,7 +293,7 @@ const topologyCommandContext: EditorCommandContext = {
   meshComponentMode: 'FACE' as const,
   selectionCounts: { object: 1, vertices: 0, edges: 0, faces: 1 },
   services: {
-    topologyCommand: (command: 'EXTRUDE' | 'INSET' | 'BEVEL' | 'WELD' | 'CONNECT' | 'DELETE_FACE' | 'SPLIT_EDGE') => {
+    topologyCommand: (command: 'EXTRUDE' | 'INSET' | 'BEVEL' | 'WELD' | 'CONNECT' | 'DELETE_FACE' | 'SPLIT_EDGE' | 'CUT_FACE') => {
       topologyCommandInvocation = command;
     },
   },
@@ -312,6 +312,15 @@ const splitCommandContext: EditorCommandContext = {
 assert.equal(editorCommandRegistry.resolve('staticMesh.splitEdge', splitCommandContext)?.isEnabled, true);
 assert.equal(editorCommandRegistry.execute('staticMesh.splitEdge', splitCommandContext), true);
 assert.equal(topologyCommandInvocation, 'SPLIT_EDGE');
+
+const cutCommandContext: EditorCommandContext = {
+  ...topologyCommandContext,
+  meshComponentMode: 'VERTEX' as const,
+  selectionCounts: { object: 1, vertices: 2, edges: 0, faces: 0 },
+};
+assert.equal(editorCommandRegistry.resolve('staticMesh.cutFace', cutCommandContext)?.isEnabled, true);
+assert.equal(editorCommandRegistry.execute('staticMesh.cutFace', cutCommandContext), true);
+assert.equal(topologyCommandInvocation, 'CUT_FACE');
 
 // Gizmo/history synchronization invariant: the gizmo owns no persistent
 // transform state. The host asset transaction restores an unfinished drag and
@@ -592,6 +601,61 @@ assert.equal(splitAsset.construction?.points.length, 5);
 assert.equal(splitAsset.geometry.vertices.length / 3, 5);
 assert.equal(splitAsset.geometry.indices.length / 3, 4);
 
+// Cut Face composes with semantic boundary points: two existing non-adjacent
+// points split one authored polygon into two faces that share the new diagonal.
+// The source semantic/logical face stays stable and the operation is one Undo step.
+const cutAsset = staticMeshAssetAPI.create({ name: 'Construction API Cut Face Test', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: cutAsset.id,
+  points: [
+    { id: 'cA', position: { x: 0, y: 0, z: 0 } },
+    { id: 'cB', position: { x: 2, y: 0, z: 0 } },
+    { id: 'cC', position: { x: 2, y: 2, z: 0 } },
+    { id: 'cD', position: { x: 0, y: 2, z: 0 } },
+  ],
+});
+const cutSource = staticMeshAssetAPI.createFaceFromPoints({
+  assetId: cutAsset.id,
+  id: 'face:cut-source',
+  pointIds: ['cA', 'cB', 'cC', 'cD'],
+});
+assetHistory.clear(cutAsset.id);
+const cutVertexA = staticMeshAssetAPI.getPoint(cutAsset.id, 'cA')!.vertexIds![0];
+const cutVertexC = staticMeshAssetAPI.getPoint(cutAsset.id, 'cC')!.vertexIds![0];
+assert.equal(staticMeshAssetAPI.getConstructionPointId(cutAsset.id, cutVertexA), 'cA');
+assert.equal(staticMeshAssetAPI.getConstructionPointId(cutAsset.id, cutVertexC), 'cC');
+assert.throws(
+  () => staticMeshAssetAPI.cutFace({ assetId: cutAsset.id, faceId: cutSource.id, pointAId: 'cA', pointBId: 'cB' }),
+  /non-adjacent/,
+  'Cut Face must reject an existing boundary edge instead of creating a degenerate face.',
+);
+assert.equal(staticMeshAssetAPI.getHistoryState(cutAsset.id).canUndo, false, 'Rejected Cut Face must not create history.');
+const cut = staticMeshAssetAPI.cutFace({
+  assetId: cutAsset.id,
+  faceId: cutSource.id,
+  pointAId: 'cA',
+  pointBId: 'cC',
+  id: 'cut:diagonal',
+});
+assert.equal(cut.sourceFaceId, cutSource.id);
+assert.equal(cutAsset.construction?.faces.length, 2);
+assert.equal(cutAsset.topology.faces.length, 2);
+assert.equal(cutAsset.geometry.vertices.length / 3, 4, 'Cut Face between existing points must not create extra vertices.');
+assert.equal(cutAsset.geometry.indices.length / 3, 2);
+assert.equal(resolveStaticMeshShells(cutAsset).length, 1);
+assert.deepEqual(cutAsset.construction?.faces.find(face => face.id === cut.sourceFaceId)?.pointIds, ['cA', 'cB', 'cC']);
+assert.deepEqual(cutAsset.construction?.faces.find(face => face.id === cut.newFaceId)?.pointIds, ['cC', 'cD', 'cA']);
+const cutHalfEdge = cutAsset.topology.graph?.halfEdges.find(edge => edge.edgeKey === cut.cutEdgeId);
+assert.ok(cutHalfEdge, 'Expected Cut Face to create the new shared diagonal edge.');
+assert.notEqual(cutHalfEdge.pair, -1, 'The new Cut Face diagonal must pair across the two resulting faces.');
+assert.equal(staticMeshAssetAPI.getHistoryState(cutAsset.id).undoLabel, 'Cut Construction Face');
+assert.equal(staticMeshAssetAPI.undo(cutAsset.id), true);
+assert.equal(cutAsset.construction?.faces.length, 1);
+assert.equal(cutAsset.geometry.indices.length / 3, 2);
+assert.equal(staticMeshAssetAPI.redo(cutAsset.id), true);
+assert.equal(cutAsset.construction?.faces.length, 2);
+assert.equal(cutAsset.topology.faces.length, 2);
+
 // Mesh Shell connectivity is vertex-based, not edge-only. Two triangles that
 // share one actual mesh vertex must resolve as one shell.
 const sharedVertexAsset = staticMeshAssetAPI.create({ name: 'Shared Vertex Shell Test', path: '/Tests' });
@@ -693,6 +757,15 @@ assert.equal(staticMeshAssetAPI.getHistoryState(splitFixture.assetId).canUndo, f
 assert.equal(clearStaticMeshTestFixtures(), 1);
 assert.equal(assetManager.getAsset(splitFixture.assetId), undefined);
 
+const cutFixture = createStaticMeshTestFixture('cut');
+assert.equal(cutFixture.asset.construction?.faces.length, 1);
+assert.deepEqual(cutFixture.primaryCutPointIds, ['A', 'C']);
+assert.equal(cutFixture.asset.geometry.vertices.length / 3, 4);
+assert.equal(cutFixture.asset.geometry.indices.length / 3, 2);
+assert.equal(staticMeshAssetAPI.getHistoryState(cutFixture.assetId).canUndo, false);
+assert.equal(clearStaticMeshTestFixtures(), 1);
+assert.equal(assetManager.getAsset(cutFixture.assetId), undefined);
+
 console.log('Static Mesh construction API tests passed.');
 console.log(JSON.stringify({
   floor: {
@@ -724,6 +797,7 @@ console.log(JSON.stringify({
     inset: editorCommandRegistry.resolve('staticMesh.inset', topologyCommandContext)?.isEnabled === true,
     deleteFace: editorCommandRegistry.resolve('staticMesh.deleteFace', topologyCommandContext)?.isEnabled === true,
     splitEdge: editorCommandRegistry.resolve('staticMesh.splitEdge', splitCommandContext)?.isEnabled === true,
+    cutFace: editorCommandRegistry.resolve('staticMesh.cutFace', cutCommandContext)?.isEnabled === true,
   },
   splitEdge: {
     pointId: split.pointId,
@@ -733,6 +807,16 @@ console.log(JSON.stringify({
     triangles: splitAsset.geometry.indices.length / 3,
     shells: resolveStaticMeshShells(splitAsset).length,
     undoRedo: staticMeshAssetAPI.getHistoryState(splitAsset.id).undoLabel === 'Split Construction Edge',
+  },
+  cutFace: {
+    sourceFaceId: cut.sourceFaceId,
+    newFaceId: cut.newFaceId,
+    faces: cutAsset.construction?.faces.length,
+    vertices: cutAsset.geometry.vertices.length / 3,
+    triangles: cutAsset.geometry.indices.length / 3,
+    shells: resolveStaticMeshShells(cutAsset).length,
+    sharedCutEdgePaired: cutHalfEdge?.pair !== -1,
+    undoRedo: staticMeshAssetAPI.getHistoryState(cutAsset.id).undoLabel === 'Cut Construction Face',
   },
   gizmoHistory: {
     cancelRestoresGeometry: gizmoAsset.geometry.vertices[gizmoVertexId * 3] === 0,
@@ -762,5 +846,6 @@ console.log(JSON.stringify({
     cleanBaselineHistory: true,
     replacesPreviousFixture: true,
     splitReady: true,
+    cutReady: true,
   },
 }, null, 2));

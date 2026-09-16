@@ -355,13 +355,14 @@ the same Construction API used by browser-console scripts and AI:
 - **Inset** calls `staticMeshAssetAPI.insetFace()` using the editable Inset Amount.
 - **Delete Face** calls `staticMeshAssetAPI.deleteFace()` and leaves an opening.
 - **Split Edge** calls `staticMeshAssetAPI.splitEdge()` using the editable Split Position and updates every incident authored face/loop.
+- **Cut Face** calls `staticMeshAssetAPI.cutFace()` between two selected non-adjacent Construction-backed vertices on one authored face.
 
-Face actions intentionally require **Face mode + exactly one selected logical face that maps to an authored Construction Face**. Split Edge requires **Edge mode + exactly one selected edge whose current mesh vertices resolve back to an authored Construction Point pair**. Imported/appended topology without Construction identity remains disabled rather than receiving guessed planning identity. After Extrude, the generated top face becomes the
+Face actions intentionally require **Face mode + exactly one selected logical face that maps to an authored Construction Face**. Split Edge requires **Edge mode + exactly one selected edge whose current mesh vertices resolve back to an authored Construction Point pair**. Cut Face requires **Vertex mode + exactly two non-adjacent selected vertices that resolve to Construction Points on exactly one common authored face**. Imported/appended topology without Construction identity remains disabled rather than receiving guessed planning identity. After Extrude, the generated top face becomes the
 active face selection; after Inset, the stable inner/source face remains selected; after Delete Face, face
 selection is cleared because the selected surface no longer exists.
 
 The dock dispatches through `EditorCommandRegistry` (`staticMesh.extrude`, `staticMesh.inset`,
-`staticMesh.deleteFace`, `staticMesh.splitEdge`) and the editor's `topologyCommand` service. React UI must not implement separate
+`staticMesh.deleteFace`, `staticMesh.splitEdge`, `staticMesh.cutFace`) and the editor's `topologyCommand` service. React UI must not implement separate
 topology mutation logic.
 
 ## Automated test
@@ -381,13 +382,28 @@ The test verifies:
 - inset preserves the selected semantic/logical face id, creates a shared border ring, rejects collapse, and can feed the same face directly into extrusion,
 - delete-face removes only the selected authored surface, compacts logical/triangle mappings, preserves semantic points/loops, stays one shell for an inset ring, and supports undo/redo,
 - split-edge inserts one shared semantic point into both incident faces/loops, preserves shell/half-edge connectivity, and supports undo/redo,
-- the editor command catalogue resolves working Inset/Delete Face/Split Edge dispatch through the shared topology command service,
+- cut-face splits one authored polygon between two existing non-adjacent semantic boundary points, preserves the source face handle, creates one paired shared diagonal, and supports undo/redo,
+- the editor command catalogue resolves working Inset/Delete Face/Split Edge/Cut Face dispatch through the shared topology command service,
 - extrusion returns stable generated handles and creates a closed wall volume,
 - referenced points cannot be silently deleted,
 - two equal four-point loops bridge into four logical quads.
 
 The test uses a small Node TypeScript loader so this focused API behavior can run independently of the
 browser renderer. In a normal project install it uses the local `typescript` devDependency.
+
+## Cut Face contract
+
+`cutFace()` is intentionally small: it connects two **existing non-adjacent boundary Construction Points** on one authored face. The original semantic face id and logical face id survive as one side of the cut; the other side receives a new semantic face handle. Both sides reuse the same endpoint mesh vertices, so the new diagonal is a normal paired logical edge and the Mesh Shell remains connected.
+
+The first version does not invent arbitrary interior points or project a freehand knife line. To cut from positions in the middle of existing edges, compose the primitives:
+
+```text
+splitEdge(edge A, tA)
+splitEdge(edge B, tB)
+cutFace(face, newPointA, newPointB)
+```
+
+This keeps AI plans deterministic and makes each topology change independently testable/undoable. Adjacent endpoints, points not on the selected face, triangles, or otherwise degenerate cuts are rejected before commit. The current face-order contract remains the same planar ordered convex Construction polygon contract used by the other first-generation primitives.
 
 ## Next modeling operations
 
@@ -398,7 +414,7 @@ available. Good next additions are point-gizmo transforms, loop deletion, cut-fa
 
 Static Mesh construction mutations are recorded by the asset-level `AssetHistory` service. This history is separate from the Scene ECS `HistorySystem`: a modeling operation can change Construction Points/Faces/Loops, mesh geometry, logical topology, half-edge data and Mesh Shell metadata without changing any scene entity.
 
-Every public construction mutation (`addPoint(s)`, `movePoint`, `removePoint`, `createFaceFromPoints`, `createLoop`, `insetFace`, `deleteFace`, `splitEdge`, `extrudeFace`, `bridgeLoops`) creates one atomic undo step. Static Mesh append/reference mutations use the same history boundary. Snapshots preserve typed arrays and Maps rather than JSON-serializing them.
+Every public construction mutation (`addPoint(s)`, `movePoint`, `removePoint`, `createFaceFromPoints`, `createLoop`, `insetFace`, `deleteFace`, `splitEdge`, `cutFace`, `extrudeFace`, `bridgeLoops`) creates one atomic undo step. Static Mesh append/reference mutations use the same history boundary. Snapshots preserve typed arrays and Maps rather than JSON-serializing them.
 
 The API exposes:
 
@@ -442,10 +458,11 @@ smTest('inset')     // panel with a 0.5 inset, center face still present
 smTest('opening')   // inset ring with the center face deleted
 smTest('box')       // simple extruded panel
 smTest('split')     // two authored triangles sharing one edge; Edge mode Split Edge test
+smTest('cut')       // one authored quad; Vertex mode select opposite corners + Cut Face
 smTest.clear()      // delete only TEST_StaticMesh_* fixtures
 smTest.help()       // print the available fixture commands
 ```
 
-Each creation first deletes earlier assets whose names start with `TEST_StaticMesh_`, so repeated checks do not accumulate stale runtime fixtures. User-authored assets and automated `/Tests` assets are untouched. The created asset appears under Content > Meshes and the command returns its `assetId`, semantic point/face/loop ids, `primaryFaceId` when one is available, and `primaryEdgePointIds` for the split-ready fixture.
+Each creation first deletes earlier assets whose names start with `TEST_StaticMesh_`, so repeated checks do not accumulate stale runtime fixtures. User-authored assets and automated `/Tests` assets are untouched. The created asset appears under Content > Meshes and the command returns its `assetId`, semantic point/face/loop ids, `primaryFaceId` when one is available, `primaryEdgePointIds` for the split-ready fixture, and `primaryCutPointIds` for the cut-ready fixture.
 
 Fixture construction history is cleared before the command returns. The generated shape is therefore a clean baseline: the first manual Inset/Extrude/Delete/Split/Gizmo operation is also the first Ctrl+Z step. Keep fixture generation separate from the production modeling API; fixtures call `StaticMeshAssetAPI` rather than duplicating topology mutation logic.

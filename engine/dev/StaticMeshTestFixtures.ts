@@ -3,7 +3,7 @@ import { assetHistory } from '@/engine/AssetHistory';
 import { staticMeshAssetAPI } from '@/engine/api/StaticMeshAssetAPI';
 import type { StaticMeshAsset } from '@/types';
 
-export type StaticMeshTestFixtureKind = 'panel' | 'inset' | 'opening' | 'box' | 'split';
+export type StaticMeshTestFixtureKind = 'panel' | 'inset' | 'opening' | 'box' | 'split' | 'cut';
 
 export interface StaticMeshTestFixtureResult {
   fixture: StaticMeshTestFixtureKind;
@@ -11,6 +11,7 @@ export interface StaticMeshTestFixtureResult {
   asset: StaticMeshAsset;
   primaryFaceId?: string;
   primaryEdgePointIds?: [string, string];
+  primaryCutPointIds?: [string, string];
   pointIds: string[];
   faceIds: string[];
   loopIds: string[];
@@ -70,6 +71,7 @@ export function createStaticMeshTestFixture(
 
   let primaryFaceId: string | undefined = PANEL_FACE_ID;
   let primaryEdgePointIds: [string, string] | undefined;
+  let primaryCutPointIds: [string, string] | undefined;
 
   if (fixture === 'split') {
     staticMeshAssetAPI.createFaceFromPoints({
@@ -97,6 +99,7 @@ export function createStaticMeshTestFixture(
       name: 'Test Panel',
       pointIds: ['A', 'D', 'C', 'B'],
     });
+    if (fixture === 'cut') primaryCutPointIds = ['A', 'C'];
   }
 
   if (fixture === 'inset' || fixture === 'opening') {
@@ -135,6 +138,7 @@ export function createStaticMeshTestFixture(
     asset,
     primaryFaceId,
     primaryEdgePointIds,
+    primaryCutPointIds,
     pointIds: (asset.construction?.points ?? []).map(point => point.id),
     faceIds: (asset.construction?.faces ?? []).map(face => face.id),
     loopIds: (asset.construction?.loops ?? []).map(loop => loop.id),

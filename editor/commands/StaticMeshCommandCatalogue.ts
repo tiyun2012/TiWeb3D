@@ -205,6 +205,7 @@ topology('staticMesh.extrude', 'Extrude', 'ArrowUpSquare', 'EXTRUDE', 'FACE');
 topology('staticMesh.inset', 'Inset', 'Shrink', 'INSET', 'FACE');
 topology('staticMesh.deleteFace', 'Del Face', 'Trash', 'DELETE_FACE', 'FACE');
 topology('staticMesh.splitEdge', 'Split Edge', 'Scissors', 'SPLIT_EDGE', 'EDGE');
+topology('staticMesh.cutFace', 'Cut Face', 'Scissors', 'CUT_FACE', 'VERTEX');
 topology('staticMesh.bevel', 'Bevel', 'Ungroup', 'BEVEL', 'EDGE');
 topology('staticMesh.weld', 'Weld', 'Merge', 'WELD', 'VERTEX');
 topology('staticMesh.connect', 'Connect', 'GitCommit', 'CONNECT', 'VERTEX');
@@ -215,7 +216,7 @@ export const STATIC_MESH_PIE_COMMANDS = {
   OBJECT: ['viewport.focus', 'selection.duplicate', 'selection.delete'],
   FACE: ['staticMesh.extrude', 'staticMesh.inset', 'staticMesh.selectLoop', 'staticMesh.deleteFace'],
   EDGE: ['staticMesh.splitEdge', 'staticMesh.bevel', 'staticMesh.selectLoop'],
-  VERTEX: ['staticMesh.weld', 'staticMesh.connect', 'staticMesh.selectLoop'],
+  VERTEX: ['staticMesh.cutFace', 'staticMesh.weld', 'staticMesh.connect', 'staticMesh.selectLoop'],
 } as const;
 
 export const STATIC_MESH_DOCK_COMMANDS = [
@@ -229,4 +230,5 @@ export const STATIC_MESH_DOCK_COMMANDS = [
   'staticMesh.inset',
   'staticMesh.deleteFace',
   'staticMesh.splitEdge',
+  'staticMesh.cutFace',
 ] as const;
