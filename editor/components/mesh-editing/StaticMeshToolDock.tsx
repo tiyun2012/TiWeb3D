@@ -89,6 +89,7 @@ const SELECTION_TOOL_COMMANDS = [
   'staticMesh.selection.expand',
   'staticMesh.selection.shrink',
   'staticMesh.selection.ring',
+  'staticMesh.selection.quadStrip',
 ] as const;
 
 const PLACEHOLDER_SELECTION_TOOLS = [

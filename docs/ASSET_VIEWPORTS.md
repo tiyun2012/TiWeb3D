@@ -194,3 +194,14 @@ See `/docs/VIEWPORT_TEMPLATE.md` for the reusable shell API and design rules.
 ## Full Asset Editor Composition
 
 Full 3D asset editor windows use `AssetEditorTemplate` above `AssetViewport3D`. Asset-specific toolbar commands are `AssetViewportToolbarAction` descriptors and are filtered against `assetViewportCapabilities.ts`; keyboard and context/pie triggers must check the same capability. See `/docs/ASSET_EDITOR_TEMPLATE.md`.
+
+---
+
+## Asset Editor Lifetime Follows Asset Lifetime
+
+Asset-editor windows are bound to the UUID of the asset they edit through `AssetEditorWindowConfig.assetId`.
+`WindowManager` listens for `ASSET_DELETED` and removes every window bound to that UUID instead of leaving the React editor mounted against a missing asset.
+
+This is required for both normal Content Browser deletion and repeatable developer fixtures such as `smTest(...)`: creating a new `TEST_StaticMesh_*` fixture deletes the previous fixture first, so any open editor for the old fixture must close automatically. A deleted asset must never leave a stale window displaying `Mesh asset could not be loaded.`
+
+Utility windows that are not asset editors omit `assetId` and are unaffected by asset deletion.

@@ -141,9 +141,21 @@ editorCommandRegistry.register({
   category: 'SELECTION',
   requiredCapabilities: ['STATIC_MESH_COMPONENT_EDIT'],
   visible: context => context.meshComponentMode === 'EDGE',
-  enabled: context => Boolean(context.services.selectRing) && context.selectionCounts.edges > 0,
+  enabled: context => Boolean(context.services.selectRing) && context.selectionCounts.edges === 1,
   description: 'Extend the selected edge across opposite edges of connected quad-like faces.',
   execute: context => context.services.selectRing?.(context.meshComponentMode),
+});
+
+editorCommandRegistry.register({
+  id: 'staticMesh.selection.quadStrip',
+  label: 'Quad Strip',
+  icon: 'Rows3',
+  category: 'SELECTION',
+  requiredCapabilities: ['STATIC_MESH_COMPONENT_EDIT'],
+  visible: context => context.meshComponentMode === 'EDGE',
+  enabled: context => Boolean(context.services.selectQuadStrip) && context.selectionCounts.edges === 1,
+  description: 'Select the ordered quad faces crossed by the edge ring and switch to Face mode.',
+  execute: context => context.services.selectQuadStrip?.(context.meshComponentMode),
 });
 
 const registerSoftMode = (id: string, mode: SoftSelectionMode, label: string, icon: string, description: string) => {

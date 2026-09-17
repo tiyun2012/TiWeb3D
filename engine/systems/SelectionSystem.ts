@@ -8,6 +8,7 @@ import { consoleService } from '../Console';
 import { meshEdgeKey } from '../MeshEdgeGeometry';
 import { applyMeshComponentSelectionOperation, type MeshComponentSelectionOperation } from '../selection/MeshComponentSelection';
 import { areVerticesAdjacent, getEdgeFaces, getSharedFaceEdge, getVertexNeighbors } from '../mesh-editing/MeshConnectivity';
+import { traceStaticMeshEdgeRing } from '../mesh-editing/StaticMeshTopologyQueries';
 
 
 type ScreenPoint = { x: number; y: number };
@@ -984,16 +985,41 @@ export class SelectionSystem {
         }
 
         const [a, b] = edges[edges.length - 1].split('-').map(Number);
-        const ring = MeshTopologyUtils.getEdgeRing(asset.topology, a, b);
-        if (ring.length === 0) {
-            consoleService.warn('No edge ring found.', 'SelectionSystem');
+        const ring = traceStaticMeshEdgeRing(asset, a, b);
+        if (ring.edgeIds.length <= 1 && ring.faceIds.length === 0) {
+            consoleService.warn(`No quad edge ring found (${ring.startTermination}).`, 'SelectionSystem');
             return;
         }
         this.engine.clearDeformation();
-        ring.forEach(([v1, v2]) => this.subSelection.edgeIds.add(meshEdgeKey(v1, v2)));
-        this.engine.recalculateSoftSelection();
-        this.engine.notifyUI();
-        consoleService.success(`Selected Edge Ring (${ring.length} edges)`, 'SelectionSystem');
+        this.setMeshComponentSelection('EDGE', ring.edgeIds, 'REPLACE');
+        consoleService.success(
+            `Selected Edge Ring (${ring.edgeIds.length} edges, ${ring.faceIds.length} quads)`,
+            'SelectionSystem',
+        );
+    }
+
+    selectQuadStrip(mode: MeshComponentMode) {
+        if (mode !== 'EDGE') {
+            consoleService.warn('Quad Strip selection starts from one selected edge.', 'SelectionSystem');
+            return;
+        }
+        const asset = this.getSelectedMeshAsset();
+        if (!asset?.topology) return;
+        const edges = Array.from(this.subSelection.edgeIds);
+        if (edges.length === 0) {
+            consoleService.warn('Select an edge first.', 'SelectionSystem');
+            return;
+        }
+
+        const [a, b] = edges[edges.length - 1].split('-').map(Number);
+        const strip = traceStaticMeshEdgeRing(asset, a, b);
+        if (strip.faceIds.length === 0) {
+            consoleService.warn(`No quad strip found (${strip.startTermination}).`, 'SelectionSystem');
+            return;
+        }
+        this.engine.meshComponentMode = 'FACE';
+        this.setMeshComponentSelection('FACE', strip.faceIds, 'REPLACE');
+        consoleService.success(`Selected Quad Strip (${strip.faceIds.length} faces)`, 'SelectionSystem');
     }
 
     selectLoop(mode: MeshComponentMode) {

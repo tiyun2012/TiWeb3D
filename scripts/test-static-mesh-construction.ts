@@ -4,10 +4,12 @@ import { assetManager } from '@/engine/AssetManager';
 import { assetHistory } from '@/engine/AssetHistory';
 import { staticMeshAssetAPI } from '@/engine/api/StaticMeshAssetAPI';
 import { GizmoSystem } from '@/engine/GizmoSystem';
+import { buildMeshFaceTriangleIndices } from '@/engine/MeshFaceGeometry';
 import { editorCommandRegistry, type EditorCommandCapability, type EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
 import '@/editor/commands/StaticMeshCommandCatalogue';
 import { resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
 import { clearStaticMeshTestFixtures, createStaticMeshTestFixture } from '@/engine/dev/StaticMeshTestFixtures';
+import { removeWindowsForDeletedAsset } from '@/editor/assetEditorWindowLifecycle';
 import type { StaticMeshAsset } from '@/types';
 
 const floor = staticMeshAssetAPI.create({ name: 'Construction API Floor Test', path: '/Tests' });
@@ -321,6 +323,23 @@ const cutCommandContext: EditorCommandContext = {
 assert.equal(editorCommandRegistry.resolve('staticMesh.cutFace', cutCommandContext)?.isEnabled, true);
 assert.equal(editorCommandRegistry.execute('staticMesh.cutFace', cutCommandContext), true);
 assert.equal(topologyCommandInvocation, 'CUT_FACE');
+
+let selectionQueryInvocation: string | null = null;
+const topologyQueryCommandContext: EditorCommandContext = {
+  ...topologyCommandContext,
+  meshComponentMode: 'EDGE' as const,
+  selectionCounts: { object: 1, vertices: 0, edges: 1, faces: 0 },
+  services: {
+    selectRing: () => { selectionQueryInvocation = 'RING'; },
+    selectQuadStrip: () => { selectionQueryInvocation = 'QUAD_STRIP'; },
+  },
+};
+assert.equal(editorCommandRegistry.resolve('staticMesh.selection.ring', topologyQueryCommandContext)?.isEnabled, true);
+assert.equal(editorCommandRegistry.execute('staticMesh.selection.ring', topologyQueryCommandContext), true);
+assert.equal(selectionQueryInvocation, 'RING');
+assert.equal(editorCommandRegistry.resolve('staticMesh.selection.quadStrip', topologyQueryCommandContext)?.isEnabled, true);
+assert.equal(editorCommandRegistry.execute('staticMesh.selection.quadStrip', topologyQueryCommandContext), true);
+assert.equal(selectionQueryInvocation, 'QUAD_STRIP');
 
 // Gizmo/history synchronization invariant: the gizmo owns no persistent
 // transform state. The host asset transaction restores an unfinished drag and
@@ -777,6 +796,93 @@ assert.equal(staticMeshAssetAPI.getHistoryState(cutFixture.assetId).canUndo, fal
 assert.equal(clearStaticMeshTestFixtures(), 1);
 assert.equal(assetManager.getAsset(cutFixture.assetId), undefined);
 
+const ringFixture = createStaticMeshTestFixture('ring');
+assert.equal(ringFixture.asset.construction?.faces.length, 4);
+assert.equal(ringFixture.asset.geometry.vertices.length / 3, 10);
+assert.deepEqual(ringFixture.primaryEdgePointIds, ['B2', 'T2']);
+const ringB2 = staticMeshAssetAPI.getPoint(ringFixture.assetId, 'B2')!.vertexIds![0];
+const ringT2 = staticMeshAssetAPI.getPoint(ringFixture.assetId, 'T2')!.vertexIds![0];
+const ringFaceInfo = staticMeshAssetAPI.getFaceInfo(ringFixture.assetId, 1);
+assert.ok(ringFaceInfo);
+assert.equal(ringFaceInfo.kind, 'QUAD');
+assert.equal(ringFaceInfo.edges.length, 4);
+assert.equal(staticMeshAssetAPI.isQuadFace(ringFixture.assetId, 1), true);
+assert.deepEqual(staticMeshAssetAPI.getEdgeFaceIds({
+  assetId: ringFixture.assetId,
+  vertexAId: ringB2,
+  vertexBId: ringT2,
+}), [1, 2]);
+assert.deepEqual(staticMeshAssetAPI.getAdjacentFacesAcrossEdge({
+  assetId: ringFixture.assetId,
+  faceId: 1,
+  vertexAId: ringB2,
+  vertexBId: ringT2,
+}), [2]);
+assert.equal(staticMeshAssetAPI.getAdjacentFaceAcrossEdge({
+  assetId: ringFixture.assetId,
+  faceId: 1,
+  vertexAId: ringB2,
+  vertexBId: ringT2,
+}), 2);
+const opposite = staticMeshAssetAPI.getOppositeEdge({
+  assetId: ringFixture.assetId,
+  faceId: 1,
+  vertexAId: ringB2,
+  vertexBId: ringT2,
+});
+assert.ok(opposite);
+assert.deepEqual(new Set(opposite.oppositeEdge.constructionPointIds), new Set(['B1', 'T1']));
+const ringTrace = staticMeshAssetAPI.traceEdgeRing({
+  assetId: ringFixture.assetId,
+  vertexAId: ringB2,
+  vertexBId: ringT2,
+});
+assert.equal(ringTrace.edgeIds.length, 5, 'Four connected quads must expose all five cross-strip ring edges.');
+assert.deepEqual(new Set(ringTrace.faceIds), new Set([0, 1, 2, 3]));
+assert.equal(ringTrace.closed, false);
+assert.equal(ringTrace.startTermination, 'BOUNDARY');
+assert.equal(ringTrace.endTermination, 'BOUNDARY');
+assert.equal(ringTrace.constructionFaceIds.length, 4);
+const faceStripTrace = staticMeshAssetAPI.traceFaceStrip({
+  assetId: ringFixture.assetId,
+  vertexAId: ringB2,
+  vertexBId: ringT2,
+});
+assert.deepEqual(faceStripTrace.faceIds, ringTrace.faceIds);
+assert.equal(staticMeshAssetAPI.getHistoryState(ringFixture.assetId).canUndo, false, 'Read-only topology queries must not create history.');
+
+// Face-mode fill highlighting must follow logical-face identity rather than
+// treating render triangles as independent selectable faces. Two logical quads
+// in the ring fixture therefore resolve to four render triangles.
+const highlightedRingFaces = buildMeshFaceTriangleIndices(
+  ringFixture.asset.geometry.indices,
+  ringFixture.asset.topology.triangleToFaceIndex,
+  [1, 2],
+);
+assert.equal(highlightedRingFaces.triangleCount, 4);
+assert.equal(highlightedRingFaces.indices.length, 12);
+const hoveredRingFace = buildMeshFaceTriangleIndices(
+  ringFixture.asset.geometry.indices,
+  ringFixture.asset.topology.triangleToFaceIndex,
+  [2],
+);
+assert.equal(hoveredRingFace.triangleCount, 2);
+assert.equal(clearStaticMeshTestFixtures(), 1);
+assert.equal(assetManager.getAsset(ringFixture.assetId), undefined);
+
+// Asset editor windows must not outlive the asset UUID captured by their
+// content. This is the regression behind repeated smTest(...) calls leaving a
+// stale StaticMeshEditor that displayed "Mesh asset could not be loaded."
+const mockAssetWindows = {
+  [`editor_${ringFixture.assetId}`]: { assetId: ringFixture.assetId, title: 'Deleted Ring' },
+  inspector: { title: 'Inspector' },
+  otherAsset: { assetId: 'keep-me', title: 'Other Asset' },
+};
+const windowsAfterFixtureDelete = removeWindowsForDeletedAsset(mockAssetWindows, ringFixture.assetId);
+assert.equal(windowsAfterFixtureDelete[`editor_${ringFixture.assetId}`], undefined);
+assert.equal(windowsAfterFixtureDelete.inspector, mockAssetWindows.inspector);
+assert.equal(windowsAfterFixtureDelete.otherAsset, mockAssetWindows.otherAsset);
+
 console.log('Static Mesh construction API tests passed.');
 console.log(JSON.stringify({
   floor: {
@@ -809,6 +915,8 @@ console.log(JSON.stringify({
     deleteFace: editorCommandRegistry.resolve('staticMesh.deleteFace', topologyCommandContext)?.isEnabled === true,
     splitEdge: editorCommandRegistry.resolve('staticMesh.splitEdge', splitCommandContext)?.isEnabled === true,
     cutFace: editorCommandRegistry.resolve('staticMesh.cutFace', cutCommandContext)?.isEnabled === true,
+    edgeRing: editorCommandRegistry.resolve('staticMesh.selection.ring', topologyQueryCommandContext)?.isEnabled === true,
+    quadStrip: editorCommandRegistry.resolve('staticMesh.selection.quadStrip', topologyQueryCommandContext)?.isEnabled === true,
   },
   splitEdge: {
     pointId: split.pointId,
@@ -828,6 +936,19 @@ console.log(JSON.stringify({
     shells: resolveStaticMeshShells(cutAsset).length,
     sharedCutEdgePaired: cutHalfEdge?.pair !== -1,
     undoRedo: staticMeshAssetAPI.getHistoryState(cutAsset.id).undoLabel === 'Cut Construction Face',
+  },
+  faceHighlight: {
+    selectedLogicalFaces: 2,
+    selectedRenderTriangles: highlightedRingFaces.triangleCount,
+    hoveredRenderTriangles: hoveredRingFace.triangleCount,
+  },
+  topologyQueries: {
+    faceKind: ringFaceInfo?.kind,
+    oppositeEdge: opposite?.oppositeEdge.constructionPointIds,
+    ringEdges: ringTrace.edgeIds.length,
+    quadStripFaces: ringTrace.faceIds.length,
+    closed: ringTrace.closed,
+    termination: [ringTrace.startTermination, ringTrace.endTermination],
   },
   gizmoHistory: {
     cancelRestoresGeometry: gizmoAsset.geometry.vertices[gizmoVertexId * 3] === 0,
@@ -858,5 +979,7 @@ console.log(JSON.stringify({
     replacesPreviousFixture: true,
     splitReady: true,
     cutReady: true,
+    ringReady: true,
+    staleEditorClosedOnDelete: windowsAfterFixtureDelete[`editor_${ringFixture.assetId}`] === undefined,
   },
 }, null, 2));

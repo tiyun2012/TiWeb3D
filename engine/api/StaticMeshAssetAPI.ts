@@ -15,7 +15,24 @@ import type {
   Vector3,
 } from '@/types';
 import { materializeStaticMeshShell, offsetStaticMeshShell, resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
+import {
+  getStaticMeshEdgeFaceIds,
+  getStaticMeshFaceInfo,
+  getStaticMeshOppositeEdge,
+  traceStaticMeshEdgeRing,
+  type StaticMeshEdgeRingTraceResult,
+  type StaticMeshOppositeEdgeResult,
+  type StaticMeshTopologyFaceInfo,
+} from '@/engine/mesh-editing/StaticMeshTopologyQueries';
 export type { StaticMeshIdRange } from '@/types';
+export type {
+  StaticMeshEdgeRingTraceResult,
+  StaticMeshFaceKind,
+  StaticMeshOppositeEdgeResult,
+  StaticMeshTopologyEdgeInfo,
+  StaticMeshTopologyFaceInfo,
+  StaticMeshTopologyTraceTermination,
+} from '@/engine/mesh-editing/StaticMeshTopologyQueries';
 
 export interface CreateStaticMeshArgs {
   name: string;
@@ -145,6 +162,20 @@ export interface CutConstructionFaceArgs {
   pointBId: string;
   /** Optional stable operation prefix used for the generated second face. */
   id?: string;
+}
+
+export interface StaticMeshTopologyEdgeQueryArgs {
+  assetId: string;
+  vertexAId: number;
+  vertexBId: number;
+}
+
+export interface StaticMeshTopologyFaceEdgeQueryArgs extends StaticMeshTopologyEdgeQueryArgs {
+  faceId: number;
+}
+
+export interface StaticMeshEdgeRingQueryArgs extends StaticMeshTopologyEdgeQueryArgs {
+  maxSteps?: number;
 }
 
 export interface SplitConstructionEdgeArgs {
@@ -1185,6 +1216,67 @@ class StaticMeshAssetAPIService {
       assetManager.updateAsset(asset.id, { construction });
       return { ...loop, pointIds: [...loop.pointIds] };
     });
+  }
+
+  /** Read-only logical-face query. Works for Construction and imported Static Mesh topology. */
+  getFaceInfo(assetId: string, faceId: number): StaticMeshTopologyFaceInfo | null {
+    return getStaticMeshFaceInfo(requireStaticMesh(assetId, 'target'), faceId);
+  }
+
+  isQuadFace(assetId: string, faceId: number): boolean {
+    return this.getFaceInfo(assetId, faceId)?.kind === 'QUAD';
+  }
+
+  /** Returns all logical faces incident to one mesh edge, seam/sibling aware. */
+  getEdgeFaceIds(args: StaticMeshTopologyEdgeQueryArgs): number[] {
+    return getStaticMeshEdgeFaceIds(
+      requireStaticMesh(args.assetId, 'target'),
+      args.vertexAId,
+      args.vertexBId,
+    );
+  }
+
+  /** Returns logical faces across one edge from a specified source face. */
+  getAdjacentFacesAcrossEdge(args: StaticMeshTopologyFaceEdgeQueryArgs): number[] {
+    return this.getEdgeFaceIds(args).filter(faceId => faceId !== args.faceId);
+  }
+
+  /** Manifold convenience: returns exactly one face across the edge, otherwise null. */
+  getAdjacentFaceAcrossEdge(args: StaticMeshTopologyFaceEdgeQueryArgs): number | null {
+    const adjacent = this.getAdjacentFacesAcrossEdge(args);
+    return adjacent.length === 1 ? adjacent[0] : null;
+  }
+
+  getFaceBoundary(assetId: string, faceId: number) {
+    return this.getFaceInfo(assetId, faceId)?.edges ?? [];
+  }
+
+  /** For a quad face, returns the boundary edge directly across from the supplied boundary edge. */
+  getOppositeEdge(args: StaticMeshTopologyFaceEdgeQueryArgs): StaticMeshOppositeEdgeResult | null {
+    return getStaticMeshOppositeEdge(
+      requireStaticMesh(args.assetId, 'target'),
+      args.faceId,
+      args.vertexAId,
+      args.vertexBId,
+    );
+  }
+
+  /**
+   * Traces an edge ring through opposite edges of connected logical quads.
+   * The result also contains the ordered quad face strip crossed by the ring.
+   */
+  traceEdgeRing(args: StaticMeshEdgeRingQueryArgs): StaticMeshEdgeRingTraceResult {
+    return traceStaticMeshEdgeRing(
+      requireStaticMesh(args.assetId, 'target'),
+      args.vertexAId,
+      args.vertexBId,
+      args.maxSteps,
+    );
+  }
+
+  /** Face-strip alias for AI/tool callers that care about crossed quads rather than the ring edges. */
+  traceFaceStrip(args: StaticMeshEdgeRingQueryArgs): StaticMeshEdgeRingTraceResult {
+    return this.traceEdgeRing(args);
   }
 
   /** Maps one current mesh vertex back to its stable semantic Construction Point. */

@@ -471,3 +471,29 @@ CAMERA RESOLUTION / PRESET RULES
 - **KEEP A CUT-READY FIXTURE:** `smTest('cut')` must build one authored quad through the public API and expose opposite Construction Point ids so Vertex-mode Cut Face can be retested quickly after restart.
 
 - **TOPOLOGY VALIDATION IS USER FEEDBACK, NOT A CONSOLE FAULT:** Keep modeling APIs strict/atomic, but catch expected UI validation failures (for example an oversized inset) at the Static Mesh editor boundary and show the API message inline. Do not silently clamp values, commit partial topology/history, or spam console error stacks for safe user-input rejection.
+
+---
+
+### 28. STATIC MESH QUAD TOPOLOGY QUERIES / EDGE RINGS
+- **LOGICAL FACES, NOT RENDER TRIANGLES:** Quad detection and opposite-edge traversal must use `LogicalMesh.faces`. Never infer a quad from pairs of render triangles at query time; triangulation diagonals are not authored edges.
+- **CANONICAL EDGE IDENTITY:** Edge adjacency/ring traversal must use `MeshConnectivity` canonical/sibling identity so explicit UV/normal seam welds can continue a ring. Equal XYZ positions alone never connect edges or faces.
+- **RING != LOOP:** Edge Ring walks across the opposite edge of each quad. Edge Loop follows edge flow through vertices. Do not merge these algorithms or choose the next edge by geometric straightness alone.
+- **STOP EXPLICITLY:** Read-only ring traces must report termination (`BOUNDARY`, `NON_QUAD`, `BRANCH`, `CYCLE`, `INVALID_TOPOLOGY`, `MAX_STEPS`) instead of silently jumping across triangles/ngons/non-manifold branches.
+- **QUERY BEFORE MUTATION:** Face classification, opposite-edge lookup, Edge Ring and Quad Strip are read-only. They must not create Asset History entries, mutate Construction identity, or rebuild geometry.
+- **SHARED API FOR UI/AI:** Static Mesh editor Edge Ring / Quad Strip selection must call the shared topology query API. Never implement a second React-only traversal.
+
+---
+
+### 32. ASSET EDITOR WINDOW LIFETIME
+- **ASSET EDITORS MUST DECLARE `assetId`:** Every asset-backed `AssetEditorWindowConfig` must carry the UUID of the asset it edits. Do not rely only on an `editor_<uuid>` naming convention for lifecycle cleanup.
+- **DELETE CLOSES THE EDITOR:** `WindowManager` must remove windows whose `assetId` matches an `ASSET_DELETED` event. Never leave an asset editor mounted against a deleted UUID; it produces stale `Mesh asset could not be loaded.` windows and retains unnecessary viewport/editor state.
+- **DEV FIXTURES USE THE SAME RULE:** `smTest(...)` intentionally deletes older `TEST_StaticMesh_*` fixtures before creating a new one. Open fixture editors must therefore close through the normal asset-deletion lifecycle, not through special coupling from engine test-fixture code to React/UI code.
+
+---
+
+### 18. STATIC MESH FACE HOVER / SELECTION FILL
+- **FACE MODE NEEDS SURFACE FEEDBACK:** Do not render Face selection as boundary edges only. Static Mesh Face mode must keep a subtle translucent fill for hovered and selected logical faces so the interaction target reads as a surface.
+- **LOGICAL FACE IDENTITY:** Build face-fill triangle indices from `LogicalMesh.triangleToFaceIndex`; never treat each render triangle of a quad/ngon as an independent face highlight.
+- **VISUALIZATION ONLY:** Face fill must not mutate geometry, topology, materials, selection identity, or history. It reuses the host position VBO and owns only a compact overlay IBO.
+- **DEPTH SAFETY:** Keep depth testing enabled, use `LEQUAL`, disable depth writes, and use a small negative polygon offset so front-facing fills do not z-fight while back-side faces remain hidden.
+- **NO DOUBLE-BRIGHT HOVER:** If a hovered face is already selected, suppress the separate hover fill and keep the selected fill as the authoritative visual state.

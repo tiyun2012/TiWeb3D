@@ -33,6 +33,7 @@ export interface EditorCommandServices {
   expandSelection?: (mode: MeshComponentMode) => void;
   shrinkSelection?: (mode: MeshComponentMode) => void;
   selectRing?: (mode: MeshComponentMode) => void;
+  selectQuadStrip?: (mode: MeshComponentMode) => void;
   topologyCommand?: (command: StaticMeshTopologyCommand) => void;
   supportsTopologyCommand?: (command: StaticMeshTopologyCommand) => boolean;
   configureSoftSelection?: (settings: Partial<{

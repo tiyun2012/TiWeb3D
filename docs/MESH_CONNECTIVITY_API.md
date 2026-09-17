@@ -154,3 +154,53 @@ neighbor; poles, triangles, and irregular valence need explicit loop rules.
 ### Modeling validation in the Static Mesh UI
 
 Construction modeling APIs remain strict and atomic: invalid inputs such as an inset amount that collapses a face throw before topology is committed. The Static Mesh editor treats these expected validation failures as normal user feedback. It shows the API message inline beside the topology controls, leaves the entered value available for correction, creates no partial topology/history step, and does not emit a console error stack for expected inset validation. Unexpected failures are still logged for debugging.
+
+## Quad topology intelligence and read-only traversal
+
+`engine/mesh-editing/StaticMeshTopologyQueries.ts` builds higher-level modeling queries on top of
+`LogicalMesh.faces` and `MeshConnectivity`. These queries are **read-only** and work on logical topology
+whether or not the mesh was created through Construction Points.
+
+The public `staticMeshAssetAPI` wrappers are:
+
+```ts
+staticMeshAssetAPI.getFaceInfo(assetId, faceId)
+staticMeshAssetAPI.isQuadFace(assetId, faceId)
+staticMeshAssetAPI.getFaceBoundary(assetId, faceId)
+staticMeshAssetAPI.getEdgeFaceIds({ assetId, vertexAId, vertexBId })
+staticMeshAssetAPI.getAdjacentFacesAcrossEdge({ assetId, faceId, vertexAId, vertexBId })
+staticMeshAssetAPI.getAdjacentFaceAcrossEdge({ assetId, faceId, vertexAId, vertexBId })
+staticMeshAssetAPI.getOppositeEdge({ assetId, faceId, vertexAId, vertexBId })
+staticMeshAssetAPI.traceEdgeRing({ assetId, vertexAId, vertexBId })
+staticMeshAssetAPI.traceFaceStrip({ assetId, vertexAId, vertexBId })
+```
+
+Face classification uses **logical polygon boundaries**, not render triangles. A logical four-sided face
+is `QUAD` even when its render index buffer contains two triangles. Degenerate logical boundaries are
+reported separately instead of being treated as valid quads.
+
+For a valid quad, `getOppositeEdge()` finds the boundary edge two sides across from the seed edge. Edge
+ring traversal repeatedly follows that opposite edge into the adjacent quad. The same traversal returns
+an ordered `faceIds` strip, so one query can drive either an **Edge Ring** selection or a **Quad Strip**
+selection.
+
+Traversal is sibling/seam aware through the canonical connectivity index. Equal XYZ positions alone never
+create adjacency. A trace reports why each open end stopped:
+
+```text
+BOUNDARY | NON_QUAD | BRANCH | CYCLE | INVALID_TOPOLOGY | MAX_STEPS
+```
+
+`closed: true` is returned for a ring that cycles back to its seed edge. Query calls never create Asset
+History entries and never mutate Construction data, geometry, Shells, or selection.
+
+The Static Mesh editor exposes the same query layer under Selection Actions:
+
+- **Edge Ring** — from one selected edge, selects every edge found by the quad-opposite traversal.
+- **Quad Strip** — from the same edge seed, selects the crossed quad faces and switches to Face mode.
+- Existing **Edge Loop** remains a different traversal; Ring travels *across opposite quad edges*, while
+  Loop follows the surface edge flow through vertices.
+
+For deterministic manual testing after restart, run `smTest('ring')`. The fixture contains four connected
+quads. Select the center vertical edge, then test Edge Ring and Quad Strip. The expected result is five ring
+edges and four quad faces, with both ends terminating at `BOUNDARY`.

@@ -466,3 +466,25 @@ smTest.help()       // print the available fixture commands
 Each creation first deletes earlier assets whose names start with `TEST_StaticMesh_`, so repeated checks do not accumulate stale runtime fixtures. User-authored assets and automated `/Tests` assets are untouched. The created asset appears under Content > Meshes and the command returns its `assetId`, semantic point/face/loop ids, `primaryFaceId` when one is available, `primaryEdgePointIds` for the split-ready fixture, and `primaryCutPointIds` for the cut-ready fixture.
 
 Fixture construction history is cleared before the command returns. The generated shape is therefore a clean baseline: the first manual Inset/Extrude/Delete/Split/Gizmo operation is also the first Ctrl+Z step. Keep fixture generation separate from the production modeling API; fixtures call `StaticMeshAssetAPI` rather than duplicating topology mutation logic.
+
+## Read-only topology query layer
+
+Construction mutation APIs remain semantic and stable, but AI/modeling tools also need to understand an
+existing logical mesh before changing it. `StaticMeshAssetAPI` therefore exposes read-only quad topology
+queries that do **not** require Construction identity: face classification, face boundary edges, edge
+incident/adjacent faces, opposite-edge lookup, edge-ring tracing, and face-strip tracing.
+
+This is intentionally separate from mutation. An AI can first inspect:
+
+```text
+selected edge
+  -> incident faces
+  -> is the face a logical quad?
+  -> opposite edge
+  -> continue across adjacent quad
+  -> edge ring + crossed face strip
+```
+
+and only then compose existing editing primitives such as `splitEdge()` and `cutFace()`. This keeps higher
+level operations like a wall band/window row deterministic without introducing a large special-purpose
+"cut ring" command prematurely.

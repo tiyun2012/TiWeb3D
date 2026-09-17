@@ -3,7 +3,7 @@ import { assetHistory } from '@/engine/AssetHistory';
 import { staticMeshAssetAPI } from '@/engine/api/StaticMeshAssetAPI';
 import type { StaticMeshAsset } from '@/types';
 
-export type StaticMeshTestFixtureKind = 'panel' | 'inset' | 'opening' | 'box' | 'split' | 'cut';
+export type StaticMeshTestFixtureKind = 'panel' | 'inset' | 'opening' | 'box' | 'split' | 'cut' | 'ring';
 
 export interface StaticMeshTestFixtureResult {
   fixture: StaticMeshTestFixtureKind;
@@ -58,6 +58,35 @@ export function createStaticMeshTestFixture(
     name: fixtureName(fixture),
     path: TEST_ASSET_PATH,
   });
+
+  if (fixture === 'ring') {
+    const points = [] as Array<{ id: string; position: { x: number; y: number; z: number }; role: 'CORNER' }>;
+    for (let column = 0; column <= 4; column += 1) {
+      const x = (column - 2) * 2;
+      points.push({ id: `B${column}`, position: { x, y: 0, z: -1 }, role: 'CORNER' });
+      points.push({ id: `T${column}`, position: { x, y: 0, z: 1 }, role: 'CORNER' });
+    }
+    staticMeshAssetAPI.addPoints({ assetId: asset.id, points });
+    for (let column = 0; column < 4; column += 1) {
+      staticMeshAssetAPI.createFaceFromPoints({
+        assetId: asset.id,
+        id: `face:ring.${column}`,
+        name: `Ring Quad ${column}`,
+        pointIds: [`B${column}`, `T${column}`, `T${column + 1}`, `B${column + 1}`],
+      });
+    }
+    assetHistory.clear(asset.id);
+    return {
+      fixture,
+      assetId: asset.id,
+      asset,
+      primaryFaceId: 'face:ring.1',
+      primaryEdgePointIds: ['B2', 'T2'],
+      pointIds: (asset.construction?.points ?? []).map(point => point.id),
+      faceIds: (asset.construction?.faces ?? []).map(face => face.id),
+      loopIds: (asset.construction?.loops ?? []).map(loop => loop.id),
+    };
+  }
 
   staticMeshAssetAPI.addPoints({
     assetId: asset.id,

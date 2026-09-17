@@ -18,6 +18,7 @@ const HELP = [
   "smTest('box')      // simple extruded box",
   "smTest('split')    // two authored triangles sharing one edge; use Edge mode + Split Edge",
   "smTest('cut')      // one authored quad; select opposite vertices A/C + Cut Face",
+  "smTest('ring')     // four connected quads; select the center vertical edge, then Edge Ring / Quad Strip",
   'smTest.clear()     // remove TEST_StaticMesh_* fixtures',
 ].join('\n');
 

@@ -45,7 +45,9 @@ import {
   meshEdgePairFromKey,
 } from '@/engine/MeshEdgeGeometry';
 import { MeshEdgeOverlay } from '@/editor/viewports/MeshEdgeOverlay';
+import { MeshFaceOverlay } from '@/editor/viewports/MeshFaceOverlay';
 import { MESH_VERTEX_COLORS, MeshVertexOverlay } from '@/editor/viewports/MeshVertexOverlay';
+import { buildMeshFaceTriangleIndices, MESH_FACE_COLORS } from '@/engine/MeshFaceGeometry';
 import { MeshComponentMode, SoftSelectionConnectivity, SoftSelectionFalloff, StaticMeshAsset, SkeletalMeshAsset, ToolType } from '@/types';
 
 import { Icon } from './Icon';
@@ -353,6 +355,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     edgeOverlay: MeshEdgeOverlay;
     selectedEdgeOverlay: MeshEdgeOverlay;
     hoveredEdgeOverlay: MeshEdgeOverlay;
+    selectedFaceOverlay: MeshFaceOverlay;
+    hoveredFaceOverlay: MeshFaceOverlay;
     vertexOverlay: MeshVertexOverlay;
     constructionPointVbo: WebGLBuffer | null;
     constructionPointOverlay: MeshVertexOverlay;
@@ -362,6 +366,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     selectionEdgeRevision: number;
     selectionEdgeMode: MeshComponentMode | null;
     hoveredEdgeSignature: string;
+    selectedFaceRevision: number;
+    hoveredFaceSignature: string;
     selectionVertexRevision: number;
     softWeightRevision: number;
     referenceMeshes: Map<string, ReferenceMeshGpuResource>;
@@ -377,6 +383,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     edgeOverlay: new MeshEdgeOverlay(),
     selectedEdgeOverlay: new MeshEdgeOverlay(),
     hoveredEdgeOverlay: new MeshEdgeOverlay(),
+    selectedFaceOverlay: new MeshFaceOverlay(),
+    hoveredFaceOverlay: new MeshFaceOverlay(),
     vertexOverlay: new MeshVertexOverlay(),
     constructionPointVbo: null,
     constructionPointOverlay: new MeshVertexOverlay(),
@@ -386,6 +394,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     selectionEdgeRevision: -1,
     selectionEdgeMode: null,
     hoveredEdgeSignature: '',
+    selectedFaceRevision: -1,
+    hoveredFaceSignature: '',
     selectionVertexRevision: -1,
     softWeightRevision: -1,
     referenceMeshes: new Map(),
@@ -606,6 +616,20 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       buildMeshEdgeIndicesFromKeys([], asset.geometry.indices instanceof Uint32Array),
       gl.DYNAMIC_DRAW,
     );
+    const selectedFaceOverlay = new MeshFaceOverlay();
+    selectedFaceOverlay.init(
+      gl,
+      vbo,
+      buildMeshFaceTriangleIndices(asset.geometry.indices, asset.topology?.triangleToFaceIndex, []),
+      gl.DYNAMIC_DRAW,
+    );
+    const hoveredFaceOverlay = new MeshFaceOverlay();
+    hoveredFaceOverlay.init(
+      gl,
+      vbo,
+      buildMeshFaceTriangleIndices(asset.geometry.indices, asset.topology?.triangleToFaceIndex, []),
+      gl.DYNAMIC_DRAW,
+    );
     const vertexOverlay = new MeshVertexOverlay();
     vertexOverlay.init(gl, vbo);
     gl.bindBuffer(gl.ARRAY_BUFFER, constructionPointVbo);
@@ -627,6 +651,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       edgeOverlay,
       selectedEdgeOverlay,
       hoveredEdgeOverlay,
+      selectedFaceOverlay,
+      hoveredFaceOverlay,
       vertexOverlay,
       constructionPointVbo,
       constructionPointOverlay,
@@ -636,6 +662,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       selectionEdgeRevision: -1,
       selectionEdgeMode: null,
       hoveredEdgeSignature: '',
+      selectedFaceRevision: -1,
+      hoveredFaceSignature: '',
       selectionVertexRevision: -1,
       softWeightRevision: -1,
       referenceMeshes: new Map(),
@@ -655,6 +683,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     res.edgeOverlay.dispose(gl);
     res.selectedEdgeOverlay.dispose(gl);
     res.hoveredEdgeOverlay.dispose(gl);
+    res.selectedFaceOverlay.dispose(gl);
+    res.hoveredFaceOverlay.dispose(gl);
     res.vertexOverlay.dispose(gl);
     res.constructionPointOverlay.dispose(gl);
     if (res.constructionPointVbo) gl.deleteBuffer(res.constructionPointVbo);
@@ -710,6 +740,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           buildMeshEdgeIndices(asset.geometry.indices, asset.topology?.faces),
           gl.DYNAMIC_DRAW,
         );
+        res.selectedFaceRevision = -1;
+        res.hoveredFaceSignature = '';
         res.selectionEdgeRevision = -1;
         res.hoveredEdgeSignature = '__geometry_changed__';
         res.selectionVertexRevision = -1;
@@ -905,8 +937,51 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
       res.edgeOverlay.draw(gl, lineProgram, mvp, baseColor);
     }
 
-    // Edge and face selections reuse the same edge-index contract instead of
-    // maintaining a second renderer. Rebuild only when selection/mode changes.
+    // Face mode adds a soft translucent surface cue. The logical face-to-
+    // triangle mapping determines the fill, while the existing edge overlay
+    // remains the stronger boundary cue. Picking and topology stay unchanged.
+    if (componentMode === 'FACE') {
+      const selection = engine?.selectionSystem.subSelection;
+      if (selection && res.selectedFaceRevision !== selectionTickRef.current) {
+        res.selectedFaceOverlay.update(
+          gl,
+          buildMeshFaceTriangleIndices(
+            asset.geometry.indices,
+            asset.topology?.triangleToFaceIndex,
+            selection.faceIds,
+            asset.geometry.indices instanceof Uint32Array,
+          ),
+          gl.DYNAMIC_DRAW,
+        );
+        res.selectedFaceRevision = selectionTickRef.current;
+      }
+      res.selectedFaceOverlay.draw(gl, lineProgram, mvp, MESH_FACE_COLORS.selected);
+
+      const hovered = engine?.selectionSystem.hoveredMeshComponent;
+      const hoveredFaceId = hovered?.entityId === previewEntityId && hovered.mode === 'FACE'
+        ? hovered.faceId
+        : null;
+      const hoverSignature = hoveredFaceId !== null && !selection?.faceIds.has(hoveredFaceId)
+        ? `FACE:${hoveredFaceId}`
+        : '';
+      if (res.hoveredFaceSignature !== hoverSignature) {
+        res.hoveredFaceOverlay.update(
+          gl,
+          buildMeshFaceTriangleIndices(
+            asset.geometry.indices,
+            asset.topology?.triangleToFaceIndex,
+            hoverSignature ? [hoveredFaceId!] : [],
+            asset.geometry.indices instanceof Uint32Array,
+          ),
+          gl.DYNAMIC_DRAW,
+        );
+        res.hoveredFaceSignature = hoverSignature;
+      }
+      res.hoveredFaceOverlay.draw(gl, lineProgram, mvp, MESH_FACE_COLORS.hovered);
+    }
+
+    // Edge and face selections reuse the same edge-index contract for their
+    // boundary cue. Rebuild only when selection/mode changes.
     if (componentMode === 'EDGE' || componentMode === 'FACE') {
       const selection = engine?.selectionSystem.subSelection;
       if (selection && (res.selectionEdgeRevision !== selectionTickRef.current || res.selectionEdgeMode !== componentMode)) {
@@ -1698,6 +1773,22 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     setHierarchySection('FACES');
   }, [changeMeshComponentMode, ensurePreviewSelectionTarget]);
 
+  const selectLogicalFaces = useCallback((logicalFaceIds: readonly number[]) => {
+    const engine = previewEngineRef.current;
+    if (!engine) return;
+    ensurePreviewSelectionTarget(engine);
+    engine.api.commands.mesh.setComponentMode('FACE');
+    engine.api.commands.selection.setMeshComponents({
+      mode: 'FACE',
+      ids: [...logicalFaceIds],
+      operation: 'REPLACE',
+    });
+    changeMeshComponentMode('FACE');
+    setSelectedShellIds([]);
+    setSelectedConstructionPointIds([]);
+    setHierarchySection('FACES');
+  }, [changeMeshComponentMode, ensurePreviewSelectionTarget]);
+
   const selectLogicalEdges = useCallback((edgeIds: readonly string[]) => {
     const engine = previewEngineRef.current;
     if (!engine) return;
@@ -1830,6 +1921,34 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     engine.selectionSystem.selectLoop(mode);
   };
 
+  const handleSelectEdgeRing = useCallback((mode: MeshComponentMode = meshComponentMode) => {
+    if (mode !== 'EDGE') return;
+    const engine = previewEngineRef.current;
+    const asset = assetManager.getAsset(assetId);
+    if (!engine || !asset || asset.type !== 'MESH') return;
+    const selectedEdges = Array.from(engine.selectionSystem.subSelection.edgeIds);
+    const edgeId = selectedEdges[selectedEdges.length - 1];
+    if (!edgeId) return;
+    const edge = meshEdgePairFromKey(edgeId);
+    if (!edge) return;
+    const trace = staticMeshAssetAPI.traceEdgeRing({ assetId, vertexAId: edge[0], vertexBId: edge[1] });
+    selectLogicalEdges(trace.edgeIds);
+  }, [assetId, meshComponentMode, selectLogicalEdges]);
+
+  const handleSelectQuadStrip = useCallback((mode: MeshComponentMode = meshComponentMode) => {
+    if (mode !== 'EDGE') return;
+    const engine = previewEngineRef.current;
+    const asset = assetManager.getAsset(assetId);
+    if (!engine || !asset || asset.type !== 'MESH') return;
+    const selectedEdges = Array.from(engine.selectionSystem.subSelection.edgeIds);
+    const edgeId = selectedEdges[selectedEdges.length - 1];
+    if (!edgeId) return;
+    const edge = meshEdgePairFromKey(edgeId);
+    if (!edge) return;
+    const trace = staticMeshAssetAPI.traceFaceStrip({ assetId, vertexAId: edge[0], vertexBId: edge[1] });
+    if (trace.faceIds.length > 0) selectLogicalFaces(trace.faceIds);
+  }, [assetId, meshComponentMode, selectLogicalFaces]);
+
   const configureSoftSelection = useCallback((settings: SoftSelectionCommandSettings) => {
     // The local edit engine owns deformation weights and heatmap invalidation.
     // Apply the command synchronously, then mirror its settings into React UI state.
@@ -1903,13 +2022,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           engine.meshComponentMode = mode;
           engine.selectionSystem.shrinkSelection(mode);
         },
-        selectRing: mode => {
-          const engine = previewEngineRef.current;
-          if (!engine || mode !== 'EDGE') return;
-          setSelectedShellIds([]);
-          engine.meshComponentMode = mode;
-          engine.selectionSystem.selectRing(mode);
-        },
+        selectRing: handleSelectEdgeRing,
+        selectQuadStrip: handleSelectQuadStrip,
         topologyCommand: handleTopologyCommand,
         supportsTopologyCommand: command => command === 'SPLIT_EDGE'
           ? Boolean(selectedConstructionEdge)
@@ -1937,6 +2051,8 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     selectedConstructionEdge,
     selectedConstructionCut,
     handleTopologyCommand,
+    handleSelectEdgeRing,
+    handleSelectQuadStrip,
     configureSoftSelection,
   ]);
 

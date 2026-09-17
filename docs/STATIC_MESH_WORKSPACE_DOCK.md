@@ -115,3 +115,18 @@ The Scene `MeshRenderSystem` reuses existing VBO/NBO objects for preview updates
 ## Working semantic topology controls
 
 The Topology subsection is mode-aware. Face mode exposes Extrude Distance and Inset Amount for exactly one authored Construction Face. Edge mode exposes Split Position (`0 < t < 1`, default `0.5`) for exactly one authored Construction Edge. Split Edge maps the transient selected mesh-edge key back to semantic Construction Point endpoints, calls `staticMeshAssetAPI.splitEdge()`, then selects the two replacement mesh edges. Unsupported imported/appended edges remain disabled instead of inventing semantic identity.
+
+## Quad Ring / Strip selection
+
+Selection Actions now include two topology-query-driven tools in Edge mode:
+
+- **Edge Ring** selects opposite edges across connected logical quads.
+- **Quad Strip** uses the same traversal but selects the crossed logical faces and changes to Face mode.
+
+Both actions use `staticMeshAssetAPI.traceEdgeRing()/traceFaceStrip()` rather than a UI-local geometry
+algorithm, so browser scripts, future AI planning, and the editor agree on quad/opposite-edge semantics.
+These queries work on logical/imported topology and do not require Construction Points because they do not
+mutate the asset.
+
+Use `smTest('ring')` for a clean four-quad manual fixture. Select its center vertical edge; Edge Ring should
+select five vertical edges, while Quad Strip should select all four quads.
