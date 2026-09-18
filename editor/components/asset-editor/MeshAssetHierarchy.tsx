@@ -12,10 +12,6 @@ export type MeshHierarchySection =
   | 'VERTICES'
   | 'EDGES'
   | 'FACES'
-  | 'CONSTRUCTION'
-  | 'CONSTRUCTION_POINTS'
-  | 'CONSTRUCTION_FACES'
-  | 'CONSTRUCTION_LOOPS'
   | 'SKIN'
   | 'SKELETON';
 
@@ -34,9 +30,6 @@ export interface MeshAssetHierarchyProps {
   onObjectSelect?: () => void;
   /** Live selection counts distinguish mode-only switches from asset-wide select-all scopes. */
   selectionCounts?: { object: number; vertices: number; edges: number; faces: number };
-  /** Construction Points are semantic authoring handles, not mesh vertices. */
-  selectedConstructionPointIds?: readonly string[];
-  onConstructionPointSelect?: (pointId: string | null, operation?: 'REPLACE' | 'TOGGLE') => void;
   /** Reactive revision for AssetManager assets, which are mutated in place. */
   assetRevision?: number;
   showHeader?: boolean;
@@ -84,16 +77,12 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
   onGlobalComponentSelect,
   onObjectSelect,
   selectionCounts,
-  selectedConstructionPointIds = [],
-  onConstructionPointSelect,
   assetRevision = 0,
   showHeader = true,
 }) => {
   const [geometryExpanded, setGeometryExpanded] = useState(true);
   const [shellsExpanded, setShellsExpanded] = useState(true);
   const [componentsExpanded, setComponentsExpanded] = useState(true);
-  const [constructionExpanded, setConstructionExpanded] = useState(true);
-  const [constructionPointsExpanded, setConstructionPointsExpanded] = useState(true);
   const [deformExpanded, setDeformExpanded] = useState(true);
   const [expandedShellIds, setExpandedShellIds] = useState<Set<string>>(() => new Set());
 
@@ -116,14 +105,6 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
     if (asset.type !== 'MESH') return new Map<string, ReturnType<typeof getStaticMeshShellCounts>>();
     return new Map(shells.map(shell => [shell.id, getStaticMeshShellCounts(asset, shell)]));
   }, [asset, shells, assetRevision]);
-
-  const construction = useMemo(() => asset.type === 'MESH'
-    ? {
-        points: asset.construction?.points ?? [],
-        faces: asset.construction?.faces ?? [],
-        loops: asset.construction?.loops ?? [],
-      }
-    : { points: [], faces: [], loops: [] }, [asset, assetRevision]);
 
   useEffect(() => {
     if (selectedShellIds.length === 0) return;
@@ -168,12 +149,6 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
     onSectionChange(section);
     onMeshComponentModeChange(mode);
     onShellComponentSelect?.(shellId, mode, event.shiftKey ? 'TOGGLE' : 'REPLACE');
-  };
-
-  const selectConstructionPoint = (pointId: string, event: React.MouseEvent) => {
-    onShellSelect?.(null);
-    onSectionChange('CONSTRUCTION_POINTS');
-    onConstructionPointSelect?.(pointId, event.shiftKey ? 'TOGGLE' : 'REPLACE');
   };
 
   const toggleShell = (shellId: string) => {
@@ -373,90 +348,7 @@ export const MeshAssetHierarchy: React.FC<MeshAssetHierarchyProps> = ({
           )}
         </HierarchyTreeItem>
 
-        {asset.type === 'MESH' && (
-          <HierarchyTreeItem
-            id={`${asset.id}:construction`}
-            name="Construction"
-            depth={1}
-            icon="Component"
-            badge={<CountBadge value={construction.points.length} />}
-            hasChildren
-            isExpanded={constructionExpanded}
-            isSelected={activeSection === 'CONSTRUCTION'}
-            canRename={false}
-            onToggleExpand={() => setConstructionExpanded(value => !value)}
-            onSelect={() => {
-              onShellSelect?.(null);
-              onSectionChange('CONSTRUCTION');
-              onConstructionPointSelect?.(null);
-            }}
-          >
-            <HierarchyTreeItem
-              id={`${asset.id}:construction:points`}
-              name="Points"
-              depth={2}
-              icon="CircleDot"
-              badge={<CountBadge value={construction.points.length} />}
-              hasChildren={construction.points.length > 0}
-              isExpanded={constructionPointsExpanded}
-              isSelected={activeSection === 'CONSTRUCTION_POINTS' && selectedConstructionPointIds.length === 0}
-              canRename={false}
-              onToggleExpand={() => setConstructionPointsExpanded(value => !value)}
-              onSelect={() => {
-                onShellSelect?.(null);
-                onSectionChange('CONSTRUCTION_POINTS');
-                onConstructionPointSelect?.(null);
-              }}
-            >
-              {construction.points.map(point => (
-                <HierarchyTreeItem
-                  key={point.id}
-                  id={`${asset.id}:construction:point:${point.id}`}
-                  name={point.name || point.id}
-                  depth={3}
-                  icon="CircleDot"
-                  iconColor="text-cyan-300"
-                  badge={
-                    <span className="text-[8px] font-mono text-text-secondary/80 whitespace-nowrap">
-                      {point.position.x.toFixed(2)}, {point.position.y.toFixed(2)}, {point.position.z.toFixed(2)}
-                    </span>
-                  }
-                  isSelected={selectedConstructionPointIds.includes(point.id)}
-                  canRename={false}
-                  onSelect={event => selectConstructionPoint(point.id, event)}
-                />
-              ))}
-            </HierarchyTreeItem>
-            <HierarchyTreeItem
-              id={`${asset.id}:construction:faces`}
-              name="Faces"
-              depth={2}
-              icon="Square"
-              badge={<CountBadge value={construction.faces.length} />}
-              isSelected={activeSection === 'CONSTRUCTION_FACES'}
-              canRename={false}
-              onSelect={() => {
-                onShellSelect?.(null);
-                onConstructionPointSelect?.(null);
-                onSectionChange('CONSTRUCTION_FACES');
-              }}
-            />
-            <HierarchyTreeItem
-              id={`${asset.id}:construction:loops`}
-              name="Loops"
-              depth={2}
-              icon="Spline"
-              badge={<CountBadge value={construction.loops.length} />}
-              isSelected={activeSection === 'CONSTRUCTION_LOOPS'}
-              canRename={false}
-              onSelect={() => {
-                onShellSelect?.(null);
-                onConstructionPointSelect?.(null);
-                onSectionChange('CONSTRUCTION_LOOPS');
-              }}
-            />
-          </HierarchyTreeItem>
-        )}
+
 
         {asset.type === 'SKELETAL_MESH' && (
           <HierarchyTreeItem

@@ -693,3 +693,30 @@ Check:
 - selected fill is stronger than hover fill, but both remain translucent
 - hovered fill is suppressed when that same face is already selected
 
+
+---
+
+## Static Mesh normal overlays
+
+`engine/MeshNormalGeometry.ts` owns CPU generation of optional normal-debug line geometry:
+
+- `buildFaceNormalLines()` emits one center-to-normal line per **logical polygon face**.
+- `buildVertexNormalLines()` emits one line per stored mesh vertex normal.
+
+`editor/viewports/MeshNormalOverlay.ts` owns the dynamic GL_LINES pass. It has its own compact VBO because normal
+endpoints are derived positions rather than existing mesh vertices. It uses the shared asset viewport line shader,
+`LEQUAL`, and disabled depth writes so the overlay tests against the shaded surface without affecting later passes.
+
+When enabled, the Static Mesh render order extends to:
+
+```text
+1. shaded mesh triangles
+2. dim topology cage / object wireframe
+3. selected/hovered Face fill (optional)
+4. selected Edge or Face boundary overlay
+5. vertex component points
+6. face/vertex normal debug lines (optional)
+```
+
+Normal debug overlays are presentation state only. Do not add them to selection, topology, asset history, or
+persisted mesh geometry.

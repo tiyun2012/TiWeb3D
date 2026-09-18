@@ -97,7 +97,7 @@ Static Mesh editing API / tool session
 geometry transaction
 ```
 
-Working Extrude, Inset, Delete Face, and Split Edge dock buttons call the shared Construction API. When Bevel, Weld, Connect, or other topology tools become real operations, their dock buttons should follow the same rule. Do not create a second implementation just because the Pie Menu also exposes the action.
+Working Extrude, Inset, Delete Face, Split Edge, Cut Face, and Bevel buttons call the shared normal `StaticMeshAssetAPI` numeric-ID modeling surface. Geometry mutation never lives in React click handlers. When Weld, Connect, or other topology tools become real operations, their dock buttons must call the same engine API used by scripts/tests.
 
 
 ## Live asset geometry propagation
@@ -112,9 +112,11 @@ This distinction prevents two common failures:
 The Scene `MeshRenderSystem` reuses existing VBO/NBO objects for preview updates; do not allocate replacement GPU buffers per drag event.
 
 
-## Working semantic topology controls
+## Working normal topology controls
 
-The Topology subsection is mode-aware. Face mode exposes Extrude Distance and Inset Amount for exactly one authored Construction Face. Edge mode exposes Split Position (`0 < t < 1`, default `0.5`) and Bevel Width for exactly one authored Construction Edge. Split Edge maps the transient selected mesh-edge key back to semantic Construction Point endpoints, calls `staticMeshAssetAPI.splitEdge()`, then selects the two replacement mesh edges. Bevel uses the same semantic endpoint adapter, calls `staticMeshAssetAPI.bevelEdge()`, and selects the two long edges bordering the new chamfer face. Unsupported imported/appended edges remain disabled instead of inventing semantic identity.
+The Topology subsection is mode-aware and works directly on the selected `LogicalMesh` components. Face mode exposes Extrude Distance and relative Inset Ratio (`0.005..0.99`) for exactly one selected logical face. Edge mode exposes Split Position (`0 < t < 1`, default `0.5`) and Bevel Width for exactly one selected logical edge. Vertex mode enables Cut Face when exactly two selected non-adjacent vertices lie on one logical face.
+
+No **Adopt Topology** step is required. Imported, appended, generated, and `smTest(...)` normal meshes use the same numeric face/vertex/edge API. The editor hierarchy does not expose Construction Points/Faces/Loops. See `docs/STATIC_MESH_NORMAL_MODELING_API.md`.
 
 ## Quad Ring / Strip selection
 
@@ -125,8 +127,7 @@ Selection Actions now include two topology-query-driven tools in Edge mode:
 
 Both actions use `staticMeshAssetAPI.traceEdgeRing()/traceFaceStrip()` rather than a UI-local geometry
 algorithm, so browser scripts, future AI planning, and the editor agree on quad/opposite-edge semantics.
-These queries work on logical/imported topology and do not require Construction Points because they do not
-mutate the asset.
+These queries work directly on logical/imported topology and return only normal numeric vertex/face identity. They do not mutate the asset.
 
 Use `smTest('ring')` for a clean four-quad manual fixture. Select its center vertical edge; Edge Ring should
 select five vertical edges, while Quad Strip should select all four quads.
@@ -134,4 +135,10 @@ select five vertical edges, while Quad Strip should select all four quads.
 
 ## Single-edge Bevel
 
-Bevel UI is available for one Construction-backed manifold edge. Width is world-space distance measured along the local endpoint one-ring edges. The common valence-3 box edge remains supported, and higher-valence interior manifold endpoints are resolved through their unique face fan with endpoint cap faces generated when needed. Ambiguous/open/branched/non-manifold high-valence topology rejects atomically. Use `smTest('bevel')` for the simple case and `smTest('bevel-valence')` for valence-4 endpoints.
+Bevel UI is available for one selected normal manifold edge. Width is world-space distance measured along the local endpoint one-ring edges. The common valence-3 box edge remains supported, and higher-valence interior manifold endpoints are resolved through their unique face fan with endpoint cap faces generated when needed. Ambiguous/open/branched/non-manifold high-valence topology rejects atomically. Use `smTest('bevel')` for the simple case and `smTest('bevel-valence')` for valence-4 endpoints.
+
+### Batch Topology actions
+
+Face-mode **Inset** accepts one or more selected logical faces. The current ratio is applied independently to every selected face in one Undo step, and all generated inner faces remain selected.
+
+Edge-mode **Bevel** accepts one or more selected logical edges. Edge Ring/disjoint selections are processed as one operation and the generated long bevel edges become the new selection. For now, selected edges that share a vertex are rejected with an inline validation message; connected-chain/loop bevel requires the future joint-corner solver.

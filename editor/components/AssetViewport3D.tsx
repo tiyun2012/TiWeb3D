@@ -163,6 +163,7 @@ export interface AssetViewport3DProps {
   selectionBadge?: { text: string; active: boolean };
   toolbarActions?: readonly AssetViewportToolbarAction[];
   toolbarExtra?: React.ReactNode;
+  toolbarCenter?: React.ReactNode;
   headerExtra?: React.ReactNode;
   shortcutsLegend?: string;
   overlayChildren?: React.ReactNode;
@@ -202,6 +203,7 @@ export const AssetViewport3D = React.forwardRef<AssetViewport3DHandle, AssetView
   selectionBadge,
   toolbarActions = [],
   toolbarExtra,
+  toolbarCenter,
   headerExtra,
   shortcutsLegend = 'Alt+LMB Orbit • Alt+MMB Pan • Alt+RMB Zoom • RMB Menu',
   overlayChildren,
@@ -825,6 +827,7 @@ export const AssetViewport3D = React.forwardRef<AssetViewport3DHandle, AssetView
           )}
         </>
       }
+      toolbarCenter={toolbarCenter}
       toolbarRight={
         <>
           {headerExtra}

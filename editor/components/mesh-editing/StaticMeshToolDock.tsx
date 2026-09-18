@@ -31,8 +31,6 @@ export interface StaticMeshToolDockProps {
   onGlobalComponentSelect?: (mode: Exclude<MeshComponentMode, 'OBJECT'>) => void;
   onObjectSelect?: () => void;
   assetRevision?: number;
-  selectedConstructionPointIds?: readonly string[];
-  onConstructionPointSelect?: (pointId: string | null, operation?: 'REPLACE' | 'TOGGLE') => void;
   selectionCounts: MeshSelectionCounts;
   softSelectionEnabled: boolean;
   softSelectionRadius: number;
@@ -47,14 +45,14 @@ export interface StaticMeshToolDockProps {
   onSoftSelectionConnectivityChange: (connectivity: SoftSelectionConnectivity) => void;
   compositionSources?: StaticMeshCompositionSource[];
   onAppendMesh?: (sourceAssetId: string) => void;
-  topologyInsetAmount: number;
+  topologyInsetRatio: number;
   topologyExtrudeDistance: number;
   topologySplitPosition: number;
   topologyBevelWidth: number;
   topologySplitEndpointLabel?: string | null;
   topologyCutEndpointLabel?: string | null;
   topologyFeedback?: string | null;
-  onTopologyInsetAmountChange: (amount: number) => void;
+  onTopologyInsetRatioChange: (ratio: number) => void;
   onTopologyExtrudeDistanceChange: (distance: number) => void;
   onTopologySplitPositionChange: (position: number) => void;
   onTopologyBevelWidthChange: (width: number) => void;
@@ -212,8 +210,6 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   onGlobalComponentSelect,
   onObjectSelect,
   assetRevision = 0,
-  selectedConstructionPointIds = [],
-  onConstructionPointSelect,
   selectionCounts,
   softSelectionEnabled,
   softSelectionRadius,
@@ -228,14 +224,14 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   onSoftSelectionConnectivityChange,
   compositionSources = [],
   onAppendMesh,
-  topologyInsetAmount,
+  topologyInsetRatio,
   topologyExtrudeDistance,
   topologySplitPosition,
   topologyBevelWidth,
   topologySplitEndpointLabel = null,
   topologyCutEndpointLabel = null,
   topologyFeedback = null,
-  onTopologyInsetAmountChange,
+  onTopologyInsetRatioChange,
   onTopologyExtrudeDistanceChange,
   onTopologySplitPositionChange,
   onTopologyBevelWidthChange,
@@ -328,12 +324,12 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   const topologyActionButtons = useMemo(() => {
     const maybeCommand = (id: string) => editorCommandRegistry.resolve(id, commandContext);
     return [
-      { key: 'extrude', command: maybeCommand('staticMesh.extrude'), label: 'Extrude', icon: 'ArrowUpSquare', badge: 'API', hint: 'Extrude the selected authored Construction Face.' },
-      { key: 'inset', command: maybeCommand('staticMesh.inset'), label: 'Inset', icon: 'Shrink', badge: 'API', hint: 'Inset the selected authored Construction Face.' },
-      { key: 'deleteFace', command: maybeCommand('staticMesh.deleteFace'), label: 'Delete Face', icon: 'Trash2', badge: 'API', hint: 'Delete the selected authored Construction Face and leave an opening.' },
-      { key: 'splitEdge', command: maybeCommand('staticMesh.splitEdge'), label: 'Split Edge', icon: 'Scissors', badge: 'API', hint: 'Insert one Construction Point on the selected authored edge.' },
-      { key: 'cutFace', command: maybeCommand('staticMesh.cutFace'), label: 'Cut Face', icon: 'Scissors', badge: 'API', hint: 'Cut one authored face between two selected non-adjacent Construction-backed vertices.' },
-      { key: 'bevel', command: maybeCommand('staticMesh.bevel'), label: 'Bevel', icon: 'Ungroup', badge: 'API', hint: 'Bevel the selected manifold authored edge.' },
+      { key: 'extrude', command: maybeCommand('staticMesh.extrude'), label: 'Extrude', icon: 'ArrowUpSquare', badge: 'API', hint: 'Extrude the selected logical face.' },
+      { key: 'inset', command: maybeCommand('staticMesh.inset'), label: 'Inset', icon: 'Shrink', badge: 'API', hint: 'Inset the selected logical face.' },
+      { key: 'deleteFace', command: maybeCommand('staticMesh.deleteFace'), label: 'Delete Face', icon: 'Trash2', badge: 'API', hint: 'Delete the selected logical face and leave an opening.' },
+      { key: 'splitEdge', command: maybeCommand('staticMesh.splitEdge'), label: 'Split Edge', icon: 'Scissors', badge: 'API', hint: 'Insert one mesh vertex on the selected logical edge.' },
+      { key: 'cutFace', command: maybeCommand('staticMesh.cutFace'), label: 'Cut Face', icon: 'Scissors', badge: 'API', hint: 'Cut one logical face between two selected non-adjacent mesh vertices.' },
+      { key: 'bevel', command: maybeCommand('staticMesh.bevel'), label: 'Bevel', icon: 'Ungroup', badge: 'API', hint: 'Bevel the selected manifold logical edge.' },
       { key: 'connect', command: maybeCommand('staticMesh.connect'), label: 'Connect', icon: 'GitCommit', badge: 'M3', hint: 'Connect selected components with new topology.' },
     ];
   }, [commandContext]);
@@ -417,8 +413,6 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
               onObjectSelect={onObjectSelect}
               selectionCounts={selectionCounts}
               assetRevision={assetRevision}
-              selectedConstructionPointIds={selectedConstructionPointIds}
-              onConstructionPointSelect={onConstructionPointSelect}
               showHeader={false}
             />
           </div>
@@ -663,7 +657,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
             <div className="space-y-1.5 pt-1 border-t border-white/5">
               <SubsectionLabel
                 title="Topology"
-                subtitle="Topology primitives call the same tested Construction API used by scripts/AI. Select exactly one authored face or edge."
+                subtitle="Edit selected Logical Mesh faces, edges, and vertices directly."
               />
               {meshComponentMode === 'FACE' && (
                 <div className="grid grid-cols-2 gap-1.5 rounded border border-white/5 bg-black/15 p-2">
@@ -680,18 +674,20 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                     />
                   </label>
                   <label className="space-y-1 text-[8px] text-text-secondary">
-                    <span>Inset Amount</span>
+                    <span>Inset Ratio</span>
                     <input
                       type="number"
-                      title="Inset amount"
-                      aria-label="Inset amount"
-                      min="0.0001"
-                      step="0.1"
-                      value={topologyInsetAmount}
-                      onChange={event => onTopologyInsetAmountChange(Number(event.target.value))}
+                      title="Inset ratio"
+                      aria-label="Inset ratio"
+                      min="0.005"
+                      max="0.99"
+                      step="0.005"
+                      value={topologyInsetRatio}
+                      onChange={event => onTopologyInsetRatioChange(Number(event.target.value))}
                       className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
                     />
                   </label>
+                  <div className="col-span-2 text-[8px] leading-3 text-text-secondary/70">Inset applies the ratio independently to every selected logical face.</div>
                   {topologyFeedback && (
                     <div
                       role="status"
@@ -735,7 +731,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                   {topologySplitEndpointLabel && (
                     <div className="col-span-2 font-mono text-[8px] leading-3 text-text-secondary/80">{topologySplitEndpointLabel}</div>
                   )}
-                  <div className="col-span-2 text-[8px] leading-3 text-text-secondary/70">Split uses 0..1 along the selected edge. Bevel width is world-space distance along its neighboring face edges.</div>
+                  <div className="col-span-2 text-[8px] leading-3 text-text-secondary/70">Split uses 0..1 along one selected edge. Bevel applies to all selected vertex-disjoint manifold edges in one Undo step; Edge Rings are supported. Connected chains/loops that share vertices are rejected until the joint-corner solver is added.</div>
                   {topologyFeedback && (
                     <div
                       role="status"
@@ -750,7 +746,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
               {meshComponentMode === 'VERTEX' && (
                 <div className="grid grid-cols-1 gap-1.5 rounded border border-white/5 bg-black/15 p-2">
                   <div className="text-[8px] leading-3 text-text-secondary/70">
-                    Select exactly two non-adjacent authored vertices on one Construction Face, then use Cut Face.
+                    Select exactly two non-adjacent vertices on one logical face, then use Cut Face.
                   </div>
                   {topologyCutEndpointLabel && (
                     <div className="font-mono text-[8px] leading-3 text-text-secondary/80">{topologyCutEndpointLabel}</div>

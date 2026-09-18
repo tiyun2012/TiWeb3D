@@ -5,6 +5,7 @@ import { assetHistory } from '@/engine/AssetHistory';
 import { staticMeshAssetAPI } from '@/engine/api/StaticMeshAssetAPI';
 import { GizmoSystem } from '@/engine/GizmoSystem';
 import { buildMeshFaceTriangleIndices } from '@/engine/MeshFaceGeometry';
+import { buildFaceNormalLines, buildVertexNormalLines } from '@/engine/MeshNormalGeometry';
 import { editorCommandRegistry, type EditorCommandCapability, type EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
 import '@/editor/commands/StaticMeshCommandCatalogue';
 import { resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
@@ -141,7 +142,7 @@ const inset = staticMeshAssetAPI.insetFace({
   assetId: insetAsset.id,
   faceId: insetSourceFace.id,
   id: 'inset:panel',
-  amount: 0.5,
+  ratio: 0.25,
 });
 assert.equal(inset.innerFaceId, insetSourceFace.id, 'Inset must preserve the selected semantic face handle.');
 assert.equal(inset.innerPointIds.length, 4);
@@ -162,7 +163,7 @@ assert.deepEqual(insetCoordinatePairs, [
   [0.5, 3.5],
   [3.5, 0.5],
   [3.5, 3.5],
-], 'A 0.5 inset of a 4x4 face must create a constant-width 3x3 inner boundary.');
+], 'A 0.25 relative inset of a 4x4 face must move each corner 25% toward the center.');
 
 const storedInsetFace = insetAsset.construction!.faces.find(face => face.id === insetSourceFace.id)!;
 assert.deepEqual(storedInsetFace.pointIds, inset.innerPointIds, 'The source semantic face boundary must become the inset points.');
@@ -188,9 +189,9 @@ const insetBeforeRejectedOperation = {
   sourcePointIds: [...storedInsetFace.pointIds],
 };
 assert.throws(
-  () => staticMeshAssetAPI.insetFace({ assetId: insetAsset.id, faceId: insetSourceFace.id, amount: 10 }),
-  /too large/,
-  'Inset must reject an amount that collapses or crosses the source face.',
+  () => staticMeshAssetAPI.insetFace({ assetId: insetAsset.id, faceId: insetSourceFace.id, ratio: 1 }),
+  /Inset ratio/,
+  'Inset must reject a ratio outside the open 0..1 interval.',
 );
 assert.deepEqual({
   points: insetAsset.construction?.points.length,
@@ -233,7 +234,7 @@ const deleteInset = staticMeshAssetAPI.insetFace({
   assetId: deleteAsset.id,
   faceId: 'face:delete-panel',
   id: 'inset:delete-panel',
-  amount: 0.5,
+  ratio: 0.5,
 });
 assert.equal(deleteAsset.construction?.faces.length, 5);
 assert.equal(deleteAsset.geometry.indices.length / 3, 10);
@@ -290,7 +291,7 @@ staticMeshAssetAPI.insetFace({
   assetId: historyAsset.id,
   faceId: 'face:history-panel',
   id: 'inset:history-panel',
-  amount: 0.5,
+  ratio: 0.5,
 });
 assert.equal(staticMeshAssetAPI.getHistoryState(historyAsset.id).undoLabel, 'Inset Construction Face');
 assert.equal(historyAsset.construction?.points.length, 8);
@@ -329,8 +330,8 @@ assert.equal(staticMeshAssetAPI.getHistoryState(transactionAsset.id).undoLabel, 
 assert.equal(transactionAsset.construction?.points.length, 4);
 assert.equal(transactionAsset.geometry.vertices.length / 3, 4);
 assert.equal(staticMeshAssetAPI.undo(transactionAsset.id), true);
-assert.equal(transactionAsset.construction?.points.length, 0, 'One undo must revert the whole grouped AI transaction.');
-assert.equal(transactionAsset.construction?.faces.length, 0);
+assert.equal(transactionAsset.construction?.points.length ?? 0, 0, 'One undo must revert the whole grouped AI transaction.');
+assert.equal(transactionAsset.construction?.faces.length ?? 0, 0);
 assert.equal(transactionAsset.geometry.vertices.length, 0);
 assert.equal(staticMeshAssetAPI.redo(transactionAsset.id), true);
 assert.equal(transactionAsset.construction?.points.length, 4);
@@ -968,104 +969,274 @@ assert.equal(storedFloor.construction?.points.length, 8);
 assert.equal(storedFloor.construction?.faces.length, 5);
 assert.equal(storedFloor.construction?.loops.length, 1);
 
-// Manual browser-console fixtures must be deterministic and disposable. The
-// fixture itself is a clean baseline, so its setup must not occupy Undo history.
+
+// Human/normal modeling intentionally invalidates optional semantic planning
+// metadata rather than trying to keep a second topology identity synchronized.
+// Undo restores the complete pre-edit asset, including that optional metadata.
+const planningInvalidationAsset = staticMeshAssetAPI.create({ name: 'Normal Edit Invalidates Planning Metadata', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: planningInvalidationAsset.id,
+  points: [
+    { id: 'pA', position: { x: -1, y: 0, z: -1 } },
+    { id: 'pD', position: { x: -1, y: 0, z: 1 } },
+    { id: 'pC', position: { x: 1, y: 0, z: 1 } },
+    { id: 'pB', position: { x: 1, y: 0, z: -1 } },
+  ],
+});
+staticMeshAssetAPI.createFaceFromPoints({ assetId: planningInvalidationAsset.id, id: 'face:planning', pointIds: ['pA', 'pD', 'pC', 'pB'] });
+assetHistory.clear(planningInvalidationAsset.id);
+assert.equal(planningInvalidationAsset.construction?.faces.length, 1);
+staticMeshAssetAPI.insetFace({ assetId: planningInvalidationAsset.id, faceId: 0, ratio: 0.1 });
+assert.equal(planningInvalidationAsset.construction, undefined, 'Normal human editing must drop stale optional planning metadata.');
+assert.equal(staticMeshAssetAPI.undo(planningInvalidationAsset.id), true);
+const restoredPlanningInvalidationAsset = assetManager.getAsset(planningInvalidationAsset.id) as StaticMeshAsset;
+const planningMetadataRestored = restoredPlanningInvalidationAsset.construction?.faces.length === 1;
+assert.equal(planningMetadataRestored, true, 'Undo must restore optional planning metadata from the pre-edit snapshot.');
+
+// Manual browser-console fixtures are NORMAL logical meshes. The fixture helper
+// may use legacy semantic builders internally, but Construction metadata must be
+// stripped before the fixture is returned. Human modeling therefore exercises
+// the same numeric LogicalMesh API as an imported/ordinary Static Mesh.
 const panelFixture = createStaticMeshTestFixture('panel');
-assert.equal(panelFixture.asset.construction?.points.length, 4);
-assert.equal(panelFixture.asset.construction?.faces.length, 1);
+assert.equal(panelFixture.asset.construction, undefined);
+assert.equal(panelFixture.asset.topology.faces.length, 1);
 assert.equal(panelFixture.asset.geometry.vertices.length / 3, 4);
 assert.equal(panelFixture.asset.geometry.indices.length / 3, 2);
-assert.equal(panelFixture.primaryFaceId, 'face:panel');
+assert.equal(panelFixture.primaryFaceId, 0);
 assert.equal(staticMeshAssetAPI.getHistoryState(panelFixture.assetId).canUndo, false, 'Fixture setup must leave clean asset history.');
 
-staticMeshAssetAPI.insetFace({
+const panelNormalInset = staticMeshAssetAPI.insetFace({
   assetId: panelFixture.assetId,
   faceId: panelFixture.primaryFaceId!,
-  id: 'inset:manual-check',
-  amount: 0.25,
+  ratio: 0.25,
 });
-assert.equal(staticMeshAssetAPI.getHistoryState(panelFixture.assetId).undoLabel, 'Inset Construction Face');
+assert.equal(panelNormalInset.innerFaceId, panelFixture.primaryFaceId);
+assert.equal(panelFixture.asset.construction, undefined, 'Normal Inset must not persist semantic Construction metadata.');
+assert.equal(panelFixture.asset.topology.faces.length, 5);
+assert.equal(staticMeshAssetAPI.getHistoryState(panelFixture.assetId).undoLabel, 'Inset Face');
+assert.equal(staticMeshAssetAPI.undo(panelFixture.assetId), true);
+assert.equal(panelFixture.asset.topology.faces.length, 1);
+assert.equal(panelFixture.asset.construction, undefined);
+assert.equal(staticMeshAssetAPI.redo(panelFixture.assetId), true);
+assert.equal(panelFixture.asset.topology.faces.length, 5);
+assert.equal(panelFixture.asset.construction, undefined);
+
+// Relative Inset regression. Each run starts from the same normal mesh fixture
+// and exercises the PUBLIC numeric LogicalMesh API. Face 1 contains a collinear
+// boundary vertex and face 2 is intentionally warped/non-planar.
+const insetOrientationResults: Array<{ faceId: number; innerVertices: number }> = [];
+for (const faceId of [0, 1, 2]) {
+  const orientationFixture = createStaticMeshTestFixture('inset-orient');
+  assert.equal(orientationFixture.asset.construction, undefined);
+  const sourceVertexIds = [...orientationFixture.asset.topology.faces[faceId]];
+  const sourcePositions = sourceVertexIds.map(vertexId => ({
+    x: orientationFixture.asset.geometry.vertices[vertexId * 3],
+    y: orientationFixture.asset.geometry.vertices[vertexId * 3 + 1],
+    z: orientationFixture.asset.geometry.vertices[vertexId * 3 + 2],
+  }));
+  const center = sourcePositions.reduce((sum, position) => ({
+    x: sum.x + position.x,
+    y: sum.y + position.y,
+    z: sum.z + position.z,
+  }), { x: 0, y: 0, z: 0 });
+  center.x /= sourcePositions.length;
+  center.y /= sourcePositions.length;
+  center.z /= sourcePositions.length;
+
+  const ratio = 0.2;
+  const result = staticMeshAssetAPI.insetFace({
+    assetId: orientationFixture.assetId,
+    faceId,
+    ratio,
+  });
+  assert.equal(result.innerFaceId, faceId);
+  assert.equal(orientationFixture.asset.construction, undefined);
+  assert.equal(result.borderFaceIds.length, sourceVertexIds.length);
+  assert.equal(result.innerVertexIds.length, sourceVertexIds.length);
+  result.innerVertexIds.forEach((innerVertexId, index) => {
+    const source = sourcePositions[index];
+    const expected = {
+      x: source.x + (center.x - source.x) * ratio,
+      y: source.y + (center.y - source.y) * ratio,
+      z: source.z + (center.z - source.z) * ratio,
+    };
+    assertNearlyEqual(orientationFixture.asset.geometry.vertices[innerVertexId * 3], expected.x, `Inset face ${faceId} inner X must follow center ratio.`);
+    assertNearlyEqual(orientationFixture.asset.geometry.vertices[innerVertexId * 3 + 1], expected.y, `Inset face ${faceId} inner Y must follow center ratio.`);
+    assertNearlyEqual(orientationFixture.asset.geometry.vertices[innerVertexId * 3 + 2], expected.z, `Inset face ${faceId} inner Z must follow center ratio.`);
+  });
+  insetOrientationResults.push({ faceId, innerVertices: result.innerVertexIds.length });
+}
+
+const normalDisplayFixture = createStaticMeshTestFixture('inset-orient');
+const faceNormalLines = buildFaceNormalLines(
+  normalDisplayFixture.asset.geometry.vertices,
+  normalDisplayFixture.asset.topology.faces,
+  0.5,
+);
+const vertexNormalLines = buildVertexNormalLines(
+  normalDisplayFixture.asset.geometry.vertices,
+  normalDisplayFixture.asset.geometry.normals,
+  0.5,
+);
+assert.equal(faceNormalLines.length / 6, 3, 'Display overlay must create one normal line per logical face.');
+assert.equal(
+  vertexNormalLines.length / 6,
+  normalDisplayFixture.asset.geometry.vertices.length / 3,
+  'Display overlay must create one normal line per mesh vertex.',
+);
 
 const insetFixture = createStaticMeshTestFixture('inset');
 assert.equal(assetManager.getAsset(panelFixture.assetId), undefined, 'Creating a new fixture must remove the previous TEST_StaticMesh_* asset.');
-assert.equal(insetFixture.asset.construction?.faces.length, 5);
-assert.equal(insetFixture.asset.construction?.loops.length, 1);
-assert.equal(insetFixture.primaryFaceId, 'face:panel');
+assert.equal(insetFixture.asset.construction, undefined);
+assert.equal(insetFixture.asset.topology.faces.length, 5);
+assert.equal(insetFixture.primaryFaceId, 0);
 assert.equal(staticMeshAssetAPI.getHistoryState(insetFixture.assetId).canUndo, false);
+const normalDeleteResult = staticMeshAssetAPI.deleteFace({
+  assetId: insetFixture.assetId,
+  faceId: insetFixture.primaryFaceId!,
+});
+assert.equal(normalDeleteResult.deletedFaceId, 0);
+assert.equal(insetFixture.asset.construction, undefined, 'Normal Delete Face must not persist semantic metadata.');
+assert.equal(insetFixture.asset.topology.faces.length, 4);
+assert.equal(staticMeshAssetAPI.undo(insetFixture.assetId), true);
+assert.equal(insetFixture.asset.topology.faces.length, 5);
 assert.equal(clearStaticMeshTestFixtures(), 1);
 assert.equal(assetManager.getAsset(insetFixture.assetId), undefined);
 
 const splitFixture = createStaticMeshTestFixture('split');
-assert.equal(splitFixture.asset.construction?.faces.length, 2);
-assert.equal(splitFixture.asset.construction?.loops.length, 1);
-assert.deepEqual(splitFixture.primaryEdgePointIds, ['A', 'C']);
+assert.equal(splitFixture.asset.construction, undefined);
+assert.equal(splitFixture.asset.topology.faces.length, 2);
+assert.ok(splitFixture.primaryEdgeVertexIds);
 assert.equal(splitFixture.asset.geometry.vertices.length / 3, 4);
 assert.equal(splitFixture.asset.geometry.indices.length / 3, 2);
 assert.equal(staticMeshAssetAPI.getHistoryState(splitFixture.assetId).canUndo, false);
+const normalSplitResult = staticMeshAssetAPI.splitEdge({
+  assetId: splitFixture.assetId,
+  vertexAId: splitFixture.primaryEdgeVertexIds![0],
+  vertexBId: splitFixture.primaryEdgeVertexIds![1],
+  t: 0.5,
+});
+assert.equal(normalSplitResult.updatedFaceIds.length, 2);
+assert.equal(splitFixture.asset.geometry.vertices.length / 3, 5);
+assert.equal(splitFixture.asset.geometry.indices.length / 3, 4);
+assert.equal(splitFixture.asset.construction, undefined, 'Normal Split Edge must not persist semantic metadata.');
 assert.equal(clearStaticMeshTestFixtures(), 1);
 assert.equal(assetManager.getAsset(splitFixture.assetId), undefined);
 
 const cutFixture = createStaticMeshTestFixture('cut');
-assert.equal(cutFixture.asset.construction?.faces.length, 1);
-assert.deepEqual(cutFixture.primaryCutPointIds, ['A', 'C']);
+assert.equal(cutFixture.asset.construction, undefined);
+assert.ok(cutFixture.primaryCutVertexIds);
+assert.equal(cutFixture.asset.topology.faces.length, 1);
 assert.equal(cutFixture.asset.geometry.vertices.length / 3, 4);
 assert.equal(cutFixture.asset.geometry.indices.length / 3, 2);
 assert.equal(staticMeshAssetAPI.getHistoryState(cutFixture.assetId).canUndo, false);
+const normalCutResult = staticMeshAssetAPI.cutFace({
+  assetId: cutFixture.assetId,
+  faceId: cutFixture.primaryFaceId!,
+  vertexAId: cutFixture.primaryCutVertexIds![0],
+  vertexBId: cutFixture.primaryCutVertexIds![1],
+});
+assert.equal(cutFixture.asset.topology.faces.length, 2);
+assert.equal(cutFixture.asset.construction, undefined, 'Normal Cut Face must not persist semantic metadata.');
+assert.ok(cutFixture.asset.topology.graph?.halfEdges.some(edge => edge.pair !== -1));
 assert.equal(clearStaticMeshTestFixtures(), 1);
 assert.equal(assetManager.getAsset(cutFixture.assetId), undefined);
 
 const boxFixture = createStaticMeshTestFixture('box');
-assert.equal(boxFixture.asset.construction?.faces.length, 6, 'Closed box fixture must add an explicit bottom cap after modeller-style Extrude.');
+assert.equal(boxFixture.asset.construction, undefined);
+assert.equal(boxFixture.asset.topology.faces.length, 6, 'Closed box fixture must contain six normal logical faces.');
 assert.equal(boxFixture.asset.geometry.vertices.length / 3, 8);
 assert.equal(boxFixture.asset.geometry.indices.length / 3, 12);
 assert.equal(staticMeshAssetAPI.getHistoryState(boxFixture.assetId).canUndo, false);
 const secondBoxExtrusion = staticMeshAssetAPI.extrudeFace({
   assetId: boxFixture.assetId,
   faceId: boxFixture.primaryFaceId!,
-  id: 'extrude:box-second',
   distance: 1,
 });
-assert.equal(secondBoxExtrusion.topFaceId, boxFixture.primaryFaceId, 'Repeated face extrusion must keep the same selected top-face handle.');
-assert.equal(boxFixture.asset.construction?.faces.length, 10, 'Extruding one quad on a closed box must add only four side faces, not an internal source cap.');
+assert.equal(secondBoxExtrusion.topFaceId, boxFixture.primaryFaceId, 'Repeated normal face extrusion must keep the same logical top-face id.');
+assert.equal(boxFixture.asset.topology.faces.length, 10, 'Extruding one quad on a closed box must add only four side faces, not an internal source cap.');
 assert.equal(boxFixture.asset.geometry.indices.length / 3, 20);
+assert.equal(boxFixture.asset.construction, undefined, 'Normal Extrude must not persist semantic metadata.');
 assert.ok(boxFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Extruding a manifold box face must keep the resulting shell manifold.');
 assert.equal(clearStaticMeshTestFixtures(), 1);
 assert.equal(assetManager.getAsset(boxFixture.assetId), undefined);
 
 const bevelFixture = createStaticMeshTestFixture('bevel');
-assert.equal(bevelFixture.asset.construction?.faces.length, 6);
+assert.equal(bevelFixture.asset.construction, undefined);
+assert.equal(bevelFixture.asset.topology.faces.length, 6);
 assert.equal(bevelFixture.asset.geometry.vertices.length / 3, 8);
-assert.ok(bevelFixture.primaryEdgePointIds);
+assert.ok(bevelFixture.primaryEdgeVertexIds);
 assert.equal(staticMeshAssetAPI.getHistoryState(bevelFixture.assetId).canUndo, false);
+const normalBevelResult = staticMeshAssetAPI.bevelEdge({
+  assetId: bevelFixture.assetId,
+  vertexAId: bevelFixture.primaryEdgeVertexIds![0],
+  vertexBId: bevelFixture.primaryEdgeVertexIds![1],
+  width: 0.25,
+});
+assert.equal(normalBevelResult.bevelFaceId >= 0, true);
+assert.equal(bevelFixture.asset.construction, undefined, 'Normal Bevel must not persist semantic metadata.');
+assert.equal(bevelFixture.asset.topology.faces.length, 7);
+assert.equal(resolveStaticMeshShells(bevelFixture.asset).length, 1);
 assert.equal(clearStaticMeshTestFixtures(), 1);
 assert.equal(assetManager.getAsset(bevelFixture.assetId), undefined);
 
 const bevelValenceFixture = createStaticMeshTestFixture('bevel-valence');
-assert.equal(bevelValenceFixture.asset.construction?.faces.length, 8);
+assert.equal(bevelValenceFixture.asset.construction, undefined);
+assert.equal(bevelValenceFixture.asset.topology.faces.length, 8);
 assert.equal(bevelValenceFixture.asset.geometry.vertices.length / 3, 8);
-assert.ok(bevelValenceFixture.primaryEdgePointIds);
-const bevelValenceFixtureA = bevelValenceFixture.primaryEdgePointIds![0];
-const bevelValenceFixtureB = bevelValenceFixture.primaryEdgePointIds![1];
-assert.equal(bevelValenceFixture.asset.construction?.faces.filter(face => face.pointIds.includes(bevelValenceFixtureA)).length, 4);
-assert.equal(bevelValenceFixture.asset.construction?.faces.filter(face => face.pointIds.includes(bevelValenceFixtureB)).length, 4);
-assert.equal(staticMeshAssetAPI.getHistoryState(bevelValenceFixture.assetId).canUndo, false);
+assert.ok(bevelValenceFixture.primaryEdgeVertexIds);
+const bevelValenceFixtureA = bevelValenceFixture.primaryEdgeVertexIds![0];
+const bevelValenceFixtureB = bevelValenceFixture.primaryEdgeVertexIds![1];
+const normalEndpointAValence = bevelValenceFixture.asset.topology.faces.filter(face => face.includes(bevelValenceFixtureA)).length;
+const normalEndpointBValence = bevelValenceFixture.asset.topology.faces.filter(face => face.includes(bevelValenceFixtureB)).length;
+assert.equal(normalEndpointAValence, 4);
+assert.equal(normalEndpointBValence, 4);
+const normalHighValenceBevel = staticMeshAssetAPI.bevelEdge({
+  assetId: bevelValenceFixture.assetId,
+  vertexAId: bevelValenceFixtureA,
+  vertexBId: bevelValenceFixtureB,
+  width: 0.2,
+});
+assert.equal(normalHighValenceBevel.endpointCapFaceIds.length, 2);
+assert.equal(bevelValenceFixture.asset.construction, undefined);
+assert.ok(bevelValenceFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1));
 assert.equal(clearStaticMeshTestFixtures(), 1);
 assert.equal(assetManager.getAsset(bevelValenceFixture.assetId), undefined);
 
 const extrudeNormalFixture = createStaticMeshTestFixture('extrude-normal');
-assert.equal(extrudeNormalFixture.asset.construction?.faces.length, 1);
+assert.equal(extrudeNormalFixture.asset.construction, undefined);
+assert.equal(extrudeNormalFixture.asset.topology.faces.length, 1);
 assert.equal(extrudeNormalFixture.asset.geometry.vertices.length / 3, 4);
-assert.equal(extrudeNormalFixture.primaryFaceId, 'face:panel');
+assert.equal(extrudeNormalFixture.primaryFaceId, 0);
 assert.equal(staticMeshAssetAPI.getHistoryState(extrudeNormalFixture.assetId).canUndo, false);
+const normalFaceBoundaryBefore = [...extrudeNormalFixture.asset.topology.faces[extrudeNormalFixture.primaryFaceId!]];
+const normalFacePositionsBefore = normalFaceBoundaryBefore.map(vertexId => ({
+  x: extrudeNormalFixture.asset.geometry.vertices[vertexId * 3],
+  y: extrudeNormalFixture.asset.geometry.vertices[vertexId * 3 + 1],
+  z: extrudeNormalFixture.asset.geometry.vertices[vertexId * 3 + 2],
+}));
+const normalFixtureExtrusionDistance = 1.5;
+const normalFixtureExtrusion = staticMeshAssetAPI.extrudeFace({
+  assetId: extrudeNormalFixture.assetId,
+  faceId: extrudeNormalFixture.primaryFaceId!,
+  distance: normalFixtureExtrusionDistance,
+});
+normalFixtureExtrusion.topVertexIds.forEach((vertexId, index) => {
+  const source = normalFacePositionsBefore[index];
+  assertNearlyEqual(extrudeNormalFixture.asset.geometry.vertices[vertexId * 3] - source.x, 0, 'Normal-mesh Extrude X offset must follow face normal.');
+  assertNearlyEqual(extrudeNormalFixture.asset.geometry.vertices[vertexId * 3 + 1] - source.y, invSqrt2 * normalFixtureExtrusionDistance, 'Normal-mesh Extrude Y offset must follow face normal.');
+  assertNearlyEqual(extrudeNormalFixture.asset.geometry.vertices[vertexId * 3 + 2] - source.z, -invSqrt2 * normalFixtureExtrusionDistance, 'Normal-mesh Extrude Z offset must follow face normal.');
+});
+assert.equal(extrudeNormalFixture.asset.construction, undefined);
 assert.equal(clearStaticMeshTestFixtures(), 1);
 assert.equal(assetManager.getAsset(extrudeNormalFixture.assetId), undefined);
 
 const ringFixture = createStaticMeshTestFixture('ring');
-assert.equal(ringFixture.asset.construction?.faces.length, 4);
+assert.equal(ringFixture.asset.construction, undefined);
+assert.equal(ringFixture.asset.topology.faces.length, 4);
 assert.equal(ringFixture.asset.geometry.vertices.length / 3, 10);
-assert.deepEqual(ringFixture.primaryEdgePointIds, ['B2', 'T2']);
-const ringB2 = staticMeshAssetAPI.getPoint(ringFixture.assetId, 'B2')!.vertexIds![0];
-const ringT2 = staticMeshAssetAPI.getPoint(ringFixture.assetId, 'T2')!.vertexIds![0];
+assert.ok(ringFixture.primaryEdgeVertexIds);
+const [ringB2, ringT2] = ringFixture.primaryEdgeVertexIds!;
 const ringFaceInfo = staticMeshAssetAPI.getFaceInfo(ringFixture.assetId, 1);
 assert.ok(ringFaceInfo);
 assert.equal(ringFaceInfo.kind, 'QUAD');
@@ -1095,7 +1266,7 @@ const opposite = staticMeshAssetAPI.getOppositeEdge({
   vertexBId: ringT2,
 });
 assert.ok(opposite);
-assert.deepEqual(new Set(opposite.oppositeEdge.constructionPointIds), new Set(['B1', 'T1']));
+assert.notDeepEqual(new Set(opposite.oppositeEdge.vertexIds), new Set([ringB2, ringT2]));
 const ringTrace = staticMeshAssetAPI.traceEdgeRing({
   assetId: ringFixture.assetId,
   vertexAId: ringB2,
@@ -1106,7 +1277,6 @@ assert.deepEqual(new Set(ringTrace.faceIds), new Set([0, 1, 2, 3]));
 assert.equal(ringTrace.closed, false);
 assert.equal(ringTrace.startTermination, 'BOUNDARY');
 assert.equal(ringTrace.endTermination, 'BOUNDARY');
-assert.equal(ringTrace.constructionFaceIds.length, 4);
 const faceStripTrace = staticMeshAssetAPI.traceFaceStrip({
   assetId: ringFixture.assetId,
   vertexAId: ringB2,
@@ -1147,7 +1317,109 @@ assert.equal(windowsAfterFixtureDelete[`editor_${ringFixture.assetId}`], undefin
 assert.equal(windowsAfterFixtureDelete.inspector, mockAssetWindows.inspector);
 assert.equal(windowsAfterFixtureDelete.otherAsset, mockAssetWindows.otherAsset);
 
-console.log('Static Mesh construction API tests passed.');
+// Legacy semantic adoption remains available only as a compatibility/planning
+// API. The normal editor no longer exposes an Adopt Topology step, and normal
+// modeling above already proves that no adoption is required.
+const normalFixture = createStaticMeshTestFixture('normal');
+const normalAsset = normalFixture.asset;
+assert.equal(normalAsset.construction, undefined, 'Normal fixtures must contain only normal Logical Mesh data.');
+assert.equal(staticMeshAssetAPI.canAdoptTopology(normalAsset.id), true);
+const normalBefore = {
+  vertices: Array.from(normalAsset.geometry.vertices),
+  indices: Array.from(normalAsset.geometry.indices),
+  faces: normalAsset.topology.faces.map(face => [...face]),
+  triangleToFace: Array.from(normalAsset.topology.triangleToFaceIndex),
+  shells: resolveStaticMeshShells(normalAsset).map(shell => [...shell.faceIds]),
+};
+const adoption = staticMeshAssetAPI.adoptTopology({ assetId: normalAsset.id });
+assert.equal(adoption.adopted, true);
+assert.equal(adoption.pointsCreated, 8);
+assert.equal(adoption.facesCreated, 6);
+assert.equal(adoption.loopsCreated, 0);
+const adoptedNormalAsset = assetManager.getAsset(normalAsset.id) as StaticMeshAsset;
+assert.deepEqual(Array.from(adoptedNormalAsset.geometry.vertices), normalBefore.vertices, 'Legacy adoption must not move or rebuild vertices.');
+assert.deepEqual(Array.from(adoptedNormalAsset.geometry.indices), normalBefore.indices, 'Legacy adoption must not change render triangle indices.');
+assert.deepEqual(adoptedNormalAsset.topology.faces.map(face => [...face]), normalBefore.faces, 'Legacy adoption must preserve logical faces.');
+assert.deepEqual(Array.from(adoptedNormalAsset.topology.triangleToFaceIndex), normalBefore.triangleToFace);
+assert.deepEqual(resolveStaticMeshShells(adoptedNormalAsset).map(shell => [...shell.faceIds]), normalBefore.shells);
+assert.equal(staticMeshAssetAPI.undo(normalAsset.id), true, 'Undo must remove optional semantic adoption.');
+const originalNormalAsset = assetManager.getAsset(normalAsset.id) as StaticMeshAsset;
+assert.equal(originalNormalAsset.construction, undefined);
+assert.deepEqual(Array.from(originalNormalAsset.geometry.vertices), normalBefore.vertices);
+assert.equal(staticMeshAssetAPI.redo(normalAsset.id), true, 'Redo must restore optional semantic adoption.');
+const redoneNormalAsset = assetManager.getAsset(normalAsset.id) as StaticMeshAsset;
+assert.equal(redoneNormalAsset.construction?.faces.length, 6);
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Multi-face normal inset regression: two adjacent LogicalMesh quads must be
+// inset independently in one atomic action, preserving one connected shell.
+const multiInsetAsset = staticMeshAssetAPI.create({ name: 'Normal Multi Face Inset Test', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: multiInsetAsset.id,
+  points: [
+    { id: 'mi0', position: { x: -2, y: 0, z: -1 } },
+    { id: 'mi1', position: { x: 0, y: 0, z: -1 } },
+    { id: 'mi2', position: { x: 2, y: 0, z: -1 } },
+    { id: 'mi3', position: { x: -2, y: 0, z: 1 } },
+    { id: 'mi4', position: { x: 0, y: 0, z: 1 } },
+    { id: 'mi5', position: { x: 2, y: 0, z: 1 } },
+  ],
+});
+staticMeshAssetAPI.createFaceFromPoints({ assetId: multiInsetAsset.id, id: 'face:mi.0', pointIds: ['mi0', 'mi3', 'mi4', 'mi1'] });
+staticMeshAssetAPI.createFaceFromPoints({ assetId: multiInsetAsset.id, id: 'face:mi.1', pointIds: ['mi1', 'mi4', 'mi5', 'mi2'] });
+assetManager.updateAsset(multiInsetAsset.id, { construction: undefined });
+assetHistory.clear(multiInsetAsset.id);
+const multiInsetResult = staticMeshAssetAPI.insetFaces({ assetId: multiInsetAsset.id, faceIds: [0, 1], ratio: 0.2 });
+assert.equal(multiInsetResult.results.length, 2);
+assert.deepEqual(multiInsetResult.innerFaceIds, [0, 1]);
+assert.equal(multiInsetResult.borderFaceIds.length, 8);
+assert.equal(multiInsetAsset.construction, undefined, 'Normal multi-face Inset must not persist the transient semantic adapter.');
+assert.equal(multiInsetAsset.topology.faces.length, 10);
+assert.equal(resolveStaticMeshShells(multiInsetAsset).length, 1);
+assert.equal(staticMeshAssetAPI.getHistoryState(multiInsetAsset.id).undoLabel, 'Inset Faces');
+assert.equal(staticMeshAssetAPI.undo(multiInsetAsset.id), true);
+assert.equal(multiInsetAsset.topology.faces.length, 2);
+assert.equal(staticMeshAssetAPI.redo(multiInsetAsset.id), true);
+assert.equal(multiInsetAsset.topology.faces.length, 10);
+
+// Multi-edge normal bevel regression: four vertex-disjoint vertical cube edges
+// are one typical Edge Ring selection. Resolve the complete selection before
+// mutation and bevel all of them in one Undo step.
+const multiBevelAsset = staticMeshAssetAPI.create({ name: 'Normal Multi Edge Bevel Test', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: multiBevelAsset.id,
+  points: [
+    { id: 'mbA', position: { x: -2, y: 0, z: -2 } },
+    { id: 'mbD', position: { x: -2, y: 0, z: 2 } },
+    { id: 'mbC', position: { x: 2, y: 0, z: 2 } },
+    { id: 'mbB', position: { x: 2, y: 0, z: -2 } },
+  ],
+});
+staticMeshAssetAPI.createFaceFromPoints({ assetId: multiBevelAsset.id, id: 'face:mb.base', pointIds: ['mbA', 'mbD', 'mbC', 'mbB'] });
+const multiBevelBox = staticMeshAssetAPI.extrudeFace({ assetId: multiBevelAsset.id, faceId: 'face:mb.base', id: 'extrude:mb', distance: 2 });
+staticMeshAssetAPI.createFaceFromPoints({ assetId: multiBevelAsset.id, id: 'face:mb.bottom', pointIds: ['mbB', 'mbC', 'mbD', 'mbA'] });
+const bottomPointIds = ['mbA', 'mbD', 'mbC', 'mbB'];
+const verticalEdges = bottomPointIds.map((bottomPointId, index) => {
+  const bottomVertexId = staticMeshAssetAPI.getPoint(multiBevelAsset.id, bottomPointId)!.vertexIds![0];
+  const topVertexId = staticMeshAssetAPI.getPoint(multiBevelAsset.id, multiBevelBox.topPointIds[index])!.vertexIds![0];
+  return { vertexAId: bottomVertexId, vertexBId: topVertexId };
+});
+assetManager.updateAsset(multiBevelAsset.id, { construction: undefined });
+assetHistory.clear(multiBevelAsset.id);
+const multiBevelResult = staticMeshAssetAPI.bevelEdges({ assetId: multiBevelAsset.id, edges: verticalEdges, width: 0.2 });
+assert.equal(multiBevelResult.results.length, 4);
+assert.equal(multiBevelResult.bevelFaceIds.length, 4);
+assert.equal(multiBevelResult.bevelEdgeIds.length, 8);
+assert.equal(multiBevelAsset.construction, undefined, 'Normal multi-edge Bevel must not persist the transient semantic adapter.');
+assert.equal(resolveStaticMeshShells(multiBevelAsset).length, 1);
+assert.ok(multiBevelAsset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Closed box Edge Ring bevel must remain manifold.');
+assert.equal(staticMeshAssetAPI.getHistoryState(multiBevelAsset.id).undoLabel, 'Bevel Edges');
+assert.equal(staticMeshAssetAPI.undo(multiBevelAsset.id), true);
+assert.equal(multiBevelAsset.topology.faces.length, 6);
+assert.equal(staticMeshAssetAPI.redo(multiBevelAsset.id), true);
+assert.equal(multiBevelAsset.topology.faces.length, 10);
+
+console.log('Static Mesh modeling API tests passed.');
 console.log(JSON.stringify({
   floor: {
     points: storedFloor.construction?.points.length,
@@ -1230,9 +1502,51 @@ console.log(JSON.stringify({
     selectedRenderTriangles: highlightedRingFaces.triangleCount,
     hoveredRenderTriangles: hoveredRingFace.triangleCount,
   },
+  normalModeling: {
+    requiresAdoption: false,
+    constructionPersisted: false,
+    insetDirect: panelNormalInset.innerFaceId === 0,
+    deleteDirect: normalDeleteResult.deletedFaceId === 0,
+    splitDirect: normalSplitResult.updatedFaceIds.length === 2,
+    cutDirect: normalCutResult.newFaceId >= 0,
+    extrudeDirect: secondBoxExtrusion.topFaceId === boxFixture.primaryFaceId,
+    bevelDirect: normalBevelResult.bevelFaceId >= 0,
+    highValenceBevelDirect: normalHighValenceBevel.endpointCapFaceIds.length === 2,
+    undoRedo: true,
+    invalidatesStalePlanningMetadata: planningMetadataRestored,
+  },
+  insetOrientation: {
+    horizontal: insetOrientationResults[0]?.innerVertices === 4,
+    verticalCollinear: insetOrientationResults[1]?.innerVertices === 5,
+    warpedSloped: insetOrientationResults[2]?.innerVertices === 4,
+    faceNormalLines: faceNormalLines.length / 6,
+    vertexNormalLines: vertexNormalLines.length / 6,
+  },
+  multiFaceInset: {
+    selectedFaces: multiInsetResult.results.length,
+    innerFaces: multiInsetResult.innerFaceIds.length,
+    borderFaces: multiInsetResult.borderFaceIds.length,
+    shells: resolveStaticMeshShells(multiInsetAsset).length,
+    undoRedo: staticMeshAssetAPI.getHistoryState(multiInsetAsset.id).undoLabel === 'Inset Faces',
+  },
+  multiEdgeBevel: {
+    selectedEdges: multiBevelResult.results.length,
+    bevelFaces: multiBevelResult.bevelFaceIds.length,
+    resultingEdges: multiBevelResult.bevelEdgeIds.length,
+    shells: resolveStaticMeshShells(multiBevelAsset).length,
+    manifoldPaired: multiBevelAsset.topology.graph?.halfEdges.every(edge => edge.pair !== -1) ?? false,
+    undoRedo: staticMeshAssetAPI.getHistoryState(multiBevelAsset.id).undoLabel === 'Bevel Edges',
+  },
+  legacyAdoptCompatibility: {
+    points: adoption.pointsCreated,
+    faces: adoption.facesCreated,
+    loops: adoption.loopsCreated,
+    geometryUnchanged: true,
+    undoRedo: redoneNormalAsset.construction?.faces.length === 6,
+  },
   topologyQueries: {
     faceKind: ringFaceInfo?.kind,
-    oppositeEdge: opposite?.oppositeEdge.constructionPointIds,
+    oppositeEdge: opposite?.oppositeEdge.vertexIds,
     ringEdges: ringTrace.edgeIds.length,
     quadStripFaces: ringTrace.faceIds.length,
     closed: ringTrace.closed,
@@ -1272,6 +1586,9 @@ console.log(JSON.stringify({
     bevelReady: true,
     bevelHighValenceReady: true,
     extrudeNormalReady: true,
+    insetOrientationReady: true,
+    normalMeshDirectEditing: true,
+    constructionHiddenFromManualFixtures: true,
     staleEditorClosedOnDelete: windowsAfterFixtureDelete[`editor_${ringFixture.assetId}`] === undefined,
   },
 }, null, 2));

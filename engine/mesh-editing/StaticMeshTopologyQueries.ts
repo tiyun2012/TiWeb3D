@@ -15,7 +15,6 @@ export interface StaticMeshTopologyEdgeInfo {
   id: string;
   vertexIds: [number, number];
   canonicalVertexIds: [number, number];
-  constructionPointIds?: [string, string];
 }
 
 export interface StaticMeshTopologyFaceInfo {
@@ -25,8 +24,6 @@ export interface StaticMeshTopologyFaceInfo {
   canonicalVertexIds: number[];
   edges: StaticMeshTopologyEdgeInfo[];
   adjacentFaceIds: number[];
-  constructionFaceId?: string;
-  constructionPointIds?: string[];
 }
 
 export interface StaticMeshOppositeEdgeResult {
@@ -40,7 +37,6 @@ export interface StaticMeshEdgeRingTraceResult {
   edges: StaticMeshTopologyEdgeInfo[];
   edgeIds: string[];
   faceIds: number[];
-  constructionFaceIds: string[];
   closed: boolean;
   startTermination: StaticMeshTopologyTraceTermination;
   endTermination: StaticMeshTopologyTraceTermination;
@@ -53,19 +49,6 @@ const faceKind = (vertexCount: number): StaticMeshFaceKind => {
   if (vertexCount === 3) return 'TRIANGLE';
   if (vertexCount === 4) return 'QUAD';
   return 'NGON';
-};
-
-const constructionPointIdForCanonical = (
-  asset: StaticMeshAsset,
-  canonicalVertexId: number,
-  canonicalVertex: Int32Array,
-): string | undefined => {
-  const points = asset.construction?.points ?? [];
-  return points.find(point => (point.vertexIds ?? []).some(vertexId => (
-    vertexId >= 0
-    && vertexId < canonicalVertex.length
-    && canonicalVertex[vertexId] === canonicalVertexId
-  )))?.id;
 };
 
 const edgeInfo = (
@@ -81,13 +64,10 @@ const edgeInfo = (
   const ca = connectivity.canonicalVertex[a];
   const cb = connectivity.canonicalVertex[b];
   if (ca === cb) return null;
-  const pointA = constructionPointIdForCanonical(asset, ca, connectivity.canonicalVertex);
-  const pointB = constructionPointIdForCanonical(asset, cb, connectivity.canonicalVertex);
   return {
     id: meshEdgeKey(a, b),
     vertexIds: [a, b],
     canonicalVertexIds: [ca, cb],
-    constructionPointIds: pointA && pointB && pointA !== pointB ? [pointA, pointB] : undefined,
   };
 };
 
@@ -156,7 +136,6 @@ export const getStaticMeshFaceInfo = (
       if (candidate !== faceId) adjacent.add(candidate);
     });
   }
-  const constructionFace = asset.construction?.faces.find(faceRecord => faceRecord.faceId === faceId);
   return {
     faceId,
     kind: validBoundary ? faceKind(face.length) : 'DEGENERATE',
@@ -164,8 +143,6 @@ export const getStaticMeshFaceInfo = (
     canonicalVertexIds,
     edges,
     adjacentFaceIds: Array.from(adjacent).sort((a, b) => a - b),
-    constructionFaceId: constructionFace?.id,
-    constructionPointIds: constructionFace ? [...constructionFace.pointIds] : undefined,
   };
 };
 
@@ -272,7 +249,6 @@ export const traceStaticMeshEdgeRing = (
       edges: [seedEdge],
       edgeIds: [seedEdge.id],
       faceIds: [],
-      constructionFaceIds: [],
       closed: false,
       startTermination: 'INVALID_TOPOLOGY',
       endTermination: 'INVALID_TOPOLOGY',
@@ -284,7 +260,6 @@ export const traceStaticMeshEdgeRing = (
       edges: [seedEdge],
       edgeIds: [seedEdge.id],
       faceIds: [],
-      constructionFaceIds: [],
       closed: false,
       startTermination: 'BRANCH',
       endTermination: 'BRANCH',
@@ -295,15 +270,11 @@ export const traceStaticMeshEdgeRing = (
   if (first.termination === 'CYCLE') {
     const edges = [seedEdge, ...first.edges];
     const faceIds = uniqueOrdered(first.faceIds);
-    const constructionFaceIds = faceIds
-      .map(faceId => asset.construction?.faces.find(face => face.faceId === faceId)?.id)
-      .filter((id): id is string => Boolean(id));
     return {
       seedEdge,
       edges,
       edgeIds: edges.map(edge => edge.id),
       faceIds,
-      constructionFaceIds,
       closed: true,
       startTermination: 'CYCLE',
       endTermination: 'CYCLE',
@@ -313,15 +284,11 @@ export const traceStaticMeshEdgeRing = (
   if (incidentFaces.length === 1) {
     const edges = [seedEdge, ...first.edges];
     const faceIds = uniqueOrdered(first.faceIds);
-    const constructionFaceIds = faceIds
-      .map(faceId => asset.construction?.faces.find(face => face.faceId === faceId)?.id)
-      .filter((id): id is string => Boolean(id));
     return {
       seedEdge,
       edges,
       edgeIds: edges.map(edge => edge.id),
       faceIds,
-      constructionFaceIds,
       closed: false,
       startTermination: 'BOUNDARY',
       endTermination: first.termination,
@@ -332,15 +299,11 @@ export const traceStaticMeshEdgeRing = (
   const secondEdges = [...second.edges].reverse();
   const edges = [...secondEdges, seedEdge, ...first.edges];
   const faceIds = uniqueOrdered([...second.faceIds].reverse().concat(first.faceIds));
-  const constructionFaceIds = faceIds
-    .map(faceId => asset.construction?.faces.find(face => face.faceId === faceId)?.id)
-    .filter((id): id is string => Boolean(id));
   return {
     seedEdge,
     edges,
     edgeIds: uniqueOrdered(edges.map(edge => edge.id)),
     faceIds,
-    constructionFaceIds,
     closed: false,
     startTermination: second.termination,
     endTermination: first.termination,

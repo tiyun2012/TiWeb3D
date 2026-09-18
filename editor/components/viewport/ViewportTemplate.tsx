@@ -7,6 +7,7 @@ export interface ViewportTemplateProps {
   canvasClassName?: string;
   toolbarLeft?: React.ReactNode;
   toolbarRight?: React.ReactNode;
+  toolbarCenter?: React.ReactNode;
   hudBottomLeft?: React.ReactNode;
   hudBottomRight?: React.ReactNode;
   viewportChildren?: React.ReactNode;
@@ -32,6 +33,7 @@ export const ViewportTemplate: React.FC<ViewportTemplateProps> = ({
   canvasClassName,
   toolbarLeft,
   toolbarRight,
+  toolbarCenter,
   hudBottomLeft,
   hudBottomRight,
   viewportChildren,
@@ -55,21 +57,30 @@ export const ViewportTemplate: React.FC<ViewportTemplateProps> = ({
 
     {viewportChildren}
 
-    {toolbarLeft && (
+    {(toolbarLeft || toolbarCenter || toolbarRight) && (
       <div
-        className="absolute top-3 left-3 flex flex-wrap items-center gap-2 z-20 pointer-events-auto max-w-[calc(100%_-_5rem)]"
-        onMouseDown={(event) => event.stopPropagation()}
+        className="absolute left-3 right-3 top-3 z-30 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-2 pointer-events-none"
       >
-        {toolbarLeft}
-      </div>
-    )}
+        <div
+          className="min-w-0 justify-self-start flex max-w-full flex-wrap items-center gap-2 pointer-events-auto"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          {toolbarLeft}
+        </div>
 
-    {toolbarRight && (
-      <div
-        className="absolute top-3 right-3 flex items-center gap-2 z-20 pointer-events-auto"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        {toolbarRight}
+        <div
+          className="justify-self-center flex items-center gap-2 pointer-events-auto"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          {toolbarCenter}
+        </div>
+
+        <div
+          className="min-w-0 justify-self-end flex items-center gap-2 pointer-events-auto"
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          {toolbarRight}
+        </div>
       </div>
     )}
 

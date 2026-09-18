@@ -231,23 +231,15 @@ metadata must include that revision (or an equivalent changed field reference). 
 advance from 0 -> 1 -> 2 shells after successive append operations even though the asset object reference itself
 does not change.
 
-### AI construction layer: Points are not Vertices
+### Normal modeling source of truth
 
-`StaticMeshAsset.construction` is a semantic modeling layer above `MeshGeometry` / `LogicalMesh`. Its
-Construction Points are stable planning handles for agents and tools, not mesh Vertex IDs. Adding a point
-must not allocate render topology. Modeling operations in `StaticMeshAssetAPI` materialize/reuse backend
-vertices only when a face/extrude/bridge needs them, and a semantic point may bind to multiple render
-vertices later when topology splits require it.
+The human Static Mesh modeller is authoritative on `MeshGeometry + LogicalMesh`. The hierarchy exposes only Geometry, Mesh Shells, and normal Vertices/Edges/Faces. Extrude, Inset, Delete Face, Split Edge, Cut Face, Bevel, ring/strip queries, gizmo transforms, and Undo/Redo do **not** require an Adopt/Construction step.
 
-The Static Mesh hierarchy therefore exposes `Construction > Points / Faces / Loops` separately from
-`Geometry > Mesh Shells / Components`. Construction Points use their own viewport overlay and selection
-domain; selecting them must not masquerade as Vertex component selection or make the normal mesh-component
-gizmo operate on them. See `docs/STATIC_MESH_CONSTRUCTION_API.md` for the persistence model, API examples,
-current operation limits, and the focused `npm run test:mesh-construction` contract.
+`StaticMeshAsset.construction` remains optional deprecated planning metadata for legacy API compatibility and possible future AI experiments, but it is not normal editor topology and is not rendered/selected in the Static Mesh editor. Normal numeric-ID modeling operations must leave it absent when it was absent before the operation. See `docs/STATIC_MESH_NORMAL_MODELING_API.md`.
 
 ## Static Mesh asset history
 
-Static Mesh authoring uses `engine/AssetHistory.ts`, not the scene ECS history. Each modeling transaction snapshots the complete mesh asset so geometry, topology, Construction metadata and Mesh Shell state are restored together. The first implementation intentionally favors correctness over delta compression and keeps up to 50 undo snapshots per asset.
+Static Mesh authoring uses `engine/AssetHistory.ts`, not the scene ECS history. Each modeling transaction snapshots the complete mesh asset so geometry, topology, optional legacy metadata and Mesh Shell state are restored together. The first implementation intentionally favors correctness over delta compression and keeps up to 50 undo snapshots per asset.
 
 Static Mesh Editor owns the asset-history shortcuts while its viewport is active: `Ctrl/Cmd+Z` undo, `Ctrl/Cmd+Shift+Z` or `Ctrl/Cmd+Y` redo. The viewport toolbar exposes the same commands. Live component drags remain preview-only during pointer movement and commit one history step on mouse-up.
 
