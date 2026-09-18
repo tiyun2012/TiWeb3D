@@ -33,6 +33,7 @@ const getCameraEditorLayout = () => {
 
 const graphEditor = (asset: Asset, icon: string) => ({
   id: `editor_${asset.id}`,
+  assetId: asset.id,
   title: asset.name,
   icon,
   content: <NodeGraph assetId={asset.id} />,
@@ -69,6 +70,7 @@ export const registerBuiltInAssetEditors = () => {
     type: 'MESH',
     createWindow: asset => ({
       id: `editor_${asset.id}`,
+      assetId: asset.id,
       title: asset.name,
       icon: 'Box',
       content: <StaticMeshEditor assetId={asset.id} />,
@@ -80,6 +82,7 @@ export const registerBuiltInAssetEditors = () => {
     type: 'SKELETAL_MESH',
     createWindow: asset => ({
       id: `editor_${asset.id}`,
+      assetId: asset.id,
       title: asset.name,
       icon: 'Bone',
       content: <SkeletalMeshEditor assetId={asset.id} />,
@@ -91,6 +94,7 @@ export const registerBuiltInAssetEditors = () => {
     type: 'SKELETON',
     createWindow: asset => ({
       id: `editor_${asset.id}`,
+      assetId: asset.id,
       title: asset.name,
       icon: 'Bone',
       content: <SkeletonEditor assetId={asset.id} />,
@@ -103,6 +107,7 @@ export const registerBuiltInAssetEditors = () => {
     type: 'VIEWPORT_PROFILE',
     createWindow: asset => ({
       id: `editor_${asset.id}`,
+      assetId: asset.id,
       title: asset.name,
       icon: 'Monitor',
       content: <ViewportProfileEditor assetId={asset.id} />,
@@ -114,6 +119,7 @@ export const registerBuiltInAssetEditors = () => {
     type: 'CAMERA_PRESET',
     createWindow: asset => ({
       id: `editor_${asset.id}`,
+      assetId: asset.id,
       title: asset.name,
       icon: 'Camera',
       content: <CameraPresetEditor assetId={asset.id} />,

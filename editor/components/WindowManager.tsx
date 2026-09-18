@@ -1,10 +1,14 @@
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { DraggableWindow } from './DraggableWindow';
 import { Icon } from './Icon';
+import { eventBus } from '@/engine/EventBus';
+import { removeWindowsForDeletedAsset } from '@/editor/assetEditorWindowLifecycle';
 
 export interface WindowItem {
     id: string;
+    /** Present for asset-editor windows; ordinary utility windows leave this undefined. */
+    assetId?: string;
     title: string;
     icon: string;
     content: React.ReactNode;
@@ -29,6 +33,16 @@ export const WindowManagerContext = React.createContext<WindowManagerContextType
 export const WindowManager: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const [windows, setWindows] = useState<Record<string, WindowItem>>({});
     const [maxZ, setMaxZ] = useState(100);
+
+    // Asset editor content captures an asset UUID. Once that asset is deleted,
+    // keeping the window mounted leaves a stale editor that can only render an
+    // "asset could not be loaded" state. Remove every window bound to the
+    // deleted UUID; this covers Content Browser deletion and dev fixtures such
+    // as repeated smTest(...) calls.
+    useEffect(() => eventBus.on('ASSET_DELETED', payload => {
+        if (!payload?.id) return;
+        setWindows(prev => removeWindowsForDeletedAsset(prev, payload.id));
+    }), []);
 
     const registerWindow = useCallback((config: Omit<WindowItem, 'isOpen' | 'isNested' | 'zIndex'>) => {
         setWindows(prev => {

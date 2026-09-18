@@ -178,6 +178,77 @@ correct vertices and opposite half-edge winding with the inner face and neighbor
 an inset amount large enough to collapse or cross the source polygon. It does not silently produce invalid
 topology.
 
+### Delete a face / create an opening
+
+`deleteFace()` removes one authored Construction Face by its **semantic face id**. It deliberately keeps
+its Construction Points and Construction Loops, which makes it useful as a small architectural opening
+primitive after an inset.
+
+```ts
+const inset = staticMeshAssetAPI.insetFace({
+  assetId,
+  faceId: wall.id,
+  amount: 0.15,
+});
+
+staticMeshAssetAPI.deleteFace({
+  assetId,
+  faceId: inset.innerFaceId,
+});
+```
+
+This produces an inset border ring with the inner surface removed. The operation removes the deleted
+face's triangles, compacts `LogicalMesh.faces`, remaps every surviving Construction Face `faceId`, rebuilds
+`triangleToFaceIndex`, vertex-to-face adjacency, half-edges, normals, AABB and Mesh Shell metadata, and
+records one asset-history step. Numeric logical face ids are therefore still dense after deletion.
+
+The first delete primitive does **not** garbage-collect unused Construction Points or Loops. Those are
+semantic planning handles and may be intentionally reused by later AI/modeling operations. Explicit point
+removal remains guarded by face/loop references.
+
+### Split an authored edge
+
+`splitEdge()` inserts one new Construction Point between two **semantic endpoint Point IDs**. The AI-facing
+contract intentionally does not accept raw mesh vertex IDs. Every incident Construction Face that contains
+that authored boundary edge is updated to reuse the same new point, and any Construction Loop containing the
+same segment is updated as well. Face semantic IDs and logical `faceId` mappings remain stable.
+
+```ts
+const split = staticMeshAssetAPI.splitEdge({
+  assetId,
+  pointAId: 'wall.A',
+  pointBId: 'wall.B',
+  t: 0.5,
+});
+```
+
+The first implementation requires `0 < t < 1`, defaults to `0.5`, and supports manifold authored edges with
+at most two incident Construction Faces. For a shared edge, both adjacent faces receive the same semantic Point
+and therefore the same compiled mesh vertex; the two replacement half-edges on each side remain pairable. Because
+a split point is collinear with the original edge, Construction-face triangulation preserves the historical fan when
+possible but rotates/falls back to convex ear clipping when needed so the compiled render triangles are not degenerate.
+`getConstructionEdgePointIds(assetId, vertexAId, vertexBId)` exists only as an editor adapter so an Edge-mode
+selection can map current numeric topology back to stable Construction Point endpoints. AI/scripts should keep
+semantic Point IDs instead.
+
+The result returns the generated point/vertex plus the two replacement edge keys for transient editor selection:
+
+```ts
+{
+  id: 'split-1',
+  sourcePointIds: ['wall.A', 'wall.B'],
+  pointId: 'split-1.point',
+  vertexId: 12,
+  updatedFaceIds: ['face:wall-left', 'face:wall-right'],
+  updatedLoopIds: ['loop:wall'],
+  edgeIds: ['3-12', '7-12'],
+  t: 0.5,
+}
+```
+
+`splitEdge()` is one asset-history step. Undo restores the original edge, face boundaries, loops, render triangles,
+half-edge graph, and Mesh Shell metadata together.
+
 ### Create a loop
 
 ```ts
@@ -203,21 +274,22 @@ const walls = staticMeshAssetAPI.extrudeFace({
 });
 ```
 
-When `direction` is omitted, the operation derives it from the ordered source face normal. The result
-returns semantic handles for the newly generated topology:
+Face Extrude always derives its direction from the ordered source face normal. Positive distance follows that normal and negative distance goes exactly opposite. There is no arbitrary direction override in this primitive; a future sweep/translate operation should handle non-normal motion. Face Extrude follows modeller semantics: the source surface is **consumed/moved** to the new offset boundary and side faces are created around the old boundary. It does **not** leave a duplicate cap at the original source location. The stable semantic/logical source face handle is preserved on the moved top surface, so `topFaceId === sourceFaceId`:
 
 ```ts
 {
   id: 'extrude:walls',
   sourceFaceId: 'face:ground-floor',
-  topFaceId: 'extrude:walls.top',
+  topFaceId: 'face:ground-floor', // same stable face, now on the new top boundary
   topLoopId: 'extrude:walls.topLoop',
   topPointIds: [...],
   sideFaceIds: [...],
 }
 ```
 
-AI code should feed these returned IDs into later operations instead of discovering numeric topology IDs.
+This means extruding an isolated plane produces an open extrusion at the original boundary, which is the expected polygon-modelling behavior. Extruding a face that is already part of a manifold surface keeps the surrounding old-boundary faces and inserts side walls between them and the moved face. If a script specifically wants a closed prism from an isolated plane, it should create the bottom cap explicitly with `createFaceFromPoints()` rather than relying on Extrude to duplicate the source surface.
+
+AI code should feed the returned semantic IDs into later operations instead of discovering numeric topology IDs. The API itself is editor-tool neutral; it never activates a transform gizmo.
 
 ### Bridge two loops
 
@@ -275,6 +347,24 @@ Construction Point selection currently does **not** use the mesh component gizmo
 already available through `staticMeshAssetAPI.movePoint()`; a dedicated semantic-point gizmo adapter can
 be added without pretending these points are mesh vertices.
 
+### Topology tools in the Static Mesh dock
+
+The `Mesh Workspace > Sculpt Tools > Topology` section now routes its first working face actions through
+the same Construction API used by browser-console scripts and AI:
+
+- **Extrude** calls `staticMeshAssetAPI.extrudeFace()` using the editable Extrude Distance.
+- **Inset** calls `staticMeshAssetAPI.insetFace()` using the editable Inset Amount.
+- **Delete Face** calls `staticMeshAssetAPI.deleteFace()` and leaves an opening.
+- **Split Edge** calls `staticMeshAssetAPI.splitEdge()` using the editable Split Position and updates every incident authored face/loop.
+- **Bevel** calls `staticMeshAssetAPI.bevelEdge()` using the editable Bevel Width for one manifold authored edge.
+- **Cut Face** calls `staticMeshAssetAPI.cutFace()` between two selected non-adjacent Construction-backed vertices on one authored face.
+
+Face actions intentionally require **Face mode + exactly one selected logical face that maps to an authored Construction Face**. Split Edge and Bevel require **Edge mode + exactly one selected edge whose current mesh vertices resolve back to an authored Construction Point pair**. Bevel requires exactly two incident authored faces with opposite winding and non-coplanar normals; endpoint valence may be higher than three when the endpoint one-ring is a unique manifold fan. Width is measured along the local neighboring edges. Cut Face requires **Vertex mode + exactly two non-adjacent selected vertices that resolve to Construction Points on exactly one common authored face**. Imported/appended topology without Construction identity remains disabled rather than receiving guessed planning identity. After **UI Extrude**, the same stable source face (now moved to the top boundary) remains selected and the editor switches to the **Move** tool so the translation gizmo is immediately available for manual continuation. This tool activation is editor-only; direct `StaticMeshAssetAPI.extrudeFace()` calls used by AI/scripts do not activate any gizmo. After Inset, the stable inner/source face remains selected; after Delete Face, face selection is cleared because the selected surface no longer exists.
+
+The dock dispatches through `EditorCommandRegistry` (`staticMesh.extrude`, `staticMesh.inset`,
+`staticMesh.deleteFace`, `staticMesh.splitEdge`, `staticMesh.bevel`, `staticMesh.cutFace`) and the editor's `topologyCommand` service. React UI must not implement separate
+topology mutation logic.
+
 ## Automated test
 
 Run the focused construction step without starting the UI:
@@ -290,24 +380,52 @@ The test verifies:
 - adjacent faces that reuse Construction Points share the same actual mesh vertices and pair their oppositely wound half-edge,
 - moving a semantic point updates all bound mesh vertices,
 - inset preserves the selected semantic/logical face id, creates a shared border ring, rejects collapse, and can feed the same face directly into extrusion,
-- extrusion returns stable generated handles and creates a closed wall volume,
+- delete-face removes only the selected authored surface, compacts logical/triangle mappings, preserves semantic points/loops, stays one shell for an inset ring, and supports undo/redo,
+- split-edge inserts one shared semantic point into both incident faces/loops, preserves shell/half-edge connectivity, and supports undo/redo,
+- bevel-edge replaces one manifold edge with a four-point chamfer, propagates new points into endpoint faces/loops, compacts orphan render vertices, keeps one shell, and supports undo/redo,
+- cut-face splits one authored polygon between two existing non-adjacent semantic boundary points, preserves the source face handle, creates one paired shared diagonal, and supports undo/redo,
+- the editor command catalogue resolves working Inset/Delete Face/Split Edge/Bevel/Cut Face dispatch through the shared topology command service,
+- extrusion returns stable generated handles and creates a closed, consistently wound wall volume whose cap/side half-edges pair,
 - referenced points cannot be silently deleted,
 - two equal four-point loops bridge into four logical quads.
 
 The test uses a small Node TypeScript loader so this focused API behavior can run independently of the
 browser renderer. In a normal project install it uses the local `typescript` devDependency.
 
+## Bevel Edge contract
+
+`bevelEdge()` is intentionally a single-edge primitive. It accepts stable Construction Point endpoint ids and a positive world-space `width`. Width is the distance traveled from each selected-edge endpoint along every local one-ring edge that participates in the bevel corner, which keeps the result deterministic and independent of render-triangle ids.
+
+The selected edge must still have exactly two incident authored faces with opposite shared-edge winding and non-coplanar normals. Endpoint valence is no longer capped at three. For an interior manifold endpoint, the API resolves the unique face fan between the two selected incident faces, creates one semantic offset point on each edge in that fan, rewrites all affected faces/loops, and creates a small endpoint cap polygon when three or more offsets are required. The common valence-3 case remains the two-offset special case and therefore needs no extra cap. Open/branched/disconnected/non-manifold high-valence fans reject atomically rather than guessing. A Construction Loop that directly owns the selected edge is still rejected because choosing which bevel rail should replace that loop is ambiguous.
+
+After the rewrite, source endpoint Construction Points remain as semantic planning/history handles but orphan render vertices are compacted away. The result returns the two long bevel rails, the main bevel face, and any generated endpoint cap face ids so UI/AI can continue without rediscovering raw topology. Invalid widths and unsupported topology create no Undo entry.
+
+Face Extrude is normal-driven: it computes the current ordered Construction Face normal before mutation and offsets every generated top point by `normal * distance`. It never falls back to a world/ground axis. Positive distance follows the face normal; negative distance goes opposite. The source surface is consumed/moved to the new boundary, so an isolated plane remains open at its old position unless a caller explicitly creates a cap.
+
+## Cut Face contract
+
+`cutFace()` is intentionally small: it connects two **existing non-adjacent boundary Construction Points** on one authored face. The original semantic face id and logical face id survive as one side of the cut; the other side receives a new semantic face handle. Both sides reuse the same endpoint mesh vertices, so the new diagonal is a normal paired logical edge and the Mesh Shell remains connected.
+
+The first version does not invent arbitrary interior points or project a freehand knife line. To cut from positions in the middle of existing edges, compose the primitives:
+
+```text
+splitEdge(edge A, tA)
+splitEdge(edge B, tB)
+cutFace(face, newPointA, newPointB)
+```
+
+This keeps AI plans deterministic and makes each topology change independently testable/undoable. Adjacent endpoints, points not on the selected face, triangles, or otherwise degenerate cuts are rejected before commit. The current face-order contract remains the same planar ordered convex Construction polygon contract used by the other first-generation primitives.
+
 ## Next modeling operations
 
 Keep future modeling commands at this semantic layer where practical. Asset transactions/rollback are now
-available. Good next additions are point-gizmo transforms, face/loop deletion with safe topology rebuild,
-bevel, cut/split, unequal-loop bridging, and robust concave n-gon triangulation.
+available. Good next additions are point-gizmo transforms, loop deletion, multi-edge/segment bevel, unequal-loop bridging, and robust concave n-gon triangulation.
 
 ## Asset undo/redo and AI transactions
 
 Static Mesh construction mutations are recorded by the asset-level `AssetHistory` service. This history is separate from the Scene ECS `HistorySystem`: a modeling operation can change Construction Points/Faces/Loops, mesh geometry, logical topology, half-edge data and Mesh Shell metadata without changing any scene entity.
 
-Every public construction mutation (`addPoint(s)`, `movePoint`, `removePoint`, `createFaceFromPoints`, `createLoop`, `insetFace`, `extrudeFace`, `bridgeLoops`) creates one atomic undo step. Static Mesh append/reference mutations use the same history boundary. Snapshots preserve typed arrays and Maps rather than JSON-serializing them.
+Every public construction mutation (`addPoint(s)`, `movePoint`, `removePoint`, `createFaceFromPoints`, `createLoop`, `insetFace`, `deleteFace`, `splitEdge`, `bevelEdge`, `cutFace`, `extrudeFace`, `bridgeLoops`) creates one atomic undo step. Static Mesh append/reference mutations use the same history boundary. Snapshots preserve typed arrays and Maps rather than JSON-serializing them.
 
 The API exposes:
 
@@ -340,3 +458,76 @@ The gizmo is transient UI, not a second source of history. Mesh/component state 
 - Cancelling a gizmo drag inside a broader API transaction must not cancel the outer transaction; only the live drag deformation is restored.
 
 Do not add separate "gizmo position" snapshots to `AssetHistory`. That would allow mesh state and gizmo state to diverge.
+
+## Repeatable browser-console fixtures
+
+Manual modeling checks should not require rebuilding throwaway assets after every app restart. Application bootstrap installs a small `smTest` browser-console command backed by `engine/dev/StaticMeshTestFixtures.ts`.
+
+```js
+smTest()            // fresh four-point panel / one Construction Face
+smTest('inset')     // panel with a 0.5 inset, center face still present
+smTest('opening')   // inset ring with the center face deleted
+smTest('box')       // closed box fixture (Face Extrude + explicit bottom cap)
+smTest('bevel-valence') // closed box with valence-4 endpoints on the logged bevel edge
+smTest('extrude-normal') // tilted quad used to verify normal-driven Face Extrude
+smTest('split')     // two authored triangles sharing one edge; Edge mode Split Edge test
+smTest('cut')       // one authored quad; Vertex mode select opposite corners + Cut Face
+smTest.clear()      // delete only TEST_StaticMesh_* fixtures
+smTest.help()       // print the available fixture commands
+```
+
+Each creation first deletes earlier assets whose names start with `TEST_StaticMesh_`, so repeated checks do not accumulate stale runtime fixtures. User-authored assets and automated `/Tests` assets are untouched. The created asset appears under Content > Meshes and the command returns its `assetId`, semantic point/face/loop ids, `primaryFaceId` when one is available, `primaryEdgePointIds` for the split-ready fixture, and `primaryCutPointIds` for the cut-ready fixture.
+
+Fixture construction history is cleared before the command returns. The generated shape is therefore a clean baseline: the first manual Inset/Extrude/Delete/Split/Gizmo operation is also the first Ctrl+Z step. Keep fixture generation separate from the production modeling API; fixtures call `StaticMeshAssetAPI` rather than duplicating topology mutation logic.
+
+## Read-only topology query layer
+
+Construction mutation APIs remain semantic and stable, but AI/modeling tools also need to understand an
+existing logical mesh before changing it. `StaticMeshAssetAPI` therefore exposes read-only quad topology
+queries that do **not** require Construction identity: face classification, face boundary edges, edge
+incident/adjacent faces, opposite-edge lookup, edge-ring tracing, and face-strip tracing.
+
+This is intentionally separate from mutation. An AI can first inspect:
+
+```text
+selected edge
+  -> incident faces
+  -> is the face a logical quad?
+  -> opposite edge
+  -> continue across adjacent quad
+  -> edge ring + crossed face strip
+```
+
+and only then compose existing editing primitives such as `splitEdge()` and `cutFace()`. This keeps higher
+level operations like a wall band/window row deterministic without introducing a large special-purpose
+"cut ring" command prematurely.
+
+## Searchable construction-test report
+
+The standard construction regression command now writes the complete terminal transcript to a stable
+searchable text file while still streaming the same output to the terminal:
+
+```powershell
+npm run test:mesh-construction
+```
+
+Latest report:
+
+```text
+reports/static-mesh-construction-test.txt
+```
+
+For manual debugging in VS Code, use:
+
+```powershell
+npm run test:mesh-construction:open
+```
+
+This runs the same test, overwrites the latest report, then tries to reopen that report in the current
+VS Code window (`code -r`). On Windows it also checks the common per-user and Program Files VS Code
+locations when the `code` shell launcher is not on `PATH`. If VS Code cannot be located, the command
+still writes the report and prints its full path.
+
+The direct loader command remains available as `npm run test:mesh-construction:raw` for debugging the
+report runner itself. Generated `reports/*.txt` files are intentionally ignored by git so local test
+runs do not add repository noise.

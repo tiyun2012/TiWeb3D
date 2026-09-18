@@ -97,7 +97,7 @@ Static Mesh editing API / tool session
 geometry transaction
 ```
 
-When Extrude, Bevel, Weld, Connect, Inset, or other topology tools become real operations, their dock buttons should call those APIs. Do not create a second implementation just because the Pie Menu also exposes the action.
+Working Extrude, Inset, Delete Face, and Split Edge dock buttons call the shared Construction API. When Bevel, Weld, Connect, or other topology tools become real operations, their dock buttons should follow the same rule. Do not create a second implementation just because the Pie Menu also exposes the action.
 
 
 ## Live asset geometry propagation
@@ -110,3 +110,28 @@ This distinction prevents two common failures:
 - emitting the full asset-update pipeline on every mouse move.
 
 The Scene `MeshRenderSystem` reuses existing VBO/NBO objects for preview updates; do not allocate replacement GPU buffers per drag event.
+
+
+## Working semantic topology controls
+
+The Topology subsection is mode-aware. Face mode exposes Extrude Distance and Inset Amount for exactly one authored Construction Face. Edge mode exposes Split Position (`0 < t < 1`, default `0.5`) and Bevel Width for exactly one authored Construction Edge. Split Edge maps the transient selected mesh-edge key back to semantic Construction Point endpoints, calls `staticMeshAssetAPI.splitEdge()`, then selects the two replacement mesh edges. Bevel uses the same semantic endpoint adapter, calls `staticMeshAssetAPI.bevelEdge()`, and selects the two long edges bordering the new chamfer face. Unsupported imported/appended edges remain disabled instead of inventing semantic identity.
+
+## Quad Ring / Strip selection
+
+Selection Actions now include two topology-query-driven tools in Edge mode:
+
+- **Edge Ring** selects opposite edges across connected logical quads.
+- **Quad Strip** uses the same traversal but selects the crossed logical faces and changes to Face mode.
+
+Both actions use `staticMeshAssetAPI.traceEdgeRing()/traceFaceStrip()` rather than a UI-local geometry
+algorithm, so browser scripts, future AI planning, and the editor agree on quad/opposite-edge semantics.
+These queries work on logical/imported topology and do not require Construction Points because they do not
+mutate the asset.
+
+Use `smTest('ring')` for a clean four-quad manual fixture. Select its center vertical edge; Edge Ring should
+select five vertical edges, while Quad Strip should select all four quads.
+
+
+## Single-edge Bevel
+
+Bevel UI is available for one Construction-backed manifold edge. Width is world-space distance measured along the local endpoint one-ring edges. The common valence-3 box edge remains supported, and higher-valence interior manifold endpoints are resolved through their unique face fan with endpoint cap faces generated when needed. Ambiguous/open/branched/non-manifold high-valence topology rejects atomically. Use `smTest('bevel')` for the simple case and `smTest('bevel-valence')` for valence-4 endpoints.

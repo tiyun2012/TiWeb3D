@@ -47,6 +47,17 @@ export interface StaticMeshToolDockProps {
   onSoftSelectionConnectivityChange: (connectivity: SoftSelectionConnectivity) => void;
   compositionSources?: StaticMeshCompositionSource[];
   onAppendMesh?: (sourceAssetId: string) => void;
+  topologyInsetAmount: number;
+  topologyExtrudeDistance: number;
+  topologySplitPosition: number;
+  topologyBevelWidth: number;
+  topologySplitEndpointLabel?: string | null;
+  topologyCutEndpointLabel?: string | null;
+  topologyFeedback?: string | null;
+  onTopologyInsetAmountChange: (amount: number) => void;
+  onTopologyExtrudeDistanceChange: (distance: number) => void;
+  onTopologySplitPositionChange: (position: number) => void;
+  onTopologyBevelWidthChange: (width: number) => void;
   commandContext: EditorCommandContext;
 }
 
@@ -80,6 +91,7 @@ const SELECTION_TOOL_COMMANDS = [
   'staticMesh.selection.expand',
   'staticMesh.selection.shrink',
   'staticMesh.selection.ring',
+  'staticMesh.selection.quadStrip',
 ] as const;
 
 const PLACEHOLDER_SELECTION_TOOLS = [
@@ -216,6 +228,17 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   onSoftSelectionConnectivityChange,
   compositionSources = [],
   onAppendMesh,
+  topologyInsetAmount,
+  topologyExtrudeDistance,
+  topologySplitPosition,
+  topologyBevelWidth,
+  topologySplitEndpointLabel = null,
+  topologyCutEndpointLabel = null,
+  topologyFeedback = null,
+  onTopologyInsetAmountChange,
+  onTopologyExtrudeDistanceChange,
+  onTopologySplitPositionChange,
+  onTopologyBevelWidthChange,
   commandContext,
 }) => {
   const [hierarchyExpanded, setHierarchyExpanded] = useState(true);
@@ -305,9 +328,12 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   const topologyActionButtons = useMemo(() => {
     const maybeCommand = (id: string) => editorCommandRegistry.resolve(id, commandContext);
     return [
-      { key: 'bevel', command: maybeCommand('staticMesh.bevel'), label: 'Bevel', icon: 'Ungroup', badge: 'M3', hint: 'Bevel selected edges or faces.' },
-      { key: 'extrude', command: maybeCommand('staticMesh.extrude'), label: 'Extrude', icon: 'ArrowUpSquare', badge: 'M3', hint: 'Extrude selected faces.' },
-      { key: 'inset', label: 'Inset', icon: 'Shrink', badge: 'M3', hint: 'Inset the current face region.' },
+      { key: 'extrude', command: maybeCommand('staticMesh.extrude'), label: 'Extrude', icon: 'ArrowUpSquare', badge: 'API', hint: 'Extrude the selected authored Construction Face.' },
+      { key: 'inset', command: maybeCommand('staticMesh.inset'), label: 'Inset', icon: 'Shrink', badge: 'API', hint: 'Inset the selected authored Construction Face.' },
+      { key: 'deleteFace', command: maybeCommand('staticMesh.deleteFace'), label: 'Delete Face', icon: 'Trash2', badge: 'API', hint: 'Delete the selected authored Construction Face and leave an opening.' },
+      { key: 'splitEdge', command: maybeCommand('staticMesh.splitEdge'), label: 'Split Edge', icon: 'Scissors', badge: 'API', hint: 'Insert one Construction Point on the selected authored edge.' },
+      { key: 'cutFace', command: maybeCommand('staticMesh.cutFace'), label: 'Cut Face', icon: 'Scissors', badge: 'API', hint: 'Cut one authored face between two selected non-adjacent Construction-backed vertices.' },
+      { key: 'bevel', command: maybeCommand('staticMesh.bevel'), label: 'Bevel', icon: 'Ungroup', badge: 'API', hint: 'Bevel the selected manifold authored edge.' },
       { key: 'connect', command: maybeCommand('staticMesh.connect'), label: 'Connect', icon: 'GitCommit', badge: 'M3', hint: 'Connect selected components with new topology.' },
     ];
   }, [commandContext]);
@@ -635,7 +661,111 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
             </div>
 
             <div className="space-y-1.5 pt-1 border-t border-white/5">
-              <SubsectionLabel title="Topology" subtitle="Milestone tools for future topology editing tests." />
+              <SubsectionLabel
+                title="Topology"
+                subtitle="Topology primitives call the same tested Construction API used by scripts/AI. Select exactly one authored face or edge."
+              />
+              {meshComponentMode === 'FACE' && (
+                <div className="grid grid-cols-2 gap-1.5 rounded border border-white/5 bg-black/15 p-2">
+                  <label className="space-y-1 text-[8px] text-text-secondary">
+                    <span>Extrude Distance</span>
+                    <input
+                      type="number"
+                      title="Extrude distance"
+                      aria-label="Extrude distance"
+                      step="0.1"
+                      value={topologyExtrudeDistance}
+                      onChange={event => onTopologyExtrudeDistanceChange(Number(event.target.value))}
+                      className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  <label className="space-y-1 text-[8px] text-text-secondary">
+                    <span>Inset Amount</span>
+                    <input
+                      type="number"
+                      title="Inset amount"
+                      aria-label="Inset amount"
+                      min="0.0001"
+                      step="0.1"
+                      value={topologyInsetAmount}
+                      onChange={event => onTopologyInsetAmountChange(Number(event.target.value))}
+                      className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  {topologyFeedback && (
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      className="col-span-2 rounded border border-red-400/25 bg-red-500/10 px-2 py-1.5 text-[8px] leading-relaxed text-red-200"
+                    >
+                      {topologyFeedback}
+                    </div>
+                  )}
+                </div>
+              )}
+              {meshComponentMode === 'EDGE' && (
+                <div className="grid grid-cols-2 gap-1.5 rounded border border-white/5 bg-black/15 p-2">
+                  <label className="space-y-1 text-[8px] text-text-secondary">
+                    <span>Split Position</span>
+                    <input
+                      type="number"
+                      title="Split edge position"
+                      aria-label="Split edge position"
+                      min="0.0001"
+                      max="0.9999"
+                      step="0.05"
+                      value={topologySplitPosition}
+                      onChange={event => onTopologySplitPositionChange(Number(event.target.value))}
+                      className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  <label className="space-y-1 text-[8px] text-text-secondary">
+                    <span>Bevel Width</span>
+                    <input
+                      type="number"
+                      title="Bevel edge width"
+                      aria-label="Bevel edge width"
+                      min="0.0001"
+                      step="0.05"
+                      value={topologyBevelWidth}
+                      onChange={event => onTopologyBevelWidthChange(Number(event.target.value))}
+                      className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  {topologySplitEndpointLabel && (
+                    <div className="col-span-2 font-mono text-[8px] leading-3 text-text-secondary/80">{topologySplitEndpointLabel}</div>
+                  )}
+                  <div className="col-span-2 text-[8px] leading-3 text-text-secondary/70">Split uses 0..1 along the selected edge. Bevel width is world-space distance along its neighboring face edges.</div>
+                  {topologyFeedback && (
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      className="col-span-2 rounded border border-red-400/25 bg-red-500/10 px-2 py-1.5 text-[8px] leading-relaxed text-red-200"
+                    >
+                      {topologyFeedback}
+                    </div>
+                  )}
+                </div>
+              )}
+              {meshComponentMode === 'VERTEX' && (
+                <div className="grid grid-cols-1 gap-1.5 rounded border border-white/5 bg-black/15 p-2">
+                  <div className="text-[8px] leading-3 text-text-secondary/70">
+                    Select exactly two non-adjacent authored vertices on one Construction Face, then use Cut Face.
+                  </div>
+                  {topologyCutEndpointLabel && (
+                    <div className="font-mono text-[8px] leading-3 text-text-secondary/80">{topologyCutEndpointLabel}</div>
+                  )}
+                  {topologyFeedback && (
+                    <div
+                      role="status"
+                      aria-live="polite"
+                      className="rounded border border-red-400/25 bg-red-500/10 px-2 py-1.5 text-[8px] leading-relaxed text-red-200"
+                    >
+                      {topologyFeedback}
+                    </div>
+                  )}
+                </div>
+              )}
               <ToolGrid>
                 {topologyActionButtons.map(tool => tool.command ? (
                   <CommandToolButton

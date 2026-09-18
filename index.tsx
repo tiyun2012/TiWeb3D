@@ -5,9 +5,11 @@ import App from './app/App';
 import { EngineProvider } from '@/engine/api/EngineProvider';
 import { registerBuiltInAssetTypes } from '@/engine/BuiltInAssetTypes';
 import { registerBuiltInAssetEditors } from '@/editor/BuiltInAssetEditors';
+import { installStaticMeshTestConsoleCommand } from '@/editor/StaticMeshTestConsole';
 
 registerBuiltInAssetTypes();
 registerBuiltInAssetEditors();
+installStaticMeshTestConsoleCommand();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

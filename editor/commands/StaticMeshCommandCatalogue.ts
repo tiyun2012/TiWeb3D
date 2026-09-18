@@ -1,4 +1,4 @@
-import { editorCommandRegistry, type EditorCommandContext } from './EditorCommandRegistry';
+import { editorCommandRegistry, type EditorCommandContext, type StaticMeshTopologyCommand } from './EditorCommandRegistry';
 import type { MeshComponentMode } from '@/types';
 import type { SoftSelectionMode } from '@/engine/mesh-editing/SoftSelection';
 
@@ -141,9 +141,21 @@ editorCommandRegistry.register({
   category: 'SELECTION',
   requiredCapabilities: ['STATIC_MESH_COMPONENT_EDIT'],
   visible: context => context.meshComponentMode === 'EDGE',
-  enabled: context => Boolean(context.services.selectRing) && context.selectionCounts.edges > 0,
+  enabled: context => Boolean(context.services.selectRing) && context.selectionCounts.edges === 1,
   description: 'Extend the selected edge across opposite edges of connected quad-like faces.',
   execute: context => context.services.selectRing?.(context.meshComponentMode),
+});
+
+editorCommandRegistry.register({
+  id: 'staticMesh.selection.quadStrip',
+  label: 'Quad Strip',
+  icon: 'Rows3',
+  category: 'SELECTION',
+  requiredCapabilities: ['STATIC_MESH_COMPONENT_EDIT'],
+  visible: context => context.meshComponentMode === 'EDGE',
+  enabled: context => Boolean(context.services.selectQuadStrip) && context.selectionCounts.edges === 1,
+  description: 'Select the ordered quad faces crossed by the edge ring and switch to Face mode.',
+  execute: context => context.services.selectQuadStrip?.(context.meshComponentMode),
 });
 
 const registerSoftMode = (id: string, mode: SoftSelectionMode, label: string, icon: string, description: string) => {
@@ -187,7 +199,7 @@ editorCommandRegistry.register({
   execute: context => context.services.configureSoftSelection?.({ heatmapVisible: !context.softSelection?.heatmapVisible }),
 });
 
-const topology = (id: string, label: string, icon: string, command: 'EXTRUDE' | 'BEVEL' | 'WELD' | 'CONNECT' | 'DELETE_FACE', mode: MeshComponentMode) => {
+const topology = (id: string, label: string, icon: string, command: StaticMeshTopologyCommand, mode: MeshComponentMode) => {
   editorCommandRegistry.register({
     id,
     label,
@@ -195,12 +207,17 @@ const topology = (id: string, label: string, icon: string, command: 'EXTRUDE' | 
     category: 'ACTIONS',
     requiredCapabilities: ['STATIC_MESH_COMPONENT_EDIT'],
     visible: context => context.meshComponentMode === mode,
-    enabled: context => Boolean(context.services.topologyCommand),
+    enabled: context => Boolean(context.services.topologyCommand)
+      && componentCount(context) > 0
+      && (context.services.supportsTopologyCommand?.(command) ?? true),
     execute: context => context.services.topologyCommand?.(command),
   });
 };
 topology('staticMesh.extrude', 'Extrude', 'ArrowUpSquare', 'EXTRUDE', 'FACE');
+topology('staticMesh.inset', 'Inset', 'Shrink', 'INSET', 'FACE');
 topology('staticMesh.deleteFace', 'Del Face', 'Trash', 'DELETE_FACE', 'FACE');
+topology('staticMesh.splitEdge', 'Split Edge', 'Scissors', 'SPLIT_EDGE', 'EDGE');
+topology('staticMesh.cutFace', 'Cut Face', 'Scissors', 'CUT_FACE', 'VERTEX');
 topology('staticMesh.bevel', 'Bevel', 'Ungroup', 'BEVEL', 'EDGE');
 topology('staticMesh.weld', 'Weld', 'Merge', 'WELD', 'VERTEX');
 topology('staticMesh.connect', 'Connect', 'GitCommit', 'CONNECT', 'VERTEX');
@@ -209,9 +226,9 @@ export const STATIC_MESH_PIE_COMMANDS = {
   TOOLS: ['editor.tool.select', 'editor.tool.move', 'editor.tool.rotate', 'editor.tool.scale'],
   VIEW: ['viewport.toggleGrid', 'staticMesh.toggleWireframe', 'viewport.resetCamera'],
   OBJECT: ['viewport.focus', 'selection.duplicate', 'selection.delete'],
-  FACE: ['staticMesh.extrude', 'staticMesh.selectLoop', 'staticMesh.deleteFace'],
-  EDGE: ['staticMesh.bevel', 'staticMesh.selectLoop'],
-  VERTEX: ['staticMesh.weld', 'staticMesh.connect', 'staticMesh.selectLoop'],
+  FACE: ['staticMesh.extrude', 'staticMesh.inset', 'staticMesh.selectLoop', 'staticMesh.deleteFace'],
+  EDGE: ['staticMesh.splitEdge', 'staticMesh.bevel', 'staticMesh.selectLoop'],
+  VERTEX: ['staticMesh.cutFace', 'staticMesh.weld', 'staticMesh.connect', 'staticMesh.selectLoop'],
 } as const;
 
 export const STATIC_MESH_DOCK_COMMANDS = [
@@ -221,4 +238,10 @@ export const STATIC_MESH_DOCK_COMMANDS = [
   'staticMesh.sculpt.slide',
   'staticMesh.selectLoop',
   'staticMesh.softSelection.toggleHeatmap',
+  'staticMesh.extrude',
+  'staticMesh.inset',
+  'staticMesh.deleteFace',
+  'staticMesh.splitEdge',
+  'staticMesh.cutFace',
+  'staticMesh.bevel',
 ] as const;

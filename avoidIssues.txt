@@ -185,6 +185,7 @@
 - **ONLY EXPOSE IMPLEMENTED TRANSFORM SPACES:** The current `TransformSpace` contract is `World | Local`. Do not show Gimbal, Parent, VirtualPivot, Object, Normal, or Average options until engine behavior exists for them; UI-only casts create invalid runtime state.
 - **KEEP LUCIDE ICON NAMES TYPE-SAFE:** `Icon.name` is `keyof lucide-react`. Use real exports (for example `Wrench`) instead of invented names such as `Tool`; do not silence this with broad casts.
 - **AUDIT STALE API NAMES:** The dependency-free audit must reject `.ecs.setName(`, `.sceneGraph.detach(`, invalid `name="Tool"`, and unsupported transform-space option values.
+- **NARROW OPTIONAL DISCRIMINATED UNIONS EXPLICITLY:** When a value can be `null | undefined | Union`, guard the value and its discriminator in one explicit `if` before reading variant-only fields. Do not rely on a mixed optional-chain/`&&` ternary such as `value?.id === x && value.mode === 'FACE' ? value.faceId : null`; strict TypeScript may not carry that narrowing to the variant member access.
 
 
 ---
@@ -431,10 +432,18 @@ CAMERA RESOLUTION / PRESET RULES
 - **DO NOT INVENT SIBLING FACES:** Ordinary face adjacency is derived from shared logical vertices/edges. `LogicalMesh.siblings` means explicit equivalence between duplicated render vertices, not a face-to-face relationship.
 - **LOOPS ARE SEMANTIC HANDLES, NOT IMPLICIT GEOMETRY:** `createLoop()` records ordered point IDs only. The current `bridgeLoops()` requires equal point counts and matching open/closed state.
 - **INSET PRESERVES FACE IDENTITY:** `insetFace()` must keep the selected Construction Face id (and its current logical `faceId`) as the new inner face. Build the border ring around the old boundary and return semantic inner-point/loop/border handles. Do not force AI/scripts to rediscover a replacement face after an inset.
+- **FACE EXTRUDE CONSUMES THE SOURCE SURFACE:** `extrudeFace()` must move the selected Construction Face boundary onto the new offset points and create side faces around the old boundary. Do not leave a duplicate/source cap at the original location. Preserve the same semantic/logical face handle on the moved top surface (`topFaceId === sourceFaceId`) so AI/scripts can continue deterministically. An isolated plane therefore extrudes open; create an explicit bottom cap when a closed prism is desired.
+- **FACE EXTRUDE IS NORMAL-DRIVEN:** Compute the current ordered Construction Face normal before mutation and offset every new top point by `normal * distance`. Positive distance follows the face normal and negative distance goes opposite. Do not silently use a world/ground axis and do not add an arbitrary direction override to `extrudeFace()`; a separate sweep/translate primitive should own that behavior.
+- **GIZMO ACTIVATION IS UI-ONLY AFTER EXTRUDE:** The Static Mesh editor may switch to Move and show the translation gizmo after a successful UI Extrude so a modeller can continue adjusting the selected top face. `StaticMeshAssetAPI.extrudeFace()` itself must remain tool-neutral and must never activate editor gizmos for AI/script callers.
 - **INSET FAILS BEFORE INVALID TOPOLOGY:** The current inset contract is constant world-space distance on ordered planar convex faces. Reject non-positive/oversized, non-planar, concave, zero-edge, or degenerate inputs instead of committing crossed/collapsed geometry.
+- **SPLIT EDGE REUSES ONE SEMANTIC POINT ACROSS INCIDENT TOPOLOGY:** `splitEdge()` is addressed by Construction Point endpoint IDs, inserts one new Construction Point, and updates every incident authored face/loop to reuse it. Preserve stable face IDs/logical mappings and rebuild normal topology/history atomically. Raw mesh edge/vertex IDs are only an editor-selection adapter; do not make them the AI-facing identity. Reject endpoint positions outside `0 < t < 1` and non-manifold (>2 incident-face) edges before commit. Splitting inserts a collinear boundary vertex, so triangulation must avoid zero-area fan triangles; preserve the normal fan when valid, otherwise rotate/fall back to convex ear clipping.
+- **CUT FACE COMPOSES EXISTING BOUNDARY POINTS:** `cutFace()` connects two existing non-adjacent Construction Points on one authored face. Keep the source semantic/logical face stable as one side, create exactly one new semantic face for the other, reuse endpoint vertices so the new diagonal half-edges pair, and rebuild topology/history atomically. Do not turn Cut Face into a hidden freehand knife/projection system: use `splitEdge()` first when a desired cut endpoint lies inside an edge. Reject adjacent/off-face/degenerate endpoint pairs before commit.
+- **DELETE FACE PRESERVES SEMANTIC PLANNING DATA:** `deleteFace()` removes the authored Construction Face surface/triangles but keeps its Construction Points and Loops. Compact logical face ids, remap surviving Construction Face `faceId` values and `triangleToFaceIndex`, then rebuild normal topology/shell metadata in one history step. Do not leave sparse logical face arrays or silently garbage-collect planning handles.
+- **TOPOLOGY UI MUST CALL THE SAME API:** Static Mesh dock Extrude/Inset/Delete Face/Split Edge/Cut Face actions dispatch through `EditorCommandRegistry` + the editor `topologyCommand` service into `StaticMeshAssetAPI`. Do not duplicate topology mutation logic in React. Working semantic face tools require exactly one selected logical face with an authored Construction Face mapping; Split Edge requires exactly one selected mesh edge that resolves to authored Construction Point endpoints; Cut Face requires exactly two non-adjacent selected Construction-backed vertices on exactly one common authored face. Unsupported imported/appended topology stays disabled rather than receiving invented Construction identity.
+- **COMMAND AVAILABILITY IS HOST-SPECIFIC:** Use `supportsTopologyCommand(command)` when a shared command is not implemented by every host. In particular, keep semantic `INSET` disabled in Scene View until that host routes it through the Construction API; never expose a command that the host callback silently ignores.
 - **KEEP CONSTRUCTION SELECTION SEPARATE:** Construction Points use a separate viewport VBO and selection domain. Do not stuff their IDs into mesh Vertex selection or show the normal component gizmo merely because a planning point is selected.
 - **EMPTY CONSTRUCTION POINTS MUST STILL FRAME/RENDER:** An otherwise empty Static Mesh can contain planning points. Camera fit/focus and viewport overlays must work before any compiled mesh vertex exists.
-- **TEST THE SEMANTIC CONTRACT:** Keep `npm run test:mesh-construction` covering point-without-vertex creation, face compilation, shared-face topology, point-to-bound-vertex movement, stable inset identity/ring pairing/collapse rejection, stable extrusion handles, deletion guards, Mesh Shell connectivity, and loop bridging.
+- **TEST THE SEMANTIC CONTRACT:** Keep `npm run test:mesh-construction` covering point-without-vertex creation, face compilation, shared-face topology, point-to-bound-vertex movement, stable inset identity/ring pairing/collapse rejection, safe face deletion/remapping/undo, shared split-edge topology/loop updates/undo, cut-face stable identity/paired diagonal/undo, stable extrusion handles, deletion guards, Mesh Shell connectivity, UI command dispatch, and loop bridging.
 
 ---
 
@@ -449,9 +458,55 @@ CAMERA RESOLUTION / PRESET RULES
 
 ### 28. STATIC MESH GIZMO / ASSET HISTORY SYNCHRONIZATION
 - **GIZMO IS DERIVED UI:** Never store gizmo position, visibility, active axis, or hover axis as an AssetHistory snapshot. The mesh/selection are authoritative; derive the gizmo pivot from the live restored selection every render.
+- **SELECT TOOL MUST NOT RENDER THE TRANSFORM GIZMO:** Static Mesh `SELECT` is selection-only. Keep `GizmoSystem.renderInSelectTool = false`; Object/Vertex/Edge/Face selection changes may preserve an already active MOVE/ROTATE/SCALE tool, but must never activate a transform tool or make the gizmo appear by themselves.
 - **ONE DRAG = ONE ASSET TRANSACTION:** Begin Static Mesh component history at gizmo drag start, mutate geometry live, and commit once on mouse-up. A zero-total-delta drag must close cleanly without creating Undo history.
 - **CANCEL UNFINISHED DRAGS:** `Esc` cancels an active component drag back to its drag-start state with no history entry. `Ctrl/Cmd+Z` during an unfinished drag cancels that drag first; do not consume the previous committed history step in the same key press.
 - **PRESERVE VALID SELECTION THROUGH HISTORY:** Undo/Redo must not blindly clear Vertex/Edge/Face, Construction Point, or Mesh Shell selection. Preserve ids that still exist in the restored asset and prune only stale ids, then recompute soft-selection weights.
 - **RESET TRANSIENT GIZMO STATE AFTER RESTORE:** Clear active/hover handle state after Undo/Redo so the next render recomputes the gizmo from restored geometry. Never restore a cached gizmo transform.
 - **DO NOT CLOSE SOMEONE ELSE'S TRANSACTION:** If a gizmo drag starts inside an already-open semantic asset transaction, the drag does not own that outer transaction. Commit may mark it dirty but must not close it; cancel restores only the drag-local geometry baseline.
 - **NARROW GENERIC ASSETS BEFORE MESH-ONLY ACCESS:** `assetManager.getAsset()` returns the generic `Asset` contract. A runtime `asset.type === 'MESH'` check does not currently make TypeScript infer `StaticMeshAsset`; after the guard, narrow once to a typed `StaticMeshAsset` local before calling shell helpers or reading typed Construction data. Do not let mesh-only restore code fall back to implicit `any`.
+
+### 33. STATIC MESH MANUAL TEST FIXTURES
+- **USE `smTest()` FOR REPEATABLE RUNTIME SETUP:** Manual browser/editor checks should recreate deterministic `TEST_StaticMesh_*` fixtures through `engine/dev/StaticMeshTestFixtures.ts`, not by copying long ad-hoc console scripts after every restart.
+- **DO NOT ACCUMULATE THROWAWAY FIXTURES:** Creating a fixture removes only earlier `TEST_StaticMesh_*` assets first. Never delete arbitrary/user-authored meshes as part of test reset.
+- **FIXTURES MUST USE THE PUBLIC MODELING API:** Test setup calls `StaticMeshAssetAPI` primitives so it exercises the same Construction/topology code as AI and UI. Do not hand-write geometry/topology arrays in the fixture helper.
+- **CLEAR HISTORY AFTER FIXTURE SETUP:** A generated fixture is the baseline, not a user edit. Clear its AssetHistory after construction so the next manual operation is the first Undo step.
+- **KEEP A SPLIT-READY FIXTURE:** `smTest('split')` must build two authored triangles sharing one edge (plus a semantic loop) through the public API so Edge-mode Split Edge can be retested quickly after restart.
+- **KEEP A CUT-READY FIXTURE:** `smTest('cut')` must build one authored quad through the public API and expose opposite Construction Point ids so Vertex-mode Cut Face can be retested quickly after restart.
+
+- **TOPOLOGY VALIDATION IS USER FEEDBACK, NOT A CONSOLE FAULT:** Keep modeling APIs strict/atomic, but catch expected UI validation failures (for example an oversized inset) at the Static Mesh editor boundary and show the API message inline. Do not silently clamp values, commit partial topology/history, or spam console error stacks for safe user-input rejection.
+
+---
+
+### 28. STATIC MESH QUAD TOPOLOGY QUERIES / EDGE RINGS
+- **LOGICAL FACES, NOT RENDER TRIANGLES:** Quad detection and opposite-edge traversal must use `LogicalMesh.faces`. Never infer a quad from pairs of render triangles at query time; triangulation diagonals are not authored edges.
+- **CANONICAL EDGE IDENTITY:** Edge adjacency/ring traversal must use `MeshConnectivity` canonical/sibling identity so explicit UV/normal seam welds can continue a ring. Equal XYZ positions alone never connect edges or faces.
+- **RING != LOOP:** Edge Ring walks across the opposite edge of each quad. Edge Loop follows edge flow through vertices. Do not merge these algorithms or choose the next edge by geometric straightness alone.
+- **STOP EXPLICITLY:** Read-only ring traces must report termination (`BOUNDARY`, `NON_QUAD`, `BRANCH`, `CYCLE`, `INVALID_TOPOLOGY`, `MAX_STEPS`) instead of silently jumping across triangles/ngons/non-manifold branches.
+- **QUERY BEFORE MUTATION:** Face classification, opposite-edge lookup, Edge Ring and Quad Strip are read-only. They must not create Asset History entries, mutate Construction identity, or rebuild geometry.
+- **SHARED API FOR UI/AI:** Static Mesh editor Edge Ring / Quad Strip selection must call the shared topology query API. Never implement a second React-only traversal.
+
+---
+
+### 32. ASSET EDITOR WINDOW LIFETIME
+- **ASSET EDITORS MUST DECLARE `assetId`:** Every asset-backed `AssetEditorWindowConfig` must carry the UUID of the asset it edits. Do not rely only on an `editor_<uuid>` naming convention for lifecycle cleanup.
+- **DELETE CLOSES THE EDITOR:** `WindowManager` must remove windows whose `assetId` matches an `ASSET_DELETED` event. Never leave an asset editor mounted against a deleted UUID; it produces stale `Mesh asset could not be loaded.` windows and retains unnecessary viewport/editor state.
+- **DEV FIXTURES USE THE SAME RULE:** `smTest(...)` intentionally deletes older `TEST_StaticMesh_*` fixtures before creating a new one. Open fixture editors must therefore close through the normal asset-deletion lifecycle, not through special coupling from engine test-fixture code to React/UI code.
+
+---
+
+### 18. STATIC MESH FACE HOVER / SELECTION FILL
+- **FACE MODE NEEDS SURFACE FEEDBACK:** Do not render Face selection as boundary edges only. Static Mesh Face mode must keep a subtle translucent fill for hovered and selected logical faces so the interaction target reads as a surface.
+- **LOGICAL FACE IDENTITY:** Build face-fill triangle indices from `LogicalMesh.triangleToFaceIndex`; never treat each render triangle of a quad/ngon as an independent face highlight.
+- **VISUALIZATION ONLY:** Face fill must not mutate geometry, topology, materials, selection identity, or history. It reuses the host position VBO and owns only a compact overlay IBO.
+- **DEPTH SAFETY:** Keep depth testing enabled, use `LEQUAL`, disable depth writes, and use a small negative polygon offset so front-facing fills do not z-fight while back-side faces remain hidden.
+- **NO DOUBLE-BRIGHT HOVER:** If a hovered face is already selected, suppress the separate hover fill and keep the selected fill as the authoritative visual state.
+
+- **BEVEL IS A SMALL SEMANTIC PRIMITIVE:** `bevelEdge()` is addressed by stable Construction Point endpoint ids, not raw mesh edge ids. The selected edge requires exactly two consistently wound non-coplanar authored faces, but endpoint valence is not capped at three. Resolve a unique interior manifold endpoint fan, propagate one offset point along every participating one-ring edge, and add an endpoint cap polygon when three or more offsets are required. Reject open/branched/disconnected/non-manifold high-valence fans and too-large widths atomically rather than guessing topology.
+- **PROPAGATE BEVEL OFFSETS THROUGH AUTHORED BOUNDARIES:** When Bevel creates offset points on neighboring edges, insert those same semantic points into every authored face/loop using those edges. Rewrite endpoint faces around the new points and compact orphan render vertices while preserving source Construction Points as semantic handles.
+- **DO NOT RESTORE THE OLD CLOSED-PRISM EXTRUDE:** Face Extrude no longer keeps/reverses the original face as a bottom cap. The source semantic/logical face is moved to the new top boundary and side walls are added. Closed test fixtures that begin from an isolated plane must add a separate reversed bottom face explicitly; extruding a face on an existing manifold mesh remains connected through its neighboring faces.
+
+### 34. SEARCHABLE STATIC MESH TEST REPORTS
+- **KEEP THE NORMAL TEST SEARCHABLE:** `npm run test:mesh-construction` must tee the real construction-test stdout/stderr into `reports/static-mesh-construction-test.txt` while preserving the child process exit code. Do not replace the actual test with a synthetic summary.
+- **VS CODE OPENING IS OPTIONAL UI CONVENIENCE:** `npm run test:mesh-construction:open` may reopen the latest report with VS Code, but failure to locate VS Code must never turn a passing mesh test into a failure. Always print the report path as fallback.
+- **DO NOT COMMIT GENERATED REPORTS:** Keep `reports/*.txt` ignored. The stable filename is intentional so developers can search one predictable file after repeated runs without accumulating timestamped artifacts.

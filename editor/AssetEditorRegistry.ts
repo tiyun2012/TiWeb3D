@@ -3,6 +3,8 @@ import type { Asset, AssetType } from '@/types';
 
 export interface AssetEditorWindowConfig {
   id: string;
+  /** Asset UUID owned by this editor window. Used to close stale editors when the asset is deleted. */
+  assetId?: string;
   title: string;
   icon: string;
   content: ReactNode;

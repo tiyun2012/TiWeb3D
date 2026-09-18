@@ -1093,6 +1093,10 @@ export const SceneView: React.FC<SceneViewProps> = ({ sceneGraph, onSelect, sele
                     if (command === 'CONNECT') engineInstance.connectComponents();
                     if (command === 'DELETE_FACE') engineInstance.deleteSelectedFaces();
                 },
+                // Scene topology still uses the legacy live-edit engine. Keep new
+                // semantic Construction-only operations disabled here until the
+                // scene adapter routes them through StaticMeshAssetAPI as well.
+                supportsTopologyCommand: command => command !== 'INSET' && command !== 'SPLIT_EDGE' && command !== 'CUT_FACE',
                 configureSoftSelection: configureSceneSoftSelection,
             },
         };

@@ -42,6 +42,7 @@ engine/MeshEdgeGeometry.ts                         SelectionSystem
 Asset viewport rendering                              Scene rendering
 StaticMeshEditor / SkeletonEditor                     CoreModules MeshModule
 ├── MeshEdgeOverlay                                   ├── DebugRenderer lines
+├── MeshFaceOverlay                                   ├── face/component highlight primitives
 ├── MeshVertexOverlay                                 └── DebugRenderer points
 └── MeshComponentVisualStyle                          └── MeshComponentVisualStyle
         │                                                     │
@@ -149,6 +150,29 @@ Responsibilities:
 
 It does **not** extract topology. Feed it indices produced by `MeshEdgeGeometry`.
 
+### `engine/MeshFaceGeometry.ts`
+
+Owns **which render triangles belong to logical face ids** for filled hover/selection feedback.
+
+Responsibilities:
+
+- map `SelectionSystem.subSelection.faceIds` through `topology.triangleToFaceIndex`
+- preserve logical quad/ngon identity even though the GPU renders triangles
+- provide a triangle-soup fallback only when no logical mapping exists
+- own the shared soft selected/hovered face-fill colors
+
+### `editor/viewports/MeshFaceOverlay.ts`
+
+Owns the asset-viewport GPU pass for translucent logical-face fills.
+
+Responsibilities:
+
+- reuse the host mesh position VBO
+- own only a compact triangle IBO for selected/hovered logical faces
+- depth-test against the shaded mesh so back-side faces do not show through
+- use a small negative polygon offset plus `LEQUAL`/no depth writes to avoid z-fighting
+- remain visualization-only; picking/topology are unchanged
+
 ### `editor/viewports/MeshVertexOverlay.ts`
 
 Owns the asset-viewport GPU point pass.
@@ -184,10 +208,11 @@ This module exists specifically to keep Scene and Edit viewports visually consis
 ```text
 1. shaded mesh triangles
 2. dim topology cage / object wireframe
-3. selected Edge or Face boundary overlay
-4. base vertex points (Vertex mode)
-5. selected vertex points
-6. hovered vertex point
+3. selected/hovered Face fill (Face mode only)
+4. selected Edge or Face boundary overlay
+5. base vertex points (Vertex mode)
+6. selected vertex points
+7. hovered vertex point
 ```
 
 The order matters.
@@ -210,7 +235,20 @@ Vertex / Edge / Face mode:
 
 Component edit modes should never appear as an unstructured shaded blob; the cage communicates editable topology.
 
-### 4.3 Selected edge / selected face boundary
+### 4.3 Face fill feedback
+
+Face mode uses a translucent filled pass in addition to the boundary edges:
+
+```text
+hovered face  -> soft amber surface tint
+selected face -> stronger amber/yellow surface tint
+```
+
+The fill is built from `topology.triangleToFaceIndex`, so a logical quad is highlighted as one face even though it contains two render triangles. If the hovered face is already selected, the hover fill is suppressed so the surface does not become artificially over-bright.
+
+The fill is deliberately subtle. Boundary edges remain the strongest precision cue. The pass must not change picking, topology, materials, geometry, or asset history.
+
+### 4.4 Selected edge / selected face boundary
 
 Edge mode reads:
 
@@ -226,7 +264,7 @@ collectFaceEdgeKeys(asset.topology?.faces, selection.faceIds)
 
 Both then use the same selected edge overlay and the same canonical edge identity.
 
-### 4.4 Vertex points
+### 4.5 Vertex points
 
 Vertex mode draws:
 
@@ -392,7 +430,7 @@ Both reintroduce inconsistent visual semantics.
 | Static Mesh / Object | Yes | Wireframe toggle only | N/A | No |
 | Static Mesh / Vertex | Yes | Dim cage | N/A | Base + selected + hovered |
 | Static Mesh / Edge | Yes | Dim cage | Selected edge pass | No |
-| Static Mesh / Face | Yes | Dim cage | Selected face boundary pass | No |
+| Static Mesh / Face | Yes + soft selected/hovered face fill | Dim cage | Selected/hovered face boundary pass | No |
 | Scene / Object selection | Normal scene render | Selection/object edge visualization as configured | Object selection color | No |
 | Scene / Vertex | Normal scene render | Dim unique topology edges | N/A | Base + selected/hovered |
 | Scene / Edge | Normal scene render | Dim unique topology edges | Selected edge color | No |
@@ -417,7 +455,7 @@ SelectionSystem
 viewport selection revision/tick
         │
         ├── Edge mode -> rebuild selected edge index buffer only
-        ├── Face mode -> collect face boundary keys -> rebuild selected edge buffer only
+        ├── Face mode -> rebuild logical-face fill IBO + collect boundary keys
         └── Vertex mode -> update selected vertex index buffer only
 ```
 
@@ -641,3 +679,17 @@ If Scene view and an asset editor disagree visually, first look for a duplicated
 Component overlays sit on top of the shared surface pipeline. Before changing shaded mesh appearance, render modes, viewport background, or direct-preview color output, read [`SHARED_VIEWPORT_MESH_SHADING.md`](./SHARED_VIEWPORT_MESH_SHADING.md).
 
 `MeshEdgeGeometry` / `MeshVertexOverlay` define component visualization; `MeshSurfaceContract` defines the mesh surface and linear-to-display contract underneath them. Keep these responsibilities separate.
+
+### Symptom: Face mode only highlights the outline and does not feel interactive
+
+Likely cause:
+
+- the logical-face fill overlay is missing or stale
+
+Check:
+
+- `MeshFaceGeometry.buildMeshFaceTriangleIndices(...)` uses `triangleToFaceIndex`
+- `MeshFaceOverlay` is updated on selection/hover revision changes
+- selected fill is stronger than hover fill, but both remain translucent
+- hovered fill is suppressed when that same face is already selected
+
