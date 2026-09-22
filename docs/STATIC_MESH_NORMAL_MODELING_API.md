@@ -70,6 +70,8 @@ staticMeshAssetAPI.bevelEdge({
   vertexAId: 12,
   vertexBId: 18,
   width: 0.2,
+  segments: 5,       // optional, default 1, integer 1..64
+  profile: 0.5,      // optional, default 0.5, normalized 0..1
 });
 ```
 
@@ -273,11 +275,54 @@ use the mesh's stored normal buffer. Normal lines are debug overlays only and do
 
 ## Batch selection modeling: multi-face Inset and multi-edge Bevel
 
-The normal modeller now treats the current component selection as the batch boundary for two operations:
+The normal modeller treats the current component selection as the batch boundary for two operations:
 
 - `insetFaces({ assetId, faceIds, ratio })` applies the same center-relative ratio to every selected logical face as one atomic history action. Faces are inset **individually**; adjacent selected faces do not get merged into one region boundary.
-- `bevelEdges({ assetId, edges, width })` resolves the complete original edge selection before topology mutation and bevels every selected **vertex-disjoint** manifold edge as one atomic history action. This covers Edge Rings and arbitrary disjoint edge selections.
+- `bevelEdges({ assetId, edges, width, segments?, profile?, clampOverlap? })` resolves the complete original edge selection before topology mutation and bevels the selection as one atomic history action. `segments` defaults to `1`; `profile` defaults to `0.5`.
 
-The batch bevel intentionally rejects selected edges that share an endpoint. Blender-style connected-chain/closed-loop bevel needs a joint corner/miter solver so the shared vertex is solved once for the complete selected edge network. Repeatedly calling the single-edge bevel at a shared corner would double-apply the setback and is therefore prohibited rather than guessed.
+### Connected bevel network
 
-Both batch operations return aggregate result ids suitable for restoring editor selection after the mutation, and neither persists the transient Construction adapter used internally by the normal LogicalMesh path.
+`bevelEdges()` routes normal closed-manifold selections through the joint bevel-network kernel in `engine/mesh-editing/MeshBevelKernel.ts` even when the selected edges are disconnected. This prevents repeated mutations from competing for the same reconstructed n-gons and makes overlap limiting selection-wide. The network pass follows Blender's important architectural split:
+
+```text
+selected logical edges
+    -> build one cyclic incident-edge star per touched vertex
+    -> mark selected edges in that star
+    -> solve shared boundary points from per-face offset-line intersections
+    -> sample endpoint profiles when segments > 1
+    -> rewrite every original face once
+    -> create `segments` selected-edge strip faces per source edge
+    -> create the classified corner VMesh (`NONE`, `POLY`, `TRI_FAN`, or structured `ADJ`)
+    -> clamp the whole network before mutation when boundaries would overlap
+```
+
+This makes shared corners deterministic: whenever exactly two selected edges reduce to a two-point effective corner boundary, their segmented profile rows weld directly through `M_NONE` regardless of whether the edges are straight or angled; one-segment three-edge corners create one triangular patch; segmented general corners that still require a surface use authored `ADJ` grid cells; four-edge loops are solved as one network; and valence-4 endpoint fans are handled without applying the setback twice. The generated topology is validated by the focused mesh tests as one shell with paired half-edges.
+
+The current joint-kernel scope is deliberately smaller than Blender's full bevel implementation:
+
+- selected edges must be manifold with exactly two incident logical faces;
+- closed cyclic one-rings are supported, plus the common one-gap open terminal face chain when `selcount == 1`;
+- `segments = 1` is the stable sharp-chamfer compatibility path;
+- `segments > 1` samples a normalized superellipse profile and emits multiple edge strips while expanding the owning original/corner boundaries;
+- `selcount == 2` corners with exactly two effective boundary roles are Blender-style `M_NONE` welds even when the selected edges meet at an angle; only closed segmented corners that still require a real surface after that classification use the structured `M_ADJ` VMesh grid; topology/parity follows Blender, while interior point placement is currently Coons-based rather than Blender's full cubic subdivision;
+- explicit inner/outer miter modes, multi-selected open fans, custom profile curves, and UV/custom-loop interpolation remain future work.
+
+Endpoint valence is independent: one end may have a different number of incident edges or selected edges than the other. The joint path includes Blender-style degree-2 terminal construction, straight/near-collinear terminal handling, finite-segment clamping for zero-offset neighbors, reflex/non-planar corner handling, and topology-safe local welding. A legacy semantic Construction bevel remains available for compatibility, but normal numeric-ID bevels do not intentionally decompose a supported selection into repeated single-edge mutations.
+
+`clampOverlap` defaults to `true`. The planner computes longitudinal usage on original edges/profile rows and, if necessary, scales the requested width for the complete network before any topology is changed. `BevelLogicalEdgesResult.width` is the effective width, `requestedWidth` preserves the caller value, `clamped` reports whether reduction occurred, and `cornerFaceIds` exposes generated VMesh-style corner patches. Setting `clampOverlap: false` rejects an overlapping bevel atomically instead.
+
+### Segments/profile result contract
+
+`segments` is the number of bevel strip faces created along each successfully planned source edge. The corresponding profile has `segments + 1` longitudinal rails. `profile = 0.5` is the circular/default profile; `profile = 0.25` is the straight/chamfer superellipse case. With `segments = 1`, profile does not change geometry and the result is intentionally identical to the stabilized one-segment bevel.
+
+For `bevelEdge()` the result exposes:
+
+- `bevelFaceId`: compatibility alias for the first strip face;
+- `bevelFaceIds`: every strip face for this source edge (`length === segments`);
+- `bevelEdgeIds`: the two outer longitudinal rails retained for old callers;
+- `profileEdgeIds`: all longitudinal profile rails (`length === segments + 1`);
+- `segments`, `profile`, and effective `width`.
+
+For `bevelEdges()`, aggregate `bevelFaceIds` contains all strip faces from all selected source edges and aggregate `bevelEdgeIds` contains all unique profile rails. The editor deliberately selects those returned profile rails after the operation, so another Bevel command can continue from the newly generated profile topology without rediscovering render triangles.
+
+Both batch operations return aggregate result ids suitable for restoring editor selection after the mutation, and neither persists the transient Construction adapter used internally by the normal LogicalMesh path. See `STATIC_MESH_BEVEL_ARCHITECTURE.md` for the Blender source mapping and extension roadmap.

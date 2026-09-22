@@ -169,6 +169,9 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
   const [topologyExtrudeDistance, setTopologyExtrudeDistance] = useState(1.0);
   const [topologySplitPosition, setTopologySplitPosition] = useState(0.5);
   const [topologyBevelWidth, setTopologyBevelWidth] = useState(0.25);
+  const [topologyBevelSegments, setTopologyBevelSegments] = useState(1);
+  const [topologyBevelProfile, setTopologyBevelProfile] = useState(0.5);
+  const [topologyBevelClampOverlap, setTopologyBevelClampOverlap] = useState(true);
   const [topologyFeedback, setTopologyFeedback] = useState<string | null>(null);
 
   const meshComponentModeRef = useRef<MeshComponentMode>(meshComponentMode);
@@ -1715,6 +1718,17 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
           setTopologyFeedback('Bevel width must be greater than 0.');
           return;
         }
+        if (!Number.isFinite(topologyBevelSegments)
+          || Math.floor(topologyBevelSegments) !== topologyBevelSegments
+          || topologyBevelSegments < 1
+          || topologyBevelSegments > 64) {
+          setTopologyFeedback('Bevel segments must be an integer from 1 to 64.');
+          return;
+        }
+        if (!Number.isFinite(topologyBevelProfile) || topologyBevelProfile < 0 || topologyBevelProfile > 1) {
+          setTopologyFeedback('Bevel profile must be between 0 and 1.');
+          return;
+        }
         const result = staticMeshAssetAPI.bevelEdges({
           assetId,
           edges: selectedLogicalEdges.map(edge => ({
@@ -1722,8 +1736,14 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             vertexBId: edge.vertexIds[1],
           })),
           width: topologyBevelWidth,
+          segments: topologyBevelSegments,
+          profile: topologyBevelProfile,
+          clampOverlap: topologyBevelClampOverlap,
         });
         selectLogicalEdges(result.bevelEdgeIds);
+        if (result.clamped) {
+          setTopologyFeedback(`Bevel clamped to ${result.width.toPrecision(5)} (${result.segments} segment${result.segments === 1 ? '' : 's'}).`);
+        }
         return;
       }
 
@@ -1803,6 +1823,9 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     topologyInsetRatio,
     topologySplitPosition,
     topologyBevelWidth,
+    topologyBevelSegments,
+    topologyBevelProfile,
+    topologyBevelClampOverlap,
   ]);
 
 
@@ -2118,6 +2141,9 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             topologyExtrudeDistance={topologyExtrudeDistance}
             topologySplitPosition={topologySplitPosition}
             topologyBevelWidth={topologyBevelWidth}
+            topologyBevelSegments={topologyBevelSegments}
+            topologyBevelProfile={topologyBevelProfile}
+            topologyBevelClampOverlap={topologyBevelClampOverlap}
             topologySplitEndpointLabel={selectedLogicalEdge ? `v${selectedLogicalEdge.vertexIds[0]} → v${selectedLogicalEdge.vertexIds[1]}` : null}
             topologyCutEndpointLabel={selectedLogicalCut ? `v${selectedLogicalCut.vertexIds[0]} ↔ v${selectedLogicalCut.vertexIds[1]} on face ${selectedLogicalCut.faceId}` : null}
             topologyFeedback={topologyFeedback}
@@ -2135,6 +2161,18 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             }}
             onTopologyBevelWidthChange={width => {
               setTopologyBevelWidth(width);
+              setTopologyFeedback(null);
+            }}
+            onTopologyBevelSegmentsChange={segments => {
+              setTopologyBevelSegments(segments);
+              setTopologyFeedback(null);
+            }}
+            onTopologyBevelProfileChange={profile => {
+              setTopologyBevelProfile(profile);
+              setTopologyFeedback(null);
+            }}
+            onTopologyBevelClampOverlapChange={enabled => {
+              setTopologyBevelClampOverlap(enabled);
               setTopologyFeedback(null);
             }}
             commandContext={commandContext}

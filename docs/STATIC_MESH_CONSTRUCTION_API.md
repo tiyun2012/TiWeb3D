@@ -367,6 +367,10 @@ The selected edge must still have exactly two incident authored faces with oppos
 
 After the rewrite, source endpoint Construction Points remain as semantic planning/history handles but orphan render vertices are compacted away. The result returns the two long bevel rails, the main bevel face, and any generated endpoint cap face ids so UI/AI can continue without rediscovering raw topology. Invalid widths and unsupported topology create no Undo entry.
 
+The normal numeric-ID batch API has a newer joint path that is intentionally **not** implemented by repeatedly calling this legacy Construction primitive. `bevelEdges()` uses `MeshBevelKernel` to solve the complete supported selection before mutation, including disconnected selected edges that can still compete for the same reconstructed n-gon neighborhood. That planner owns cyclic/open-chain incident-edge ordering, offset-line corner intersections, one corner boundary per touched vertex, network-wide overlap clamping, and segmented profile generation. Its public `segments` value is the number of strip faces per source edge (`segments + 1` profile rails), with `profile = 0.5` as the default circular superellipse profile. Keep this distinction until the semantic Construction API itself receives an explicit multi-edge/segmented contract; do not emulate normal bevel by sequencing Construction `bevelEdge()` calls.
+
+The Construction `bevelEdge()` primitive in this document remains a one-segment compatibility API. New editor/UI work should target the normal numeric-ID `bevelEdge()` / `bevelEdges()` overloads when it needs `segments`, `profile`, Clamp Overlap, or Blender-style joint corner planning.
+
 Face Extrude is normal-driven: it computes the current ordered Construction Face normal before mutation and offsets every generated top point by `normal * distance`. It never falls back to a world/ground axis. Positive distance follows the face normal; negative distance goes opposite. The source surface is consumed/moved to the new boundary, so an isolated plane remains open at its old position unless a caller explicitly creates a cap.
 
 ## Cut Face contract

@@ -5,6 +5,7 @@ import { assetHistory } from '@/engine/AssetHistory';
 import { staticMeshAssetAPI } from '@/engine/api/StaticMeshAssetAPI';
 import { GizmoSystem } from '@/engine/GizmoSystem';
 import { buildMeshFaceTriangleIndices } from '@/engine/MeshFaceGeometry';
+import { meshEdgePairFromKey } from '@/engine/MeshEdgeGeometry';
 import { buildFaceNormalLines, buildVertexNormalLines } from '@/engine/MeshNormalGeometry';
 import { editorCommandRegistry, type EditorCommandCapability, type EditorCommandContext } from '@/editor/commands/EditorCommandRegistry';
 import '@/editor/commands/StaticMeshCommandCatalogue';
@@ -1180,6 +1181,91 @@ assert.equal(resolveStaticMeshShells(bevelFixture.asset).length, 1);
 assert.equal(clearStaticMeshTestFixtures(), 1);
 assert.equal(assetManager.getAsset(bevelFixture.assetId), undefined);
 
+// Segmented bevel regression: Segments is the number of polygon strips across
+// the profile, so a five-segment bevel creates five edge faces and six
+// longitudinal profile rails. Profile 0.5 follows Blender's circular default.
+const segmentedBevelFixture = createStaticMeshTestFixture('bevel');
+assert.ok(segmentedBevelFixture.primaryEdgeVertexIds);
+const segmentedBevel = staticMeshAssetAPI.bevelEdge({
+  assetId: segmentedBevelFixture.assetId,
+  vertexAId: segmentedBevelFixture.primaryEdgeVertexIds![0],
+  vertexBId: segmentedBevelFixture.primaryEdgeVertexIds![1],
+  width: 0.25,
+  segments: 5,
+  profile: 0.5,
+});
+assert.equal(segmentedBevel.segments, 5);
+assert.equal(segmentedBevel.profile, 0.5);
+assert.equal(segmentedBevel.bevelFaceIds.length, 5, 'Segments=5 must create five bevel strip faces for one source edge.');
+assert.equal(segmentedBevel.profileEdgeIds.length, 6, 'Segments=5 must create six longitudinal profile rails.');
+assert.equal(segmentedBevelFixture.asset.topology.faces.length, 11, 'A six-face box plus five bevel strips must have eleven logical faces.');
+assert.equal(resolveStaticMeshShells(segmentedBevelFixture.asset).length, 1);
+assert.ok(segmentedBevelFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Segmented bevel must keep the closed box manifold.');
+assert.equal(staticMeshAssetAPI.getHistoryState(segmentedBevelFixture.assetId).undoLabel, 'Bevel Edge');
+assert.equal(staticMeshAssetAPI.undo(segmentedBevelFixture.assetId), true);
+assert.equal(segmentedBevelFixture.asset.topology.faces.length, 6);
+assert.equal(staticMeshAssetAPI.redo(segmentedBevelFixture.assetId), true);
+assert.equal(segmentedBevelFixture.asset.topology.faces.length, 11);
+assert.equal(clearStaticMeshTestFixtures(), 1);
+assert.equal(assetManager.getAsset(segmentedBevelFixture.assetId), undefined);
+
+// Blender-style terminal profile-plane regression. On a skewed prism the
+// selected edge is slanted, but each segmented profile row must terminate in
+// the endpoint-face plane. Without the move_profile_plane-equivalent projection
+// the interior profile samples bow away from y=0 / y=2 even though the two
+// boundary rails themselves are correct.
+const terminalProfilePlaneAsset = staticMeshAssetAPI.create({ name: 'Terminal Profile Plane Bevel Test', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: terminalProfilePlaneAsset.id,
+  points: [
+    { id: 'tp.a', position: { x: -1, y: 0, z: -1 } },
+    { id: 'tp.b', position: { x: 1, y: 0, z: -1 } },
+    { id: 'tp.c', position: { x: 1, y: 0, z: 1 } },
+    { id: 'tp.d', position: { x: -1, y: 0, z: 1 } },
+    { id: 'tp.A', position: { x: -0.2, y: 2, z: -0.7 } },
+    { id: 'tp.B', position: { x: 1.8, y: 2, z: -0.7 } },
+    { id: 'tp.C', position: { x: 1.8, y: 2, z: 1.3 } },
+    { id: 'tp.D', position: { x: -0.2, y: 2, z: 1.3 } },
+  ],
+});
+for (const [id, pointIds] of [
+  ['face:tp.bottom', ['tp.a', 'tp.d', 'tp.c', 'tp.b']],
+  ['face:tp.top', ['tp.A', 'tp.B', 'tp.C', 'tp.D']],
+  ['face:tp.front', ['tp.a', 'tp.b', 'tp.B', 'tp.A']],
+  ['face:tp.right', ['tp.b', 'tp.c', 'tp.C', 'tp.B']],
+  ['face:tp.back', ['tp.c', 'tp.d', 'tp.D', 'tp.C']],
+  ['face:tp.left', ['tp.d', 'tp.a', 'tp.A', 'tp.D']],
+] as const) {
+  staticMeshAssetAPI.createFaceFromPoints({ assetId: terminalProfilePlaneAsset.id, id, pointIds: [...pointIds] });
+}
+const terminalProfilePlaneA = staticMeshAssetAPI.getPoint(terminalProfilePlaneAsset.id, 'tp.a')!.vertexIds![0];
+const terminalProfilePlaneB = staticMeshAssetAPI.getPoint(terminalProfilePlaneAsset.id, 'tp.A')!.vertexIds![0];
+assetManager.updateAsset(terminalProfilePlaneAsset.id, { construction: undefined });
+assetHistory.clear(terminalProfilePlaneAsset.id);
+const terminalProfilePlaneBevel = staticMeshAssetAPI.bevelEdge({
+  assetId: terminalProfilePlaneAsset.id,
+  vertexAId: terminalProfilePlaneA,
+  vertexBId: terminalProfilePlaneB,
+  width: 0.25,
+  segments: 5,
+  profile: 0.5,
+});
+let terminalProfilePlaneMaxError = 0;
+for (const profileEdgeId of terminalProfilePlaneBevel.profileEdgeIds) {
+  const pair = meshEdgePairFromKey(profileEdgeId);
+  assert.ok(pair, `Segmented bevel profile rail '${profileEdgeId}' must decode to a mesh edge.`);
+  const yValues = pair!.map(vertexId => terminalProfilePlaneAsset.geometry.vertices[vertexId * 3 + 1]).sort((a, b) => a - b);
+  terminalProfilePlaneMaxError = Math.max(
+    terminalProfilePlaneMaxError,
+    Math.abs(yValues[0] - 0),
+    Math.abs(yValues[1] - 2),
+  );
+}
+assert.ok(terminalProfilePlaneMaxError <= 1e-6, 'Every segmented terminal profile station must remain in its endpoint-face plane.');
+assert.equal(resolveStaticMeshShells(terminalProfilePlaneAsset).length, 1);
+assert.ok(terminalProfilePlaneAsset.topology.graph?.halfEdges.every(edge => edge.pair !== -1));
+assetManager.deleteAsset(terminalProfilePlaneAsset.id);
+
 const bevelValenceFixture = createStaticMeshTestFixture('bevel-valence');
 assert.equal(bevelValenceFixture.asset.construction, undefined);
 assert.equal(bevelValenceFixture.asset.topology.faces.length, 8);
@@ -1202,6 +1288,213 @@ assert.equal(bevelValenceFixture.asset.construction, undefined);
 assert.ok(bevelValenceFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1));
 assert.equal(clearStaticMeshTestFixtures(), 1);
 assert.equal(assetManager.getAsset(bevelValenceFixture.assetId), undefined);
+
+// Blender terminal-edge regression: the selected edge endpoints do not need
+// matching incident-edge counts. A has only two total connected edges (AB, AC)
+// while B has three (BA, BX, BY). The two non-planar n-gons share AB/AC, so AB
+// still has exactly two incident faces. Blender's edgecount==2 terminal branch
+// creates two face-side points plus one artificial point on AC instead of
+// collapsing both sides to the same neighbor point.
+const asymmetricTerminalAsset = staticMeshAssetAPI.create({ name: 'Asymmetric 2-to-3 Bevel Test', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: asymmetricTerminalAsset.id,
+  points: [
+    { id: 'atA', position: { x: 0, y: 0, z: 0 } },
+    { id: 'atB', position: { x: 2, y: 0, z: 0 } },
+    { id: 'atC', position: { x: 0, y: 2, z: 0 } },
+    { id: 'atX', position: { x: 2, y: 2, z: 1 } },
+    { id: 'atY', position: { x: 2, y: 2, z: -1 } },
+  ],
+});
+staticMeshAssetAPI.createFaceFromPoints({
+  assetId: asymmetricTerminalAsset.id,
+  id: 'face:at.forward',
+  pointIds: ['atA', 'atB', 'atX', 'atC'],
+});
+staticMeshAssetAPI.createFaceFromPoints({
+  assetId: asymmetricTerminalAsset.id,
+  id: 'face:at.reverse',
+  pointIds: ['atB', 'atA', 'atC', 'atY'],
+});
+const atA = staticMeshAssetAPI.getPoint(asymmetricTerminalAsset.id, 'atA')!.vertexIds![0];
+const atB = staticMeshAssetAPI.getPoint(asymmetricTerminalAsset.id, 'atB')!.vertexIds![0];
+assetManager.updateAsset(asymmetricTerminalAsset.id, { construction: undefined });
+assetHistory.clear(asymmetricTerminalAsset.id);
+const logicalVertexDegree = (asset: StaticMeshAsset, vertexId: number): number => {
+  const neighbors = new Set<number>();
+  for (const face of asset.topology.faces) {
+    const index = face.indexOf(vertexId);
+    if (index < 0) continue;
+    neighbors.add(face[(index - 1 + face.length) % face.length]);
+    neighbors.add(face[(index + 1) % face.length]);
+  }
+  return neighbors.size;
+};
+const atADegree = logicalVertexDegree(asymmetricTerminalAsset, atA);
+const atBDegree = logicalVertexDegree(asymmetricTerminalAsset, atB);
+assert.equal(atADegree, 2);
+assert.equal(atBDegree, 3);
+const asymmetricTerminalBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: asymmetricTerminalAsset.id,
+  edges: [{ vertexAId: atA, vertexBId: atB }],
+  width: 0.2,
+});
+assert.equal(asymmetricTerminalBevel.results.length, 1);
+assert.equal(asymmetricTerminalBevel.endpointCapFaceIds.length, 1, 'The valence-2 endpoint needs Blender-style terminal triangle patch.');
+assert.equal(asymmetricTerminalAsset.topology.faces.length, 4, '2 reconstructed faces + bevel strip + terminal triangle.');
+assert.equal(resolveStaticMeshShells(asymmetricTerminalAsset).length, 1);
+assert.equal(asymmetricTerminalAsset.construction, undefined);
+assert.equal(staticMeshAssetAPI.getHistoryState(asymmetricTerminalAsset.id).undoLabel, 'Bevel Edge');
+assetManager.deleteAsset(asymmetricTerminalAsset.id);
+
+// Blender face-chain regression: the selected edge itself is manifold (two
+// faces), but both touched vertices live on OPEN one-rings. At B the face fan
+// continues past one side of the selected edge, so this is not the old simple
+// two-face boundary endpoint. Blender orders the one-face boundary edges as
+// the ends of one face chain and bevels the terminal edge inside that chain.
+const openTerminalFanAsset = staticMeshAssetAPI.create({ name: 'Open Terminal Face Fan Bevel Test', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: openTerminalFanAsset.id,
+  points: [
+    { id: 'ofA', position: { x: 0, y: 0, z: 0 } },
+    { id: 'ofB', position: { x: 2, y: 0, z: 0 } },
+    { id: 'ofX', position: { x: 0.2, y: 1.2, z: 0.2 } },
+    { id: 'ofY', position: { x: 1.8, y: 1.1, z: -0.25 } },
+    { id: 'ofZ', position: { x: 2.7, y: 1.5, z: -0.1 } },
+  ],
+});
+staticMeshAssetAPI.createFaceFromPoints({
+  assetId: openTerminalFanAsset.id,
+  id: 'face:open-fan-0',
+  pointIds: ['ofA', 'ofB', 'ofX'],
+});
+staticMeshAssetAPI.createFaceFromPoints({
+  assetId: openTerminalFanAsset.id,
+  id: 'face:open-fan-1',
+  pointIds: ['ofB', 'ofA', 'ofY'],
+});
+staticMeshAssetAPI.createFaceFromPoints({
+  assetId: openTerminalFanAsset.id,
+  id: 'face:open-fan-2',
+  pointIds: ['ofB', 'ofY', 'ofZ'],
+});
+const openFanA = staticMeshAssetAPI.getPoint(openTerminalFanAsset.id, 'ofA')!.vertexIds![0];
+const openFanB = staticMeshAssetAPI.getPoint(openTerminalFanAsset.id, 'ofB')!.vertexIds![0];
+assetManager.updateAsset(openTerminalFanAsset.id, { construction: undefined });
+assetHistory.clear(openTerminalFanAsset.id);
+const openTerminalFanBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: openTerminalFanAsset.id,
+  edges: [{ vertexAId: openFanA, vertexBId: openFanB }],
+  width: 0.15,
+});
+assert.equal(openTerminalFanBevel.results.length, 1);
+assert.equal(openTerminalFanBevel.cornerFaceIds.length, 1, 'The richer open endpoint should receive one terminal polygon patch.');
+assert.equal(openTerminalFanAsset.topology.faces.length, 5, '3 reconstructed source faces + bevel strip + open-fan corner patch.');
+assert.equal(resolveStaticMeshShells(openTerminalFanAsset).length, 1, 'Open terminal fan must remain one connected Mesh Shell.');
+assert.ok(
+  openTerminalFanAsset.topology.graph?.halfEdges.some(edge => edge.pair === -1),
+  'The test fixture intentionally remains an open surface after beveling.',
+);
+const openTerminalFanFaceCount = openTerminalFanAsset.topology.faces.length;
+assetManager.deleteAsset(openTerminalFanAsset.id);
+
+// Blender M_NONE regression for the common open-box rim: one selected vertical
+// edge has two incident side faces, while its top endpoint is an open degree-3
+// face chain (there is no top face). Segments must subdivide the bevel strip but
+// must NOT turn the two-point terminal boundary into a synthetic cap polygon.
+// The profile samples at the top simply form part of the intentional open rim.
+const openRimNoCapAsset = staticMeshAssetAPI.create({ name: 'Open Rim M_NONE Bevel Test', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: openRimNoCapAsset.id,
+  points: [
+    { id: 'or.a', position: { x: 0, y: 0, z: 0 } },
+    { id: 'or.b', position: { x: 2, y: 0, z: 0 } },
+    { id: 'or.c', position: { x: 2, y: 0, z: 2 } },
+    { id: 'or.d', position: { x: 0, y: 0, z: 2 } },
+    { id: 'or.e', position: { x: 0, y: 2, z: 0 } },
+    { id: 'or.f', position: { x: 2, y: 2, z: 0 } },
+    { id: 'or.g', position: { x: 2, y: 2, z: 2 } },
+    { id: 'or.h', position: { x: 0, y: 2, z: 2 } },
+  ],
+});
+for (const [id, pointIds] of [
+  ['face:or.bottom', ['or.a', 'or.d', 'or.c', 'or.b']],
+  ['face:or.front', ['or.a', 'or.b', 'or.f', 'or.e']],
+  ['face:or.right', ['or.b', 'or.c', 'or.g', 'or.f']],
+  ['face:or.back', ['or.d', 'or.h', 'or.g', 'or.c']],
+  ['face:or.left', ['or.a', 'or.e', 'or.h', 'or.d']],
+] as const) {
+  staticMeshAssetAPI.createFaceFromPoints({ assetId: openRimNoCapAsset.id, id, pointIds: [...pointIds] });
+}
+const openRimBottom = staticMeshAssetAPI.getPoint(openRimNoCapAsset.id, 'or.a')!.vertexIds![0];
+const openRimTop = staticMeshAssetAPI.getPoint(openRimNoCapAsset.id, 'or.e')!.vertexIds![0];
+assetManager.updateAsset(openRimNoCapAsset.id, { construction: undefined });
+assetHistory.clear(openRimNoCapAsset.id);
+const openRimNoCapBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: openRimNoCapAsset.id,
+  edges: [{ vertexAId: openRimBottom, vertexBId: openRimTop }],
+  width: 0.2,
+  segments: 5,
+  profile: 0.5,
+});
+assert.equal(openRimNoCapBevel.bevelFaceIds.length, 5, 'Segments=5 should create five longitudinal bevel strips.');
+assert.equal(openRimNoCapBevel.cornerFaceIds.length, 0, 'A two-boundary-point M_NONE terminal must not gain a cap when profile samples are added.');
+assert.equal(openRimNoCapAsset.topology.faces.length, 10, '5 reconstructed source faces + 5 profile strips; no terminal corner face.');
+assert.equal(resolveStaticMeshShells(openRimNoCapAsset).length, 1, 'Open-rim bevel must remain one connected Mesh Shell.');
+assert.ok(
+  openRimNoCapAsset.topology.graph?.halfEdges.some(edge => edge.pair === -1),
+  'The open box rim must remain an intentional mesh boundary after beveling.',
+);
+const openRimNoCapFaceCount = openRimNoCapAsset.topology.faces.length;
+assetManager.deleteAsset(openRimNoCapAsset.id);
+
+// Blender M_TRI_FAN regression: a single selected edge reaches a terminal
+// vertex with three effective VMesh boundary verts (two profile sides plus one
+// extra point on a non-adjacent unselected edge). With Segments > 1 Blender
+// materializes a triangle fan, so every intermediate profile sample gets a
+// real radial edge to the terminal apex. A single n-gon cap is topologically
+// valid but visibly wrong because those authored fan edges are missing.
+const segmentedTerminalTriFanAsset = staticMeshAssetAPI.create({ name: 'Segmented Terminal TRI_FAN Bevel Test', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: segmentedTerminalTriFanAsset.id,
+  points: [
+    { id: 'tf.a', position: { x: 0, y: 0, z: 0 } },
+    { id: 'tf.b', position: { x: 2, y: 0, z: 0 } },
+    { id: 'tf.u1', position: { x: 0, y: 1, z: 0 } },
+    { id: 'tf.u2', position: { x: 0, y: 1, z: 1 } },
+    { id: 'tf.u3', position: { x: 0, y: 0, z: 1 } },
+  ],
+});
+for (const [id, pointIds] of [
+  ['face:tf.0', ['tf.a', 'tf.b', 'tf.u1']],
+  ['face:tf.1', ['tf.a', 'tf.u1', 'tf.u2']],
+  ['face:tf.2', ['tf.a', 'tf.u2', 'tf.u3']],
+  ['face:tf.3', ['tf.b', 'tf.a', 'tf.u3']],
+] as const) {
+  staticMeshAssetAPI.createFaceFromPoints({ assetId: segmentedTerminalTriFanAsset.id, id, pointIds: [...pointIds] });
+}
+const triFanA = staticMeshAssetAPI.getPoint(segmentedTerminalTriFanAsset.id, 'tf.a')!.vertexIds![0];
+const triFanB = staticMeshAssetAPI.getPoint(segmentedTerminalTriFanAsset.id, 'tf.b')!.vertexIds![0];
+assetManager.updateAsset(segmentedTerminalTriFanAsset.id, { construction: undefined });
+assetHistory.clear(segmentedTerminalTriFanAsset.id);
+const segmentedTerminalTriFanBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: segmentedTerminalTriFanAsset.id,
+  edges: [{ vertexAId: triFanA, vertexBId: triFanB }],
+  width: 0.2,
+  segments: 3,
+  profile: 0.5,
+});
+assert.equal(segmentedTerminalTriFanBevel.bevelFaceIds.length, 3, 'Segments=3 should create three longitudinal bevel strips.');
+assert.equal(segmentedTerminalTriFanBevel.cornerFaceIds.length, 3, 'A three-boundary terminal with Segments=3 must create three TRI_FAN faces.');
+assert.equal(segmentedTerminalTriFanBevel.endpointCapFaceIds.length, 3, 'All terminal fan triangles must be exposed as endpoint cap faces.');
+const triFanFaces = segmentedTerminalTriFanBevel.cornerFaceIds.map(faceId => segmentedTerminalTriFanAsset.topology.faces[faceId]);
+assert.ok(triFanFaces.every(face => face.length === 3), 'Segmented terminal TRI_FAN must materialize authored triangles, not one n-gon cap.');
+const commonTriFanVertices = triFanFaces[0].filter(vertexId => triFanFaces.every(face => face.includes(vertexId)));
+assert.equal(commonTriFanVertices.length, 1, 'All terminal TRI_FAN triangles must share exactly one fan apex.');
+assert.equal(segmentedTerminalTriFanAsset.topology.faces.length, 10, '4 reconstructed source faces + 3 bevel strips + 3 terminal fan triangles.');
+assert.equal(resolveStaticMeshShells(segmentedTerminalTriFanAsset).length, 1, 'Segmented terminal fan must remain one connected Mesh Shell.');
+const segmentedTerminalTriFanFaceCount = segmentedTerminalTriFanBevel.cornerFaceIds.length;
+assetManager.deleteAsset(segmentedTerminalTriFanAsset.id);
 
 const extrudeNormalFixture = createStaticMeshTestFixture('extrude-normal');
 assert.equal(extrudeNormalFixture.asset.construction, undefined);
@@ -1419,6 +1712,711 @@ assert.equal(multiBevelAsset.topology.faces.length, 6);
 assert.equal(staticMeshAssetAPI.redo(multiBevelAsset.id), true);
 assert.equal(multiBevelAsset.topology.faces.length, 10);
 
+const findMeshVertexAt = (asset: StaticMeshAsset, x: number, y: number, z: number): number => {
+  const vertexCount = asset.geometry.vertices.length / 3;
+  for (let vertexId = 0; vertexId < vertexCount; vertexId += 1) {
+    const offset = vertexId * 3;
+    if (
+      Math.abs(asset.geometry.vertices[offset] - x) <= 1e-6
+      && Math.abs(asset.geometry.vertices[offset + 1] - y) <= 1e-6
+      && Math.abs(asset.geometry.vertices[offset + 2] - z) <= 1e-6
+    ) return vertexId;
+  }
+  throw new Error(`Could not find fixture vertex at (${x}, ${y}, ${z}).`);
+};
+
+// More common closed-manifold asymmetric valence: one end of the vertical cube
+// edge keeps degree 3 while a diagonal cut raises the other end to degree 4.
+const asymmetricValenceFixture = createStaticMeshTestFixture('box');
+const avBottom = findMeshVertexAt(asymmetricValenceFixture.asset, -2, 0, -2);
+const avTop = findMeshVertexAt(asymmetricValenceFixture.asset, -2, 2, -2);
+const avTopOpposite = findMeshVertexAt(asymmetricValenceFixture.asset, 2, 2, 2);
+staticMeshAssetAPI.cutFace({
+  assetId: asymmetricValenceFixture.assetId,
+  faceId: asymmetricValenceFixture.primaryFaceId!,
+  vertexAId: avTop,
+  vertexBId: avTopOpposite,
+});
+const avBottomDegree = logicalVertexDegree(asymmetricValenceFixture.asset, avBottom);
+const avTopDegree = logicalVertexDegree(asymmetricValenceFixture.asset, avTop);
+assert.equal(avBottomDegree, 3);
+assert.equal(avTopDegree, 4);
+const asymmetricValenceBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: asymmetricValenceFixture.assetId,
+  edges: [{ vertexAId: avBottom, vertexBId: avTop }],
+  width: 0.2,
+});
+assert.equal(asymmetricValenceBevel.results.length, 1);
+assert.equal(asymmetricValenceBevel.endpointCapFaceIds.length, 1, 'Only the degree-4 endpoint should need a polygon cap.');
+assert.equal(resolveStaticMeshShells(asymmetricValenceFixture.asset).length, 1);
+assert.ok(asymmetricValenceFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Closed asymmetric 3-to-4 bevel must remain manifold.');
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Selected-edge-count asymmetry regression: the shared edge A-D has two
+// selected edges meeting at A, but three selected edges meeting at D. Blender
+// keeps selcount per BevVert, so the two endpoints must be solved independently.
+const asymmetricSelectedFixture = createStaticMeshTestFixture('box');
+const asA = findMeshVertexAt(asymmetricSelectedFixture.asset, -2, 0, -2);
+const asD = findMeshVertexAt(asymmetricSelectedFixture.asset, -2, 0, 2);
+const asB = findMeshVertexAt(asymmetricSelectedFixture.asset, 2, 0, -2);
+const asC = findMeshVertexAt(asymmetricSelectedFixture.asset, 2, 0, 2);
+const asTopD = findMeshVertexAt(asymmetricSelectedFixture.asset, -2, 2, 2);
+const asymmetricSelectedBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: asymmetricSelectedFixture.assetId,
+  edges: [
+    { vertexAId: asA, vertexBId: asD },
+    { vertexAId: asA, vertexBId: asB },
+    { vertexAId: asD, vertexBId: asC },
+    { vertexAId: asD, vertexBId: asTopD },
+  ],
+  width: 0.2,
+});
+assert.equal(asymmetricSelectedBevel.results.length, 4);
+assert.equal(asymmetricSelectedBevel.cornerFaceIds.length, 1, 'Only the selcount=3 endpoint should require a corner patch.');
+assert.equal(resolveStaticMeshShells(asymmetricSelectedFixture.asset).length, 1);
+assert.ok(asymmetricSelectedFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Selected-count 2-to-3 bevel must remain manifold.');
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Connected bevel regression: two selected cube edges share A. This selection
+// was rejected by the old batch API because repeated single-edge mutation would
+// double-offset the common endpoint. The joint planner must solve A once.
+const connectedTwoFixture = createStaticMeshTestFixture('box');
+const c2A = findMeshVertexAt(connectedTwoFixture.asset, -2, 0, -2);
+const c2D = findMeshVertexAt(connectedTwoFixture.asset, -2, 0, 2);
+const c2B = findMeshVertexAt(connectedTwoFixture.asset, 2, 0, -2);
+const connectedTwoBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: connectedTwoFixture.assetId,
+  edges: [
+    { vertexAId: c2A, vertexBId: c2D },
+    { vertexAId: c2A, vertexBId: c2B },
+  ],
+  width: 0.25,
+});
+assert.equal(connectedTwoBevel.results.length, 2);
+assert.equal(connectedTwoBevel.bevelFaceIds.length, 2);
+assert.equal(connectedTwoBevel.cornerFaceIds.length, 0, 'Two selected edges at a cube corner should weld directly without a separate VMesh cap.');
+assert.equal(connectedTwoFixture.asset.topology.faces.length, 8);
+assert.equal(connectedTwoFixture.asset.construction, undefined);
+assert.equal(resolveStaticMeshShells(connectedTwoFixture.asset).length, 1);
+assert.ok(connectedTwoFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Two-edge connected bevel must remain a closed manifold.');
+const connectedTwoFaceCount = connectedTwoFixture.asset.topology.faces.length;
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Three selected edges at A require the first real corner VMesh patch: one
+// triangular cap shared by all three edge strips.
+const connectedThreeFixture = createStaticMeshTestFixture('box');
+const c3A = findMeshVertexAt(connectedThreeFixture.asset, -2, 0, -2);
+const c3D = findMeshVertexAt(connectedThreeFixture.asset, -2, 0, 2);
+const c3B = findMeshVertexAt(connectedThreeFixture.asset, 2, 0, -2);
+const c3TopA = findMeshVertexAt(connectedThreeFixture.asset, -2, 2, -2);
+const connectedThreeBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: connectedThreeFixture.assetId,
+  edges: [
+    { vertexAId: c3A, vertexBId: c3D },
+    { vertexAId: c3A, vertexBId: c3B },
+    { vertexAId: c3A, vertexBId: c3TopA },
+  ],
+  width: 0.25,
+});
+assert.equal(connectedThreeBevel.results.length, 3);
+assert.equal(connectedThreeBevel.cornerFaceIds.length, 1, 'Three selected edges at one cube corner require one triangular corner patch.');
+assert.equal(connectedThreeBevel.endpointCapFaceIds.length, 1);
+assert.equal(connectedThreeFixture.asset.topology.faces.length, 10);
+assert.equal(resolveStaticMeshShells(connectedThreeFixture.asset).length, 1);
+assert.ok(connectedThreeFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Three-edge connected bevel must remain a closed manifold.');
+const connectedThreeFaceCount = connectedThreeFixture.asset.topology.faces.length;
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Valence-4 regression: combine the fixture's high-valence vertical edge with
+// one adjacent edge from the same endpoint fan. This exercises a general corner
+// boundary rather than only the cube's ordinary valence-3 vertices.
+const connectedValenceFixture = createStaticMeshTestFixture('bevel-valence');
+const [cvA, cvB] = connectedValenceFixture.primaryEdgeVertexIds!;
+const cvSharedFace = connectedValenceFixture.asset.topology.faces.find(face => face.includes(cvA) && face.includes(cvB));
+assert.ok(cvSharedFace);
+const cvAIndex = cvSharedFace.indexOf(cvA);
+const cvPrevious = cvSharedFace[(cvAIndex - 1 + cvSharedFace.length) % cvSharedFace.length];
+const cvNext = cvSharedFace[(cvAIndex + 1) % cvSharedFace.length];
+const cvNeighbor = cvPrevious === cvB ? cvNext : cvPrevious;
+assert.notEqual(cvNeighbor, cvB);
+const connectedValenceBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: connectedValenceFixture.assetId,
+  edges: [
+    { vertexAId: cvA, vertexBId: cvB },
+    { vertexAId: cvA, vertexBId: cvNeighbor },
+  ],
+  width: 0.15,
+});
+assert.equal(connectedValenceBevel.results.length, 2);
+assert.ok(connectedValenceBevel.cornerFaceIds.length >= 1, 'Valence-4 connected bevel should generate at least one general corner patch.');
+assert.equal(resolveStaticMeshShells(connectedValenceFixture.asset).length, 1);
+assert.ok(connectedValenceFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Valence-4 connected bevel must remain a closed manifold.');
+const connectedValenceCornerCount = connectedValenceBevel.cornerFaceIds.length;
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// A complete four-edge bottom loop has shared endpoints at every corner. It
+// should be solved as one network, with each valence-2 selected corner welded.
+const connectedLoopFixture = createStaticMeshTestFixture('box');
+const clA = findMeshVertexAt(connectedLoopFixture.asset, -2, 0, -2);
+const clD = findMeshVertexAt(connectedLoopFixture.asset, -2, 0, 2);
+const clC = findMeshVertexAt(connectedLoopFixture.asset, 2, 0, 2);
+const clB = findMeshVertexAt(connectedLoopFixture.asset, 2, 0, -2);
+const connectedLoopBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: connectedLoopFixture.assetId,
+  edges: [
+    { vertexAId: clA, vertexBId: clD },
+    { vertexAId: clD, vertexBId: clC },
+    { vertexAId: clC, vertexBId: clB },
+    { vertexAId: clB, vertexBId: clA },
+  ],
+  width: 0.25,
+});
+assert.equal(connectedLoopBevel.results.length, 4);
+assert.equal(connectedLoopBevel.cornerFaceIds.length, 0);
+assert.equal(connectedLoopFixture.asset.topology.faces.length, 10);
+assert.equal(resolveStaticMeshShells(connectedLoopFixture.asset).length, 1);
+assert.ok(connectedLoopFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Connected bevel loop must remain a closed manifold.');
+const connectedLoopFaceCount = connectedLoopFixture.asset.topology.faces.length;
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Segmented connected-loop smoke test: profile subdivision must preserve the
+// joint corner ownership rules instead of treating each selected edge as an
+// independent chamfer.
+const segmentedLoopFixture = createStaticMeshTestFixture('box');
+const slA = findMeshVertexAt(segmentedLoopFixture.asset, -2, 0, -2);
+const slD = findMeshVertexAt(segmentedLoopFixture.asset, -2, 0, 2);
+const slC = findMeshVertexAt(segmentedLoopFixture.asset, 2, 0, 2);
+const slB = findMeshVertexAt(segmentedLoopFixture.asset, 2, 0, -2);
+const segmentedLoopBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: segmentedLoopFixture.assetId,
+  edges: [
+    { vertexAId: slA, vertexBId: slD },
+    { vertexAId: slD, vertexBId: slC },
+    { vertexAId: slC, vertexBId: slB },
+    { vertexAId: slB, vertexBId: slA },
+  ],
+  width: 0.25,
+  segments: 3,
+  profile: 0.3,
+});
+assert.equal(segmentedLoopBevel.bevelFaceIds.length, 12);
+assert.equal(segmentedLoopBevel.bevelEdgeIds.length, 16);
+assert.equal(
+  segmentedLoopBevel.cornerFaceIds.length,
+  0,
+  'A face-loop corner with selcount=2 and two effective BoundVerts is Blender M_NONE/weld, not a segmented cap.',
+);
+assert.equal(
+  segmentedLoopFixture.asset.topology.faces.length,
+  18,
+  '6 reconstructed cube faces + 4 source edges x 3 strips; the four loop corners add no cap faces.',
+);
+assert.equal(resolveStaticMeshShells(segmentedLoopFixture.asset).length, 1);
+assert.ok(segmentedLoopFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Segmented connected loop must remain manifold.');
+const segmentedLoopFaceCount = segmentedLoopFixture.asset.topology.faces.length;
+const segmentedLoopCornerFaceCount = segmentedLoopBevel.cornerFaceIds.length;
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// General segmented-corner regression captured from the editor/Blender
+// comparison: three selected cube edges meet at one vertex with Segments=3,
+// Profile=.3, Width=.25. The shared corner must use M_ADJ instead of one
+// triangulated/pole-style cap. For odd Segments=3 this is six quads plus a
+// center triangle; the three remote single-selected endpoints remain M_NONE.
+const segmentedAdjFixture = createStaticMeshTestFixture('box');
+const saA = findMeshVertexAt(segmentedAdjFixture.asset, -2, 0, -2);
+const saD = findMeshVertexAt(segmentedAdjFixture.asset, -2, 0, 2);
+const saB = findMeshVertexAt(segmentedAdjFixture.asset, 2, 0, -2);
+const saTopA = findMeshVertexAt(segmentedAdjFixture.asset, -2, 2, -2);
+const segmentedAdjBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: segmentedAdjFixture.assetId,
+  edges: [
+    { vertexAId: saA, vertexBId: saD },
+    { vertexAId: saA, vertexBId: saB },
+    { vertexAId: saA, vertexBId: saTopA },
+  ],
+  width: 0.25,
+  segments: 3,
+  profile: 0.3,
+});
+assert.equal(segmentedAdjBevel.bevelFaceIds.length, 9, 'Three source edges x Segments=3 must create nine strip faces.');
+assert.equal(segmentedAdjBevel.cornerFaceIds.length, 7, 'The shared Segments=3 corner must materialize seven M_ADJ cells.');
+const segmentedAdjCornerFaces = segmentedAdjBevel.cornerFaceIds.map(faceId => segmentedAdjFixture.asset.topology.faces[faceId]);
+assert.equal(segmentedAdjCornerFaces.filter(face => face.length === 4).length, 6, 'M_ADJ Segments=3 corner must have six ring quads.');
+assert.equal(segmentedAdjCornerFaces.filter(face => face.length === 3).length, 1, 'Odd Segments=3 M_ADJ corner must have one center triangle.');
+assert.equal(segmentedAdjFixture.asset.topology.faces.length, 22, '6 reconstructed faces + 9 strips + 7 M_ADJ cells.');
+assert.equal(resolveStaticMeshShells(segmentedAdjFixture.asset).length, 1);
+assert.ok(segmentedAdjFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'M_ADJ Segments=3 corner must remain a closed manifold.');
+const segmentedAdjCornerFaceCount = segmentedAdjBevel.cornerFaceIds.length;
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Even-segment M_ADJ parity regression: Segments=4 converges to one shared
+// center vertex and therefore needs only quads (no odd-parity center n-gon).
+const segmentedAdjEvenFixture = createStaticMeshTestFixture('box');
+const saeA = findMeshVertexAt(segmentedAdjEvenFixture.asset, -2, 0, -2);
+const saeD = findMeshVertexAt(segmentedAdjEvenFixture.asset, -2, 0, 2);
+const saeB = findMeshVertexAt(segmentedAdjEvenFixture.asset, 2, 0, -2);
+const saeTopA = findMeshVertexAt(segmentedAdjEvenFixture.asset, -2, 2, -2);
+const segmentedAdjEvenBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: segmentedAdjEvenFixture.assetId,
+  edges: [
+    { vertexAId: saeA, vertexBId: saeD },
+    { vertexAId: saeA, vertexBId: saeB },
+    { vertexAId: saeA, vertexBId: saeTopA },
+  ],
+  width: 0.25,
+  segments: 4,
+  profile: 0.3,
+});
+assert.equal(segmentedAdjEvenBevel.bevelFaceIds.length, 12);
+assert.equal(segmentedAdjEvenBevel.cornerFaceIds.length, 12, 'Three-sector Segments=4 M_ADJ corner should contain twelve quads.');
+const segmentedAdjEvenCornerFaces = segmentedAdjEvenBevel.cornerFaceIds.map(faceId => segmentedAdjEvenFixture.asset.topology.faces[faceId]);
+assert.ok(segmentedAdjEvenCornerFaces.every(face => face.length === 4), 'Even-segment M_ADJ must converge through quads without a center n-gon.');
+assert.equal(segmentedAdjEvenFixture.asset.topology.faces.length, 30, '6 reconstructed faces + 12 strips + 12 M_ADJ quads.');
+assert.equal(resolveStaticMeshShells(segmentedAdjEvenFixture.asset).length, 1);
+assert.ok(segmentedAdjEvenFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Even-segment M_ADJ corner must remain manifold.');
+const segmentedAdjEvenCornerFaceCount = segmentedAdjEvenBevel.cornerFaceIds.length;
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Full cube bevel regression: every one of the 12 manifold edges is selected.
+// Each of the 8 cube vertices has selcount=3, so this is the compact test for
+// the classic Blender-style "bevel the whole cube" operation.
+const fullCubeFixture = createStaticMeshTestFixture('box');
+const fullCubeEdgesByKey = new Map<string, { vertexAId: number; vertexBId: number }>();
+for (const face of fullCubeFixture.asset.topology.faces) {
+  for (let index = 0; index < face.length; index += 1) {
+    const vertexAId = face[index];
+    const vertexBId = face[(index + 1) % face.length];
+    const key = vertexAId < vertexBId ? `${vertexAId}:${vertexBId}` : `${vertexBId}:${vertexAId}`;
+    if (!fullCubeEdgesByKey.has(key)) fullCubeEdgesByKey.set(key, { vertexAId, vertexBId });
+  }
+}
+assert.equal(fullCubeEdgesByKey.size, 12);
+const fullCubeBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: fullCubeFixture.assetId,
+  edges: Array.from(fullCubeEdgesByKey.values()),
+  width: 0.2,
+});
+assert.equal(fullCubeBevel.results.length, 12);
+assert.equal(fullCubeBevel.cornerFaceIds.length, 8, 'Full one-segment cube bevel needs one triangular patch at every original corner.');
+assert.equal(fullCubeFixture.asset.topology.faces.length, 26, '6 reconstructed faces + 12 edge strips + 8 corner patches.');
+assert.equal(resolveStaticMeshShells(fullCubeFixture.asset).length, 1);
+assert.ok(fullCubeFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Full cube bevel must remain a closed manifold.');
+const fullCubeFaceCount = fullCubeFixture.asset.topology.faces.length;
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Segmented full-cube regression: every selected edge receives `segments`
+// strip faces and every three-way shared corner is a structured M_ADJ VMesh.
+// With Segments=3, Blender's odd-parity ring pattern gives six quads plus one
+// center triangle per cube corner (7 authored corner faces x 8 corners).
+const segmentedCubeFixture = createStaticMeshTestFixture('box');
+const segmentedCubeEdgesByKey = new Map<string, { vertexAId: number; vertexBId: number }>();
+for (const face of segmentedCubeFixture.asset.topology.faces) {
+  for (let index = 0; index < face.length; index += 1) {
+    const vertexAId = face[index];
+    const vertexBId = face[(index + 1) % face.length];
+    const key = vertexAId < vertexBId ? `${vertexAId}:${vertexBId}` : `${vertexBId}:${vertexAId}`;
+    if (!segmentedCubeEdgesByKey.has(key)) segmentedCubeEdgesByKey.set(key, { vertexAId, vertexBId });
+  }
+}
+const segmentedCubeBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: segmentedCubeFixture.assetId,
+  edges: Array.from(segmentedCubeEdgesByKey.values()),
+  width: 0.2,
+  segments: 3,
+  profile: 0.5,
+});
+assert.equal(segmentedCubeBevel.results.length, 12);
+assert.equal(segmentedCubeBevel.bevelFaceIds.length, 36, '12 source edges x Segments=3 must create 36 bevel strip faces.');
+assert.equal(segmentedCubeBevel.cornerFaceIds.length, 56, 'Segments=3 full-cube bevel needs 7 M_ADJ cells at each of 8 original corners.');
+assert.equal(segmentedCubeFixture.asset.topology.faces.length, 98, '6 reconstructed faces + 36 edge strips + 56 M_ADJ corner cells.');
+const segmentedCubeCornerFaces = segmentedCubeBevel.cornerFaceIds.map(faceId => segmentedCubeFixture.asset.topology.faces[faceId]);
+assert.equal(segmentedCubeCornerFaces.filter(face => face.length === 4).length, 48, 'Each Segments=3 M_ADJ cube corner needs six quads.');
+assert.equal(segmentedCubeCornerFaces.filter(face => face.length === 3).length, 8, 'Each odd-segment M_ADJ cube corner needs one center triangle.');
+assert.equal(resolveStaticMeshShells(segmentedCubeFixture.asset).length, 1);
+assert.ok(segmentedCubeFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Segmented full cube must remain a closed manifold.');
+const segmentedCubeFaceCount = segmentedCubeFixture.asset.topology.faces.length;
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Repeated bevel regression: after one ordinary edge bevel the two source
+// faces are already 5-gons and the editor selects the two new longitudinal
+// rails. Blender solves those disconnected rails as one bevel graph. Repeating
+// the command must therefore clamp the whole selection instead of sending each
+// rail through the old fixed-distance single-edge path (which used to fail on
+// pass 2 with "width is too large for one of the neighboring edges").
+const repeatedBevelFixture = createStaticMeshTestFixture('bevel');
+let repeatedEdges = [{
+  vertexAId: repeatedBevelFixture.primaryEdgeVertexIds![0],
+  vertexBId: repeatedBevelFixture.primaryEdgeVertexIds![1],
+}];
+const repeatedPass1 = staticMeshAssetAPI.bevelEdges({
+  assetId: repeatedBevelFixture.assetId,
+  edges: repeatedEdges,
+  width: 0.15,
+});
+assert.ok(repeatedBevelFixture.asset.topology.faces.some(face => face.length === 5), 'First bevel should reconstruct source quads as n-gons.');
+repeatedEdges = repeatedPass1.bevelEdgeIds.map(edgeId => {
+  const [vertexAId, vertexBId] = edgeId.split('-').map(Number);
+  return { vertexAId, vertexBId };
+});
+const repeatedPass2 = staticMeshAssetAPI.bevelEdges({
+  assetId: repeatedBevelFixture.assetId,
+  edges: repeatedEdges,
+  width: 0.15,
+});
+assert.equal(repeatedPass2.clamped, true, 'Second bevel over the generated rails should clamp as one network.');
+assert.ok(repeatedBevelFixture.asset.topology.faces.some(face => face.length >= 7), 'Second bevel should preserve larger reconstructed n-gons.');
+repeatedEdges = repeatedPass2.bevelEdgeIds.map(edgeId => {
+  const [vertexAId, vertexBId] = edgeId.split('-').map(Number);
+  return { vertexAId, vertexBId };
+});
+const repeatedPass3 = staticMeshAssetAPI.bevelEdges({
+  assetId: repeatedBevelFixture.assetId,
+  edges: repeatedEdges,
+  width: 0.15,
+});
+assert.equal(repeatedPass3.clamped, true);
+assert.ok(repeatedBevelFixture.asset.topology.faces.some(face => face.length >= 11), 'Third bevel should remain valid with 10+ vertex source n-gons.');
+assert.equal(resolveStaticMeshShells(repeatedBevelFixture.asset).length, 1);
+assert.ok(repeatedBevelFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Repeated n-gon bevel must remain a closed manifold.');
+assert.equal(staticMeshAssetAPI.getHistoryState(repeatedBevelFixture.assetId).undoLabel, 'Bevel Edges');
+const repeatedNgonMaxVertices = Math.max(...repeatedBevelFixture.asset.topology.faces.map(face => face.length));
+const repeatedEffectiveWidth = repeatedPass3.width;
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Non-planar/reflex bevel regression: the whole logical face normal is not a
+// stable offset plane for a strongly warped corner. The former solver could
+// report a parallel terminal corner or put the offset meeting point behind the
+// neighboring edge. Blender's offset_meet instead uses the local incident-edge
+// plane and treats out-of-segment zero-offset meets as endpoint fallbacks.
+const warpedBevelAsset = staticMeshAssetAPI.create({ name: 'Warped Reflex Bevel Test', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: warpedBevelAsset.id,
+  points: [
+    { id: 'wb0', position: { x: 0, y: 0, z: 0 } },
+    { id: 'wb1', position: { x: 2, y: 0, z: 0 } },
+    { id: 'wb2', position: { x: 2, y: 0, z: 2 } },
+    { id: 'wb3', position: { x: 0, y: 0, z: 2 } },
+    { id: 'wb4', position: { x: -1.4, y: 0.46, z: 1.84 } },
+    { id: 'wb5', position: { x: 2.69, y: 0.4, z: 2.88 } },
+    { id: 'wb6', position: { x: 2.82, y: 2.39, z: 2.55 } },
+    { id: 'wb7', position: { x: -0.85, y: 0.61, z: 0.59 } },
+  ],
+});
+for (const [id, pointIds] of [
+  ['face:wb.bottom', ['wb0', 'wb3', 'wb2', 'wb1']],
+  ['face:wb.top', ['wb4', 'wb5', 'wb6', 'wb7']],
+  ['face:wb.front', ['wb0', 'wb1', 'wb5', 'wb4']],
+  ['face:wb.right', ['wb1', 'wb2', 'wb6', 'wb5']],
+  ['face:wb.back', ['wb2', 'wb3', 'wb7', 'wb6']],
+  ['face:wb.left', ['wb3', 'wb0', 'wb4', 'wb7']],
+] as const) {
+  staticMeshAssetAPI.createFaceFromPoints({ assetId: warpedBevelAsset.id, id, pointIds: [...pointIds] });
+}
+const warpedStart = staticMeshAssetAPI.getPoint(warpedBevelAsset.id, 'wb7')!.vertexIds![0];
+const warpedEnd = staticMeshAssetAPI.getPoint(warpedBevelAsset.id, 'wb4')!.vertexIds![0];
+assetManager.updateAsset(warpedBevelAsset.id, { construction: undefined });
+assetHistory.clear(warpedBevelAsset.id);
+const warpedBevelResult = staticMeshAssetAPI.bevelEdges({
+  assetId: warpedBevelAsset.id,
+  edges: [{ vertexAId: warpedStart, vertexBId: warpedEnd }],
+  width: 0.35,
+});
+assert.equal(warpedBevelResult.results.length, 1);
+assert.equal(resolveStaticMeshShells(warpedBevelAsset).length, 1, 'Warped bevel must stay in one shell.');
+assert.ok(warpedBevelAsset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Warped bevel must remain manifold.');
+assert.ok(warpedBevelAsset.topology.faces.some(face => face.length === 5), 'Warped source faces should rebuild as valid n-gons.');
+assert.equal(warpedBevelAsset.geometry.indices.length % 3, 0);
+assert.equal(staticMeshAssetAPI.getHistoryState(warpedBevelAsset.id).undoLabel, 'Bevel Edge');
+const warpedBevelFaceCount = warpedBevelAsset.topology.faces.length;
+assetManager.deleteAsset(warpedBevelAsset.id);
+
+// Flared/obtuse selected-edge regression. Both endpoint side edges move away
+// from the selected edge's longitudinal interval, so the valid bevel boundary
+// projects behind the original endpoint. Blender permits this: negative
+// longitudinal projection is not itself an inversion; only positive progress
+// toward the opposite endpoint consumes overlap room. The previous joint
+// planner rejected this exact class with "invert along the selected edge".
+const flaredBevelAsset = staticMeshAssetAPI.create({ name: 'Flared Endpoint Bevel Test', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: flaredBevelAsset.id,
+  points: [
+    { id: 'fb.a', position: { x: 0, y: 0, z: 0 } },
+    { id: 'fb.b', position: { x: 4, y: 0, z: 0 } },
+    { id: 'fb.c', position: { x: 5, y: 2, z: 0 } },
+    { id: 'fb.d', position: { x: -1, y: 2, z: 0 } },
+    { id: 'fb.e', position: { x: -1, y: 0, z: 2 } },
+    { id: 'fb.f', position: { x: 5, y: 0, z: 2 } },
+    { id: 'fb.g', position: { x: 6, y: 2, z: 2 } },
+    { id: 'fb.h', position: { x: -2, y: 2, z: 2 } },
+  ],
+});
+for (const [id, pointIds] of [
+  ['face:fb.bottom', ['fb.a', 'fb.d', 'fb.c', 'fb.b']],
+  ['face:fb.front', ['fb.a', 'fb.b', 'fb.f', 'fb.e']],
+  ['face:fb.right', ['fb.b', 'fb.c', 'fb.g', 'fb.f']],
+  ['face:fb.back', ['fb.d', 'fb.h', 'fb.g', 'fb.c']],
+  ['face:fb.left', ['fb.a', 'fb.e', 'fb.h', 'fb.d']],
+  ['face:fb.top', ['fb.e', 'fb.f', 'fb.g', 'fb.h']],
+] as const) {
+  staticMeshAssetAPI.createFaceFromPoints({ assetId: flaredBevelAsset.id, id, pointIds: [...pointIds] });
+}
+const flaredStart = staticMeshAssetAPI.getPoint(flaredBevelAsset.id, 'fb.a')!.vertexIds![0];
+const flaredEnd = staticMeshAssetAPI.getPoint(flaredBevelAsset.id, 'fb.b')!.vertexIds![0];
+assetManager.updateAsset(flaredBevelAsset.id, { construction: undefined });
+assetHistory.clear(flaredBevelAsset.id);
+const flaredBevelResult = staticMeshAssetAPI.bevelEdges({
+  assetId: flaredBevelAsset.id,
+  edges: [{ vertexAId: flaredStart, vertexBId: flaredEnd }],
+  width: 0.25,
+});
+assert.equal(flaredBevelResult.clamped, false, 'A flared endpoint should not be mistaken for selected-edge overlap.');
+assertNearlyEqual(flaredBevelResult.width, 0.25, 'Flared endpoint bevel should preserve the requested width.');
+assert.equal(flaredBevelResult.bevelFaceIds.length, 1);
+assert.equal(flaredBevelAsset.topology.faces.length, 7);
+assert.equal(resolveStaticMeshShells(flaredBevelAsset).length, 1, 'Flared endpoint bevel must stay in one shell.');
+assert.ok(flaredBevelAsset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Flared endpoint bevel must remain manifold.');
+const flaredBevelWidth = flaredBevelResult.width;
+assetManager.deleteAsset(flaredBevelAsset.id);
+
+// Straight-terminal regression. This is a common post-modeling topology: one
+// side of the selected edge ends at a boundary vertex that merely subdivides a
+// straight logical face edge, while the other side has a real branch/loop.
+// Blender's selcount==1 terminal path keeps a perpendicular offset point at the
+// collinear side; it does not collapse that bevel rail back to the source
+// vertex. Collapsing here makes the strip taper to zero and can leave coincident
+// vertices after repeated edits.
+const straightTerminalPoints: Array<{ id: string; position: { x: number; y: number; z: number } }> = [];
+for (const y of [-1, 0, 1]) {
+  for (const x of [-1, 1]) {
+    for (const z of [-1, 1]) {
+      straightTerminalPoints.push({ id: `st.${x}.${y}.${z}`, position: { x, y, z } });
+    }
+  }
+}
+const straightTerminalFaceDefinitions = [
+  ['face:st.top', ['st.-1.1.-1', 'st.-1.1.1', 'st.1.1.1', 'st.1.1.-1']],
+  ['face:st.bottom', ['st.-1.-1.-1', 'st.1.-1.-1', 'st.1.-1.1', 'st.-1.-1.1']],
+  // One whole side intentionally keeps the y=0 points as collinear n-gon
+  // boundary vertices instead of splitting the face there.
+  ['face:st.front', ['st.-1.-1.-1', 'st.-1.0.-1', 'st.-1.1.-1', 'st.1.1.-1', 'st.1.0.-1', 'st.1.-1.-1']],
+  ['face:st.back.upper', ['st.-1.0.1', 'st.1.0.1', 'st.1.1.1', 'st.-1.1.1']],
+  ['face:st.back.lower', ['st.-1.-1.1', 'st.1.-1.1', 'st.1.0.1', 'st.-1.0.1']],
+  ['face:st.left.upper', ['st.-1.0.-1', 'st.-1.0.1', 'st.-1.1.1', 'st.-1.1.-1']],
+  ['face:st.left.lower', ['st.-1.-1.-1', 'st.-1.-1.1', 'st.-1.0.1', 'st.-1.0.-1']],
+  ['face:st.right.upper', ['st.1.0.-1', 'st.1.1.-1', 'st.1.1.1', 'st.1.0.1']],
+  ['face:st.right.lower', ['st.1.-1.-1', 'st.1.0.-1', 'st.1.0.1', 'st.1.-1.1']],
+] as const;
+const createStraightTerminalAsset = (name: string) => {
+  const asset = staticMeshAssetAPI.create({ name, path: '/Tests' });
+  staticMeshAssetAPI.addPoints({
+    assetId: asset.id,
+    points: straightTerminalPoints.map(point => ({ id: point.id, position: { ...point.position } })),
+  });
+  for (const [id, pointIds] of straightTerminalFaceDefinitions) {
+    staticMeshAssetAPI.createFaceFromPoints({ assetId: asset.id, id, pointIds: [...pointIds] });
+  }
+  return asset;
+};
+
+const straightTerminalAsset = createStraightTerminalAsset('Straight Terminal Bevel Test');
+const straightTerminalStart = staticMeshAssetAPI.getPoint(straightTerminalAsset.id, 'st.1.1.-1')!.vertexIds![0];
+const straightTerminalEnd = staticMeshAssetAPI.getPoint(straightTerminalAsset.id, 'st.1.0.-1')!.vertexIds![0];
+assetManager.updateAsset(straightTerminalAsset.id, { construction: undefined });
+assetHistory.clear(straightTerminalAsset.id);
+const straightTerminalBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: straightTerminalAsset.id,
+  edges: [{ vertexAId: straightTerminalStart, vertexBId: straightTerminalEnd }],
+  width: 0.25,
+});
+assert.equal(straightTerminalBevel.clamped, false);
+assertNearlyEqual(straightTerminalBevel.width, 0.25, 'Straight terminal should preserve the requested width.');
+assert.equal(resolveStaticMeshShells(straightTerminalAsset).length, 1, 'Straight-terminal bevel must remain one shell.');
+assert.ok(straightTerminalAsset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Straight-terminal bevel must remain manifold.');
+const straightTerminalSource = { x: 1, y: 0, z: -1 };
+const straightTerminalCoincidentSourceVertices = Array.from(
+  { length: straightTerminalAsset.geometry.vertices.length / 3 },
+  (_, vertexId) => vertexId,
+).filter(vertexId => Math.hypot(
+  straightTerminalAsset.geometry.vertices[vertexId * 3] - straightTerminalSource.x,
+  straightTerminalAsset.geometry.vertices[vertexId * 3 + 1] - straightTerminalSource.y,
+  straightTerminalAsset.geometry.vertices[vertexId * 3 + 2] - straightTerminalSource.z,
+) <= 1e-7).length;
+assert.equal(straightTerminalCoincidentSourceVertices, 0, 'A straight terminal must offset away from the source split vertex instead of leaving a zero-width rail there.');
+const straightTerminalHasPerpendicularPoint = Array.from(
+  { length: straightTerminalAsset.geometry.vertices.length / 3 },
+  (_, vertexId) => vertexId,
+).some(vertexId => Math.hypot(
+  straightTerminalAsset.geometry.vertices[vertexId * 3] - 0.75,
+  straightTerminalAsset.geometry.vertices[vertexId * 3 + 1] - 0,
+  straightTerminalAsset.geometry.vertices[vertexId * 3 + 2] - (-1),
+) <= 1e-7);
+assert.equal(straightTerminalHasPerpendicularPoint, true, 'Straight terminal should keep the Blender-style perpendicular boundary point.');
+const straightTerminalFaceCount = straightTerminalAsset.topology.faces.length;
+assetManager.deleteAsset(straightTerminalAsset.id);
+
+// Segmented straight-chain regression matching a selected vertical edge that
+// has already been split by another loop. The y=0 vertex is not a bevel corner:
+// the two selected edge halves are collinear and the profile must continue
+// through that station. The old segmented path inserted both endpoint arcs into
+// a synthetic corner cap, producing a zero-area polygon and aborting with
+// "Face normal is degenerate." for Segments > 1.
+const straightChainAsset = createStraightTerminalAsset('Segmented Straight Selected Chain Test');
+const straightChainTop = staticMeshAssetAPI.getPoint(straightChainAsset.id, 'st.1.1.-1')!.vertexIds![0];
+const straightChainMiddle = staticMeshAssetAPI.getPoint(straightChainAsset.id, 'st.1.0.-1')!.vertexIds![0];
+const straightChainBottom = staticMeshAssetAPI.getPoint(straightChainAsset.id, 'st.1.-1.-1')!.vertexIds![0];
+assetManager.updateAsset(straightChainAsset.id, { construction: undefined });
+assetHistory.clear(straightChainAsset.id);
+const straightChainBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: straightChainAsset.id,
+  edges: [
+    { vertexAId: straightChainTop, vertexBId: straightChainMiddle },
+    { vertexAId: straightChainMiddle, vertexBId: straightChainBottom },
+  ],
+  width: 0.25,
+  segments: 5,
+  profile: 0.5,
+});
+assert.equal(straightChainBevel.bevelFaceIds.length, 10, 'Two selected source-edge halves with Segments=5 must create ten strips.');
+assert.equal(straightChainAsset.topology.faces.length, 19, 'A straight selected split must not create a synthetic corner cap at the middle station.');
+assert.equal(resolveStaticMeshShells(straightChainAsset).length, 1, 'Segmented straight selected chain must remain one shell.');
+assert.ok(straightChainAsset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Segmented straight selected chain must remain manifold.');
+const straightChainFaceCount = straightChainAsset.topology.faces.length;
+assetManager.deleteAsset(straightChainAsset.id);
+
+// Collapsed boundary / weld regression. At endpoint 'b' both zero-offset
+// neighboring-edge meets clamp to the same source position. The old planner
+// emitted two different semantic/mesh vertices at that coordinate, so the
+// reconstructed n-gon/edge strip became a zero-width bow tie and triangulation
+// failed. Blender's VMesh shares one BMVert for equivalent/collapsed boundary
+// roles. The joint planner must do the same, allowing the nominal bevel quad to
+// become a valid triangle at the collapsed endpoint.
+const weldedEndpointAsset = staticMeshAssetAPI.create({ name: 'Collapsed Bevel Boundary Weld Test', path: '/Tests' });
+const weldedEndpointPositions = [
+  { x: -0.0007633603978319803, y: -0.5536323168133095, z: -1.1670326272696 },
+  { x: -0.154629558128363, y: 0.7662764776556287, z: -0.1753640365088358 },
+  { x: 1.9705838914203924, y: -0.8809350338051445, z: 0.4251098165710573 },
+  { x: -0.4674169823489137, y: -0.22547342300422316, z: 1.9138888694709748 },
+  { x: -0.7691584831365617, y: 2.1626740250663716, z: 0.15234693994716508 },
+  { x: 1.43066709670602, y: 1.9431477703710698, z: -0.7164225785587405 },
+  { x: 1.0239161243844137, y: 1.8201160062890267, z: -0.06211708579794517 },
+  { x: 0.12129708599532019, y: 1.4671131754890667, z: 1.3575688318182073 },
+];
+const weldedEndpointPointIds = ['we.a', 'we.b', 'we.c', 'we.d', 'we.e', 'we.f', 'we.g', 'we.h'];
+staticMeshAssetAPI.addPoints({
+  assetId: weldedEndpointAsset.id,
+  points: weldedEndpointPointIds.map((id, index) => ({ id, position: weldedEndpointPositions[index] })),
+});
+for (const [id, pointIds] of [
+  ['face:we.bottom', ['we.a', 'we.d', 'we.c', 'we.b']],
+  ['face:we.top', ['we.e', 'we.f', 'we.g', 'we.h']],
+  ['face:we.front', ['we.a', 'we.b', 'we.f', 'we.e']],
+  ['face:we.right', ['we.b', 'we.c', 'we.g', 'we.f']],
+  ['face:we.back', ['we.d', 'we.h', 'we.g', 'we.c']],
+  ['face:we.left', ['we.a', 'we.e', 'we.h', 'we.d']],
+] as const) {
+  staticMeshAssetAPI.createFaceFromPoints({ assetId: weldedEndpointAsset.id, id, pointIds: [...pointIds] });
+}
+const weldedEndpointStart = staticMeshAssetAPI.getPoint(weldedEndpointAsset.id, 'we.a')!.vertexIds![0];
+const weldedEndpointEnd = staticMeshAssetAPI.getPoint(weldedEndpointAsset.id, 'we.b')!.vertexIds![0];
+assetManager.updateAsset(weldedEndpointAsset.id, { construction: undefined });
+assetHistory.clear(weldedEndpointAsset.id);
+const weldedEndpointResult = staticMeshAssetAPI.bevelEdges({
+  assetId: weldedEndpointAsset.id,
+  edges: [{ vertexAId: weldedEndpointStart, vertexBId: weldedEndpointEnd }],
+  width: 0.35,
+});
+assert.equal(weldedEndpointResult.clamped, false);
+assertNearlyEqual(weldedEndpointResult.width, 0.35, 'Collapsed endpoint weld should preserve a valid requested width.');
+assert.equal(resolveStaticMeshShells(weldedEndpointAsset).length, 1, 'Welded bevel endpoint must remain one shell.');
+assert.ok(weldedEndpointAsset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Welded bevel endpoint must remain manifold.');
+assert.ok(weldedEndpointAsset.topology.faces.some(face => face.length === 3), 'A collapsed bevel endpoint should materialize a triangular strip instead of a quad with coincident vertices.');
+let weldedEndpointCoincidentPairs = 0;
+for (let a = 0; a < weldedEndpointAsset.geometry.vertices.length / 3; a += 1) {
+  for (let b = a + 1; b < weldedEndpointAsset.geometry.vertices.length / 3; b += 1) {
+    const distance = Math.hypot(
+      weldedEndpointAsset.geometry.vertices[a * 3] - weldedEndpointAsset.geometry.vertices[b * 3],
+      weldedEndpointAsset.geometry.vertices[a * 3 + 1] - weldedEndpointAsset.geometry.vertices[b * 3 + 1],
+      weldedEndpointAsset.geometry.vertices[a * 3 + 2] - weldedEndpointAsset.geometry.vertices[b * 3 + 2],
+    );
+    if (distance <= 1e-7) weldedEndpointCoincidentPairs += 1;
+  }
+}
+assert.equal(weldedEndpointCoincidentPairs, 0, 'Bevel must not leave coincident generated mesh vertices at a collapsed endpoint.');
+const weldedEndpointFaceCount = weldedEndpointAsset.topology.faces.length;
+assetManager.deleteAsset(weldedEndpointAsset.id);
+
+// General n-gon compiler regression: a concave simple pentagon must keep one
+// logical face while compiling to exactly n-2 render triangles. A naive fan
+// from the first vertex crosses outside this polygon.
+const concaveNgonAsset = staticMeshAssetAPI.create({ name: 'Concave Ngon Triangulation Test', path: '/Tests' });
+staticMeshAssetAPI.addPoints({
+  assetId: concaveNgonAsset.id,
+  points: [
+    { id: 'ng0', position: { x: 0, y: 0, z: 0 } },
+    { id: 'ng1', position: { x: 3, y: 0, z: 0 } },
+    { id: 'ng2', position: { x: 3, y: 0, z: 3 } },
+    { id: 'ng3', position: { x: 1.5, y: 0, z: 1 } },
+    { id: 'ng4', position: { x: 0, y: 0, z: 3 } },
+  ],
+});
+const concaveNgonFace = staticMeshAssetAPI.createFaceFromPoints({
+  assetId: concaveNgonAsset.id,
+  id: 'face:concave-ngon',
+  pointIds: ['ng0', 'ng4', 'ng3', 'ng2', 'ng1'],
+});
+assert.equal(concaveNgonFace.vertexIds.length, 5);
+assert.equal(concaveNgonAsset.topology.faces[concaveNgonFace.faceId].length, 5);
+assert.equal(concaveNgonAsset.geometry.indices.length / 3, 3, 'A simple pentagon must compile to exactly three triangles.');
+assetManager.deleteAsset(concaveNgonAsset.id);
+
+// Turning clamp off converts the same collision into an atomic validation
+// failure. The transaction must restore the untouched six-face cube and create
+// no undo entry.
+const unclampedFixture = createStaticMeshTestFixture('box');
+const ucA = findMeshVertexAt(unclampedFixture.asset, -2, 0, -2);
+const ucD = findMeshVertexAt(unclampedFixture.asset, -2, 0, 2);
+const ucB = findMeshVertexAt(unclampedFixture.asset, 2, 0, -2);
+const ucTopA = findMeshVertexAt(unclampedFixture.asset, -2, 2, -2);
+assert.throws(
+  () => staticMeshAssetAPI.bevelEdges({
+    assetId: unclampedFixture.assetId,
+    edges: [
+      { vertexAId: ucA, vertexBId: ucD },
+      { vertexAId: ucA, vertexBId: ucB },
+      { vertexAId: ucA, vertexBId: ucTopA },
+    ],
+    width: 10,
+    clampOverlap: false,
+  }),
+  /overlapping corner geometry/i,
+);
+assert.equal(unclampedFixture.asset.topology.faces.length, 6);
+assert.equal(staticMeshAssetAPI.getHistoryState(unclampedFixture.assetId).canUndo, false);
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
+// Oversized connected bevels are reduced as one network instead of letting
+// opposite endpoint boundaries cross through each other.
+const clampedFixture = createStaticMeshTestFixture('box');
+const ccA = findMeshVertexAt(clampedFixture.asset, -2, 0, -2);
+const ccD = findMeshVertexAt(clampedFixture.asset, -2, 0, 2);
+const ccB = findMeshVertexAt(clampedFixture.asset, 2, 0, -2);
+const ccTopA = findMeshVertexAt(clampedFixture.asset, -2, 2, -2);
+const clampedBevel = staticMeshAssetAPI.bevelEdges({
+  assetId: clampedFixture.assetId,
+  edges: [
+    { vertexAId: ccA, vertexBId: ccD },
+    { vertexAId: ccA, vertexBId: ccB },
+    { vertexAId: ccA, vertexBId: ccTopA },
+  ],
+  width: 10,
+});
+assert.equal(clampedBevel.requestedWidth, 10);
+assert.equal(clampedBevel.clamped, true);
+assert.ok(clampedBevel.width < clampedBevel.requestedWidth);
+assert.ok(clampedFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1), 'Clamped connected bevel must remain manifold.');
+const clampedEffectiveWidth = clampedBevel.width;
+assert.equal(clearStaticMeshTestFixtures(), 1);
+
 console.log('Static Mesh modeling API tests passed.');
 console.log(JSON.stringify({
   floor: {
@@ -1479,6 +2477,14 @@ console.log(JSON.stringify({
     shells: resolveStaticMeshShells(bevelAsset).length,
     undoRedo: staticMeshAssetAPI.getHistoryState(bevelAsset.id).undoLabel === 'Bevel Construction Edge',
   },
+  segmentedBevel: {
+    segments: segmentedBevel.segments,
+    profile: segmentedBevel.profile,
+    stripFaces: segmentedBevel.bevelFaceIds.length,
+    profileRails: segmentedBevel.profileEdgeIds.length,
+    terminalProfilePlaneMaxError,
+    manifoldPaired: segmentedBevelFixture.asset.topology.graph?.halfEdges.every(edge => edge.pair !== -1) ?? false,
+  },
   bevelHighValence: {
     endpointValence: [endpointAValence, endpointBValence],
     endpointCaps: highValenceBevel.endpointCapFaceIds.length,
@@ -1536,6 +2542,31 @@ console.log(JSON.stringify({
     shells: resolveStaticMeshShells(multiBevelAsset).length,
     manifoldPaired: multiBevelAsset.topology.graph?.halfEdges.every(edge => edge.pair !== -1) ?? false,
     undoRedo: staticMeshAssetAPI.getHistoryState(multiBevelAsset.id).undoLabel === 'Bevel Edges',
+  },
+  connectedBevel: {
+    twoEdgeFaces: connectedTwoFaceCount,
+    threeEdgeFaces: connectedThreeFaceCount,
+    valence4CornerFaces: connectedValenceCornerCount,
+    loopFaces: connectedLoopFaceCount,
+    segmentedLoopFaces: segmentedLoopFaceCount,
+    segmentedLoopCornerFaces: segmentedLoopCornerFaceCount,
+    segmentedAdjCornerFaces: segmentedAdjCornerFaceCount,
+    segmentedAdjEvenCornerFaces: segmentedAdjEvenCornerFaceCount,
+    fullCubeFaces: fullCubeFaceCount,
+    segmentedCubeFaces: segmentedCubeFaceCount,
+    clampedEffectiveWidth,
+    repeatedNgonMaxVertices,
+    repeatedEffectiveWidth,
+    warpedFaceCount: warpedBevelFaceCount,
+    flaredEndpointWidth: flaredBevelWidth,
+    straightTerminalFaces: straightTerminalFaceCount,
+    segmentedStraightChainFaces: straightChainFaceCount,
+    openTerminalFanFaces: openTerminalFanFaceCount,
+    openRimNoCapFaces: openRimNoCapFaceCount,
+    segmentedTerminalTriFanFaces: segmentedTerminalTriFanFaceCount,
+    weldedCollapsedEndpointFaces: weldedEndpointFaceCount,
+    weldedCoincidentPairs: weldedEndpointCoincidentPairs,
+    jointCornerPatch: connectedThreeBevel.cornerFaceIds.length === 1,
   },
   legacyAdoptCompatibility: {
     points: adoption.pointsCreated,

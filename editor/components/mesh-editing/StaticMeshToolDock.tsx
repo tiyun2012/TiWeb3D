@@ -49,6 +49,9 @@ export interface StaticMeshToolDockProps {
   topologyExtrudeDistance: number;
   topologySplitPosition: number;
   topologyBevelWidth: number;
+  topologyBevelSegments: number;
+  topologyBevelProfile: number;
+  topologyBevelClampOverlap: boolean;
   topologySplitEndpointLabel?: string | null;
   topologyCutEndpointLabel?: string | null;
   topologyFeedback?: string | null;
@@ -56,6 +59,9 @@ export interface StaticMeshToolDockProps {
   onTopologyExtrudeDistanceChange: (distance: number) => void;
   onTopologySplitPositionChange: (position: number) => void;
   onTopologyBevelWidthChange: (width: number) => void;
+  onTopologyBevelSegmentsChange: (segments: number) => void;
+  onTopologyBevelProfileChange: (profile: number) => void;
+  onTopologyBevelClampOverlapChange: (enabled: boolean) => void;
   commandContext: EditorCommandContext;
 }
 
@@ -228,6 +234,9 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   topologyExtrudeDistance,
   topologySplitPosition,
   topologyBevelWidth,
+  topologyBevelSegments,
+  topologyBevelProfile,
+  topologyBevelClampOverlap,
   topologySplitEndpointLabel = null,
   topologyCutEndpointLabel = null,
   topologyFeedback = null,
@@ -235,6 +244,9 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   onTopologyExtrudeDistanceChange,
   onTopologySplitPositionChange,
   onTopologyBevelWidthChange,
+  onTopologyBevelSegmentsChange,
+  onTopologyBevelProfileChange,
+  onTopologyBevelClampOverlapChange,
   commandContext,
 }) => {
   const [hierarchyExpanded, setHierarchyExpanded] = useState(true);
@@ -715,8 +727,14 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                       className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
                     />
                   </label>
+                  <div className="flex items-end justify-end pb-1 text-[8px] text-text-secondary/60">
+                    0..1 along edge
+                  </div>
+                  <div className="col-span-2 mt-0.5 border-t border-white/5 pt-1.5 text-[8px] font-medium uppercase tracking-wide text-text-secondary/80">
+                    Bevel
+                  </div>
                   <label className="space-y-1 text-[8px] text-text-secondary">
-                    <span>Bevel Width</span>
+                    <span>Width</span>
                     <input
                       type="number"
                       title="Bevel edge width"
@@ -728,10 +746,50 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                       className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
                     />
                   </label>
+                  <label className="space-y-1 text-[8px] text-text-secondary">
+                    <span>Segments</span>
+                    <input
+                      type="number"
+                      title="Bevel profile segments"
+                      aria-label="Bevel profile segments"
+                      min="1"
+                      max="64"
+                      step="1"
+                      value={topologyBevelSegments}
+                      onChange={event => onTopologyBevelSegmentsChange(Number(event.target.value))}
+                      className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  <label className="space-y-1 text-[8px] text-text-secondary">
+                    <span>Profile</span>
+                    <input
+                      type="number"
+                      title="Bevel profile shape; 0.5 is circular"
+                      aria-label="Bevel profile shape"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={topologyBevelProfile}
+                      onChange={event => onTopologyBevelProfileChange(Number(event.target.value))}
+                      className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={topologyBevelSegments < 2}
+                    />
+                  </label>
+                  <label className="flex h-7 items-center gap-2 self-end rounded border border-white/5 bg-black/10 px-2 text-[8px] text-text-secondary">
+                    <input
+                      type="checkbox"
+                      checked={topologyBevelClampOverlap}
+                      onChange={event => onTopologyBevelClampOverlapChange(event.target.checked)}
+                      className="h-3 w-3 accent-accent"
+                    />
+                    <span>Clamp Overlap</span>
+                  </label>
                   {topologySplitEndpointLabel && (
                     <div className="col-span-2 font-mono text-[8px] leading-3 text-text-secondary/80">{topologySplitEndpointLabel}</div>
                   )}
-                  <div className="col-span-2 text-[8px] leading-3 text-text-secondary/70">Split uses 0..1 along one selected edge. Bevel applies to all selected vertex-disjoint manifold edges in one Undo step; Edge Rings are supported. Connected chains/loops that share vertices are rejected until the joint-corner solver is added.</div>
+                  <div className="col-span-2 text-[8px] leading-3 text-text-secondary/70">
+                    Segments = 1 preserves the current sharp chamfer. Segments &gt; 1 samples a Blender-style superellipse profile; Profile 0.5 is circular. The selected edge network is solved in one Undo step before topology mutation.
+                  </div>
                   {topologyFeedback && (
                     <div
                       role="status"
