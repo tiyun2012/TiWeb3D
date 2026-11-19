@@ -22,13 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-<<<<<<< HEAD
-*.zip
-# Generated local test reports
-reports/*.txt
-=======
 *.zip
 # Generated local test reports
 reports/*.txt
 *.patch
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0

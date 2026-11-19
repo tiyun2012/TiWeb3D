@@ -30,6 +30,24 @@ import {
   type StaticMeshOppositeEdgeResult,
   type StaticMeshTopologyFaceInfo,
 } from '@/engine/mesh-editing/StaticMeshTopologyQueries';
+import { invalidateMeshConnectivity } from '@/engine/mesh-editing/MeshConnectivity';
+import {
+  buildStaticMeshPrimitiveGeometry,
+  inspectStaticMesh,
+  queryStaticMeshEdges,
+  queryStaticMeshFaces,
+  type StaticMeshDirectionTag,
+  type StaticMeshEdgeQuery,
+  type StaticMeshEdgeSortBy,
+  type StaticMeshFaceQuery,
+  type StaticMeshFaceSortBy,
+  type StaticMeshInspectedEdge,
+  type StaticMeshInspectedFace,
+  type StaticMeshInspectedVertex,
+  type StaticMeshInspectionReport,
+  type StaticMeshPrimitiveKind,
+  type StaticMeshPrimitiveOptions,
+} from '@/engine/mesh-editing/StaticMeshPrimitivesAndControl';
 export type { StaticMeshIdRange } from '@/types';
 export type {
   StaticMeshEdgeRingTraceResult,
@@ -39,10 +57,246 @@ export type {
   StaticMeshTopologyFaceInfo,
   StaticMeshTopologyTraceTermination,
 } from '@/engine/mesh-editing/StaticMeshTopologyQueries';
+export type {
+  StaticMeshDirectionTag,
+  StaticMeshEdgeQuery,
+  StaticMeshEdgeSortBy,
+  StaticMeshFaceQuery,
+  StaticMeshFaceSortBy,
+  StaticMeshInspectedEdge,
+  StaticMeshInspectedFace,
+  StaticMeshInspectedVertex,
+  StaticMeshInspectionReport,
+  StaticMeshPrimitiveKind,
+  StaticMeshPrimitiveOptions,
+} from '@/engine/mesh-editing/StaticMeshPrimitivesAndControl';
 
 export interface CreateStaticMeshArgs {
   name: string;
   path?: string;
+}
+
+export interface AddStaticMeshPrimitiveArgs extends StaticMeshPrimitiveOptions {
+  assetId: string;
+  /** Replace any existing geometry in the target mesh before adding the primitive. Defaults to false. */
+  clearExisting?: boolean;
+}
+
+export interface CreateStaticMeshPrimitiveArgs extends StaticMeshPrimitiveOptions {
+  name: string;
+  path?: string;
+}
+
+export interface StaticMeshPrimitiveResult {
+  assetId: string;
+  kind: StaticMeshPrimitiveKind;
+  vertexIds: number[];
+  faceIds: number[];
+  triangleIds: number[];
+  shellId: string;
+}
+
+export interface AddLogicalVerticesArgs {
+  assetId: string;
+  positions: Vector3[];
+}
+
+export interface CreateLogicalFaceArgs {
+  assetId: string;
+  /** Existing vertex IDs in winding order. */
+  vertexIds: number[];
+}
+
+export interface CreateLogicalFaceResult {
+  faceId: number;
+  vertexIds: number[];
+  triangleIds: number[];
+}
+
+export interface ExtrudeLogicalFacesArgs {
+  assetId: string;
+  faceIds: number[];
+  distance: number;
+}
+
+export interface ExtrudeLogicalFacesResult {
+  results: ExtrudeLogicalFaceResult[];
+  topFaceIds: number[];
+  sideFaceIds: number[];
+}
+
+export interface DeleteLogicalFacesArgs {
+  assetId: string;
+  faceIds: number[];
+  /** Compact vertices that are no longer referenced by any surviving logical face. */
+  compactUnusedVertices?: boolean;
+}
+
+export interface DeleteLogicalFacesResult {
+  deletedFaceIds: number[];
+  vertexIds: number[];
+  remainingFaceCount: number;
+}
+
+export interface MoveLogicalVerticesArgs {
+  assetId: string;
+  vertices: Array<{
+    vertexId: number;
+    position: Vector3;
+  }>;
+  /** Whether to move welded sibling vertices together. Defaults to true. */
+  propagateSiblings?: boolean;
+}
+
+export interface MoveLogicalVerticesResult {
+  movedVertexIds: number[];
+}
+
+export interface TransformLogicalFacesArgs {
+  assetId: string;
+  faceIds: number[];
+  /** Optional world-space translation offset. */
+  translate?: Vector3;
+  /** Optional distance along the face normal(s). */
+  normalOffset?: number;
+  /** Optional scale factor around the face center (uniform number or per-axis Vector3). */
+  scale?: number | Vector3;
+  /** Pivot mode when transforming multiple faces. Defaults to 'SELECTION_CENTER'. */
+  pivot?: 'SELECTION_CENTER' | 'INDIVIDUAL_FACES';
+}
+
+export interface TransformLogicalFacesResult {
+  faceIds: number[];
+  movedVertexIds: number[];
+  center: Vector3;
+}
+
+export interface WeldLogicalVerticesArgs {
+  assetId: string;
+  vertexIds: number[];
+  /** Target placement mode when explicit position is not provided. Defaults to 'CENTER' ('AVERAGE'). */
+  mode?: 'CENTER' | 'AVERAGE' | 'FIRST';
+  /** Optional explicit position for the welded vertex. */
+  position?: Vector3;
+}
+
+export interface WeldLogicalVerticesResult {
+  survivingVertexId: number;
+  mergedVertexIds: number[];
+  position: Vector3;
+  removedDegenerateFaces: number;
+}
+
+export interface ConnectLogicalVerticesArgs {
+  assetId: string;
+  vertexIds: number[];
+}
+
+export interface ConnectLogicalVerticesResult {
+  cuts: Array<{
+    sourceFaceId: number;
+    newFaceId: number;
+    cutEdgeId: string;
+    vertexIds: [number, number];
+  }>;
+  cutEdgeIds: string[];
+  newFaceIds: number[];
+}
+
+export interface StaticMeshFaceQueryArgs extends StaticMeshFaceQuery {
+  assetId: string;
+}
+
+export interface StaticMeshEdgeQueryArgs extends StaticMeshEdgeQuery {
+  assetId: string;
+}
+
+export type StaticMeshModelingStep =
+  | ({ op: 'ADD_PRIMITIVE' } & Omit<AddStaticMeshPrimitiveArgs, 'assetId'>)
+  | {
+      op: 'ADD_VERTICES';
+      positions: Vector3[];
+    }
+  | {
+      op: 'CREATE_FACE';
+      vertexIds: number[];
+    }
+  | {
+      op: 'EXTRUDE_FACES';
+      faceIds?: number[];
+      faceQuery?: StaticMeshFaceQuery;
+      distance: number;
+    }
+  | {
+      op: 'INSET_FACES';
+      faceIds?: number[];
+      faceQuery?: StaticMeshFaceQuery;
+      ratio: number;
+    }
+  | {
+      op: 'DELETE_FACES';
+      faceIds?: number[];
+      faceQuery?: StaticMeshFaceQuery;
+      compactUnusedVertices?: boolean;
+    }
+  | {
+      op: 'BEVEL_EDGES';
+      edges?: Array<{ vertexAId: number; vertexBId: number }>;
+      edgeQuery?: StaticMeshEdgeQuery;
+      width: number;
+      segments?: number;
+      profile?: number;
+      clampOverlap?: boolean;
+    }
+  | {
+      op: 'SPLIT_EDGE';
+      vertexAId?: number;
+      vertexBId?: number;
+      edgeQuery?: StaticMeshEdgeQuery;
+      t?: number;
+    }
+  | {
+      op: 'CUT_FACE';
+      faceId: number;
+      vertexAId: number;
+      vertexBId: number;
+    }
+  | {
+      op: 'CONNECT_VERTICES';
+      vertexIds: number[];
+    }
+  | {
+      op: 'WELD_VERTICES';
+      vertexIds: number[];
+      mode?: 'CENTER' | 'AVERAGE' | 'FIRST';
+      position?: Vector3;
+    }
+  | {
+      op: 'MOVE_VERTICES';
+      vertices: MoveLogicalVerticesArgs['vertices'];
+      propagateSiblings?: boolean;
+    }
+  | {
+      op: 'TRANSFORM_FACES';
+      faceIds?: number[];
+      faceQuery?: StaticMeshFaceQuery;
+      translate?: Vector3;
+      normalOffset?: number;
+      scale?: number | Vector3;
+      pivot?: 'SELECTION_CENTER' | 'INDIVIDUAL_FACES';
+    };
+
+export interface RunStaticMeshModelingStepsArgs {
+  assetId: string;
+  label?: string;
+  steps: StaticMeshModelingStep[];
+}
+
+export interface RunStaticMeshModelingStepsResult {
+  assetId: string;
+  stepsExecuted: number;
+  stepResults: unknown[];
+  inspection: StaticMeshInspectionReport;
 }
 
 export interface AdoptStaticMeshTopologyArgs {
@@ -220,10 +474,7 @@ export interface BevelLogicalEdgeResult {
   bevelFaceId: number;
   /** All strip faces for this source edge. Length equals segments. */
   bevelFaceIds: number[];
-<<<<<<< HEAD
-=======
   /** All corner/cap faces touching either source-edge endpoint; TRI_FAN and ADJ may contribute multiple faces at one endpoint. */
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
   endpointCapFaceIds: number[];
   updatedFaceIds: number[];
   /** Outer profile rails retained for compatibility with the one-segment API. */
@@ -239,11 +490,7 @@ export interface BevelLogicalEdgesResult {
   results: BevelLogicalEdgeResult[];
   bevelFaceIds: number[];
   endpointCapFaceIds: number[];
-<<<<<<< HEAD
-  /** Corner VMesh-style patch faces created where 3+ selected edges meet. */
-=======
   /** All generated corner VMesh faces, including segmented TRI_FAN and structured ADJ cells. */
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
   cornerFaceIds: number[];
   updatedFaceIds: number[];
   bevelEdgeIds: string[];
@@ -749,20 +996,68 @@ const makeUniqueOperationId = (preferred: string | undefined, prefix: string, us
   return `${prefix}-${index}`;
 };
 
+interface ConstructionLookupCache {
+  pointById: Map<string, StaticMeshConstructionPoint>;
+  faceById: Map<string, StaticMeshConstructionFace>;
+  loopById: Map<string, StaticMeshConstructionLoop>;
+}
+
+const constructionLookupCache = new WeakMap<StaticMeshConstructionData, ConstructionLookupCache>();
+
+const getConstructionLookupCache = (construction: StaticMeshConstructionData): ConstructionLookupCache => {
+  let cache = constructionLookupCache.get(construction);
+  if (!cache) {
+    cache = {
+      pointById: new Map(),
+      faceById: new Map(),
+      loopById: new Map(),
+    };
+    constructionLookupCache.set(construction, cache);
+  }
+  return cache;
+};
+
 const findConstructionPoint = (construction: StaticMeshConstructionData, pointId: string): StaticMeshConstructionPoint => {
-  const point = construction.points.find(candidate => candidate.id === pointId);
+  const cache = getConstructionLookupCache(construction);
+  const cached = cache.pointById.get(pointId);
+  if (cached && cached.id === pointId && construction.points.includes(cached)) {
+    return cached;
+  }
+  cache.pointById.clear();
+  for (const candidate of construction.points) {
+    cache.pointById.set(candidate.id, candidate);
+  }
+  const point = cache.pointById.get(pointId);
   if (!point) throw new Error(`Construction Point '${pointId}' was not found.`);
   return point;
 };
 
 const findConstructionFace = (construction: StaticMeshConstructionData, faceId: string): StaticMeshConstructionFace => {
-  const face = construction.faces.find(candidate => candidate.id === faceId);
+  const cache = getConstructionLookupCache(construction);
+  const cached = cache.faceById.get(faceId);
+  if (cached && cached.id === faceId && construction.faces.includes(cached)) {
+    return cached;
+  }
+  cache.faceById.clear();
+  for (const candidate of construction.faces) {
+    cache.faceById.set(candidate.id, candidate);
+  }
+  const face = cache.faceById.get(faceId);
   if (!face) throw new Error(`Construction Face '${faceId}' was not found.`);
   return face;
 };
 
 const findConstructionLoop = (construction: StaticMeshConstructionData, loopId: string): StaticMeshConstructionLoop => {
-  const loop = construction.loops.find(candidate => candidate.id === loopId);
+  const cache = getConstructionLookupCache(construction);
+  const cached = cache.loopById.get(loopId);
+  if (cached && cached.id === loopId && construction.loops.includes(cached)) {
+    return cached;
+  }
+  cache.loopById.clear();
+  for (const candidate of construction.loops) {
+    cache.loopById.set(candidate.id, candidate);
+  }
+  const loop = cache.loopById.get(loopId);
   if (!loop) throw new Error(`Construction Loop '${loopId}' was not found.`);
   return loop;
 };
@@ -1292,6 +1587,45 @@ const triangulateConstructionBoundary = (
       break;
     }
 
+    // Fallback for split-edge or slightly warped polygons with near-collinear ears:
+    // relax the turn & containment tolerance while still requiring non-degenerate 3D area.
+    if (earPosition < 0) {
+      let bestTurn = -Infinity;
+      for (let position = 0; position < remaining.length; position += 1) {
+        const prevIndex = remaining[(position - 1 + remaining.length) % remaining.length];
+        const currentIndex = remaining[position];
+        const nextIndex = remaining[(position + 1) % remaining.length];
+        if (triangleAreaSquared(state, vertexIds[prevIndex], vertexIds[currentIndex], vertexIds[nextIndex]) <= epsilonSq) continue;
+        const a = projected[prevIndex];
+        const b = projected[currentIndex];
+        const c = projected[nextIndex];
+        const turn = orientedTurn(a, b, c);
+        if (turn < -1e-5) continue;
+        let strictlyContainsOther = false;
+        for (const testIndex of remaining) {
+          if (testIndex === prevIndex || testIndex === currentIndex || testIndex === nextIndex) continue;
+          const pt = projected[testIndex];
+          const ab = cross2(subtract2(b, a), subtract2(pt, a)) * orientation;
+          const bc = cross2(subtract2(c, b), subtract2(pt, b)) * orientation;
+          const ca = cross2(subtract2(a, c), subtract2(pt, c)) * orientation;
+          if (ab > 1e-6 && bc > 1e-6 && ca > 1e-6) {
+            strictlyContainsOther = true;
+            break;
+          }
+        }
+        if (!strictlyContainsOther && turn > bestTurn) {
+          bestTurn = turn;
+          earPosition = position;
+        }
+      }
+      if (earPosition >= 0) {
+        const prevIndex = remaining[(earPosition - 1 + remaining.length) % remaining.length];
+        const currentIndex = remaining[earPosition];
+        const nextIndex = remaining[(earPosition + 1) % remaining.length];
+        triangles.push(vertexIds[prevIndex], vertexIds[currentIndex], vertexIds[nextIndex]);
+      }
+    }
+
     if (earPosition < 0) {
       throw new Error('Construction Face triangulation requires a simple non-self-intersecting n-gon.');
     }
@@ -1507,6 +1841,17 @@ const computeConstructionFaceNormal = (
 ): Vector3 => computePlanarFaceNormal(
   pointIds.map(pointId => clonePosition(findConstructionPoint(construction, pointId).position)),
 );
+const activeLogicalModelingDepthByAsset = new Map<string, number>();
+const transientLogicalConstructionByAsset = new Map<string, StaticMeshConstructionData>();
+
+const getTransientOrPersistedConstruction = (asset: StaticMeshAsset): StaticMeshConstructionData => {
+  const construction = asset.construction ?? transientLogicalConstructionByAsset.get(asset.id);
+  if (!construction) {
+    throw new Error(`Static Mesh '${asset.id}' does not have an active construction state.`);
+  }
+  return construction;
+};
+
 const finalizeConstructionMutation = (state: ConstructionMutationState): void => {
   const vertexCount = Math.floor(state.vertices.length / 3);
   const vertices = new Float32Array(state.vertices);
@@ -1520,6 +1865,7 @@ const finalizeConstructionMutation = (state: ConstructionMutationState): void =>
     siblings: state.siblings,
   };
   topology.graph = MeshTopologyUtils.buildTopology(topology, vertexCount);
+  invalidateMeshConnectivity(topology);
 
   const geometry: MeshGeometry = {
     ...state.asset.geometry,
@@ -1528,21 +1874,26 @@ const finalizeConstructionMutation = (state: ConstructionMutationState): void =>
     uvs: new Float32Array(state.uvs.slice(0, vertexCount * 2)),
     colors: new Float32Array(state.colors.slice(0, vertexCount * 3)),
     indices,
-    aabb: computeAABB(vertices),
+    aabb: vertexCount > 0 ? computeAABB(vertices) : undefined,
   };
+
+  const isTransientLogicalModeling = (activeLogicalModelingDepthByAsset.get(state.asset.id) ?? 0) > 0;
+  if (isTransientLogicalModeling) {
+    transientLogicalConstructionByAsset.set(state.asset.id, state.construction);
+  }
 
   const shells = resolveStaticMeshShells({
     ...state.asset,
     geometry,
     topology,
-    construction: state.construction,
+    construction: isTransientLogicalModeling ? undefined : state.construction,
   }).map(shell => materializeStaticMeshShell(shell));
 
   assetManager.updateAsset(state.asset.id, {
     geometry,
     topology,
     shells,
-    construction: state.construction,
+    construction: isTransientLogicalModeling ? undefined : state.construction,
   });
 };
 
@@ -1700,19 +2051,6 @@ const applyJointBevelPlan = (
     bevelFaceIdsByEdge.push(sourceEdgeFaceIds);
   }
 
-<<<<<<< HEAD
-  const cornerFaceIdBySourcePoint = new Map<string, string>();
-  for (let index = 0; index < plan.corners.length; index += 1) {
-    const corner = plan.corners[index];
-    if (corner.boundaryPointKeys.length < 3) continue;
-    let pointIds = corner.boundaryPointKeys.map(resolvePlanPoint);
-    pointIds = pointIds.filter((pointId, pointIndex) => pointIds.indexOf(pointId) === pointIndex);
-    if (pointIds.length < 3) continue;
-
-    // A manifold cap must traverse every shared boundary edge opposite to the
-    // already-created neighboring face. Use the first shared edge to normalize
-    // the cyclic boundary orientation before triangulation.
-=======
   const cornerFaceIdsBySourcePoint = new Map<string, string[]>();
   const allCornerFaceIds: string[] = [];
 
@@ -1721,7 +2059,6 @@ const applyJointBevelPlan = (
     // A manifold cap must traverse every shared boundary edge opposite to the
     // already-created neighboring face. Use the first shared edge to normalize
     // the cyclic boundary orientation before materializing the corner mesh.
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     let shouldReverse = false;
     let foundSharedDirection = false;
     for (let edgeIndex = 0; edgeIndex < pointIds.length && !foundSharedDirection; edgeIndex += 1) {
@@ -1736,15 +2073,6 @@ const applyJointBevelPlan = (
       }
     }
     if (shouldReverse) pointIds = [...pointIds].reverse();
-<<<<<<< HEAD
-
-    const cap = addConstructionFaceToState(state, {
-      id: `${operationId}.corner.${index}`,
-      name: `Bevel Corner ${index + 1}`,
-      pointIds,
-    });
-    cornerFaceIdBySourcePoint.set(corner.sourcePointId, cap.id);
-=======
     return pointIds;
   };
 
@@ -1826,7 +2154,6 @@ const applyJointBevelPlan = (
     if (createdFaceIds.length > 0) {
       cornerFaceIdsBySourcePoint.set(corner.sourcePointId, createdFaceIds);
     }
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
   }
 
   compactUnusedConstructionVertices(state);
@@ -1836,12 +2163,7 @@ const applyJointBevelPlan = (
     bevelFaceId: bevelFaceIdsByEdge[index][0],
     bevelFaceIds: bevelFaceIdsByEdge[index],
     endpointCapFaceIds: [edgePlan.pointAId, edgePlan.pointBId]
-<<<<<<< HEAD
-      .map(pointId => cornerFaceIdBySourcePoint.get(pointId))
-      .filter((faceId): faceId is string => Boolean(faceId)),
-=======
       .flatMap(pointId => cornerFaceIdsBySourcePoint.get(pointId) ?? []),
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     updatedFaceIds: Array.from(new Set([
       ...(updatedFacesBySourcePoint.get(edgePlan.pointAId) ?? []),
       ...(updatedFacesBySourcePoint.get(edgePlan.pointBId) ?? []),
@@ -1855,11 +2177,7 @@ const applyJointBevelPlan = (
 
   return {
     edgeResults,
-<<<<<<< HEAD
-    cornerFaceIds: Array.from(cornerFaceIdBySourcePoint.values()),
-=======
     cornerFaceIds: allCornerFaceIds,
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     updatedFaceIds,
   };
 };
@@ -2136,16 +2454,294 @@ class StaticMeshAssetAPIService {
       return assetHistory.transaction(assetId, label, () => {
         const asset = requireStaticMesh(assetId, 'target');
         const adapter = buildLogicalModelingAdapter(asset);
+        const prevDepth = activeLogicalModelingDepthByAsset.get(assetId) ?? 0;
+        activeLogicalModelingDepthByAsset.set(assetId, prevDepth + 1);
         // Internal bridge only. Do not emit an intermediate ASSET_UPDATED event.
         asset.construction = adapter.construction;
-        const result = mutation(adapter);
-        const updated = requireStaticMesh(assetId, 'target');
-        assetManager.updateAsset(updated.id, { construction: undefined });
-        return result;
+        transientLogicalConstructionByAsset.set(assetId, adapter.construction);
+        try {
+          const result = mutation(adapter);
+          const updated = requireStaticMesh(assetId, 'target');
+          if (updated.construction !== undefined) {
+            updated.construction = undefined;
+          }
+          return result;
+        } finally {
+          const nextDepth = (activeLogicalModelingDepthByAsset.get(assetId) ?? 1) - 1;
+          if (nextDepth <= 0) {
+            activeLogicalModelingDepthByAsset.delete(assetId);
+            transientLogicalConstructionByAsset.delete(assetId);
+          } else {
+            activeLogicalModelingDepthByAsset.set(assetId, nextDepth);
+          }
+        }
       });
     } catch (error) {
       throw logicalModelingError(error);
     }
+  }
+
+  /**
+   * Appends a welded, manifold procedural primitive shell (PLANE, BOX, GRID, CYLINDER, PYRAMID)
+   * directly into a normal Static Mesh asset (working on empty scratch meshes or existing meshes).
+   */
+  addPrimitive(args: AddStaticMeshPrimitiveArgs): StaticMeshPrimitiveResult {
+    const target = requireStaticMesh(args.assetId, 'target');
+    const label = `Add ${args.kind} Primitive`;
+    return assetHistory.execute(target.id, label, () => {
+      const current = requireStaticMesh(args.assetId, 'target');
+      const primitive = buildStaticMeshPrimitiveGeometry(args);
+      const existingVertexCount = Math.floor(current.geometry.vertices.length / 3);
+      const existingTriangleCount = Math.floor(current.geometry.indices.length / 3);
+      const existingFaces = sourceFaces(current);
+      const existingFaceCount = existingFaces.length;
+
+      const primVertexCount = primitive.positions.length;
+      const primFaceCount = primitive.faces.length;
+
+      const primVertices = new Float32Array(primVertexCount * 3);
+      const primUvs = new Float32Array(primVertexCount * 2);
+      const primColors = new Float32Array(primVertexCount * 3).fill(1);
+      for (let i = 0; i < primVertexCount; i += 1) {
+        const pos = primitive.positions[i];
+        primVertices[i * 3] = pos.x;
+        primVertices[i * 3 + 1] = pos.y;
+        primVertices[i * 3 + 2] = pos.z;
+        const uv = primitive.uvs[i];
+        if (uv) {
+          primUvs[i * 2] = uv.u;
+          primUvs[i * 2 + 1] = uv.v;
+        }
+      }
+
+      const totalVertexCount = existingVertexCount + primVertexCount;
+      const vertices = new Float32Array(totalVertexCount * 3);
+      vertices.set(current.geometry.vertices, 0);
+      vertices.set(primVertices, existingVertexCount * 3);
+
+      const uvs = appendFloatAttribute(
+        current.geometry.uvs ?? new Float32Array(0),
+        existingVertexCount,
+        primUvs,
+        primVertexCount,
+        2,
+        0,
+      );
+      const colors = appendFloatAttribute(
+        current.geometry.colors ?? new Float32Array(0),
+        existingVertexCount,
+        primColors,
+        primVertexCount,
+        3,
+        1,
+      );
+
+      const indicesArray: number[] = Array.from(current.geometry.indices);
+      const faces: number[][] = existingFaces.map(f => [...f]);
+      const triToFace: number[] = Array.from(sourceTriangleToFace(current, existingFaceCount));
+
+      let primTriangleCount = 0;
+      for (let fIdx = 0; fIdx < primitive.faces.length; fIdx += 1) {
+        const face = primitive.faces[fIdx].map(v => v + existingVertexCount);
+        const faceId = existingFaceCount + fIdx;
+        faces.push(face);
+        for (let i = 1; i < face.length - 1; i += 1) {
+          indicesArray.push(face[0], face[i], face[i + 1]);
+          triToFace.push(faceId);
+          primTriangleCount += 1;
+        }
+      }
+
+      const siblings = new Map<number, number[]>();
+      copySiblingGroups(siblings, current.topology?.siblings, 0);
+
+      const normals = computeVertexNormals(Array.from(vertices), indicesArray);
+      const useUint32 = totalVertexCount > 65535 || indicesArray.some(idx => idx > 65535);
+      const indices = useUint32 ? new Uint32Array(indicesArray) : new Uint16Array(indicesArray);
+
+      const topology: LogicalMesh = {
+        faces,
+        triangleToFaceIndex: new Int32Array(triToFace),
+        vertexToFaces: rebuildVertexToFaces(faces, siblings),
+        siblings,
+      };
+      topology.graph = MeshTopologyUtils.buildTopology(topology, totalVertexCount);
+      invalidateMeshConnectivity(topology);
+
+      const geometry: MeshGeometry = {
+        ...current.geometry,
+        vertices,
+        normals,
+        uvs,
+        colors,
+        indices,
+        aabb: totalVertexCount > 0 ? computeAABB(vertices) : undefined,
+      };
+
+      const shells = resolveStaticMeshShells({
+        ...current,
+        geometry,
+        topology,
+        construction: undefined,
+      }).map(shell => materializeStaticMeshShell(shell));
+
+      assetManager.updateAsset(current.id, {
+        geometry,
+        topology,
+        shells,
+        construction: undefined,
+      });
+
+      const vertexIds = Array.from({ length: primVertexCount }, (_, idx) => existingVertexCount + idx);
+      const faceIds = Array.from({ length: primFaceCount }, (_, idx) => existingFaceCount + idx);
+      const triangleIds = Array.from({ length: primTriangleCount }, (_, idx) => existingTriangleCount + idx);
+      const newShell = shells.find(
+        s => existingFaceCount >= s.faceIds.start && existingFaceCount < s.faceIds.endExclusive,
+      );
+
+      return {
+        assetId: current.id,
+        kind: args.kind,
+        vertexIds,
+        faceIds,
+        triangleIds,
+        shellId: newShell?.id ?? shells[shells.length - 1]?.id ?? 'shell-0',
+      };
+    });
+  }
+
+  /**
+   * Convenience factory: creates a brand-new Static Mesh asset and populates it
+   * with a welded, manifold procedural primitive in a single call.
+   */
+  createPrimitiveMesh(args: CreateStaticMeshPrimitiveArgs): StaticMeshAsset {
+    const asset = this.create({ name: args.name, path: args.path });
+    const { name: _name, path: _path, ...primitiveOptions } = args;
+    this.addPrimitive({
+      assetId: asset.id,
+      ...primitiveOptions,
+    });
+    return requireStaticMesh(asset.id, 'target');
+  }
+
+  /**
+   * Appends raw 3D vertex coordinates into the mesh without requiring the legacy
+   * Construction Point layer. Returns the newly allocated numeric vertex IDs.
+   */
+  addVertices(args: AddLogicalVerticesArgs): number[] {
+    const target = requireStaticMesh(args.assetId, 'target');
+    if (!Array.isArray(args.positions) || args.positions.length === 0) {
+      throw new Error('addVertices requires at least one vertex position.');
+    }
+    args.positions.forEach((pos, idx) => assertFinitePosition(pos, `Vertex position [${idx}]`));
+
+    return assetHistory.execute(target.id, 'Add Mesh Vertices', () => {
+      const current = requireStaticMesh(args.assetId, 'target');
+      const existingVertexCount = Math.floor(current.geometry.vertices.length / 3);
+      const addedCount = args.positions.length;
+      const totalVertexCount = existingVertexCount + addedCount;
+
+      const vertices = new Float32Array(totalVertexCount * 3);
+      vertices.set(current.geometry.vertices, 0);
+      const addedNormals = new Float32Array(addedCount * 3);
+      const addedUvs = new Float32Array(addedCount * 2);
+      const addedColors = new Float32Array(addedCount * 3).fill(1);
+
+      const newVertexIds: number[] = [];
+      for (let i = 0; i < addedCount; i += 1) {
+        const vId = existingVertexCount + i;
+        newVertexIds.push(vId);
+        const pos = args.positions[i];
+        vertices[vId * 3] = pos.x;
+        vertices[vId * 3 + 1] = pos.y;
+        vertices[vId * 3 + 2] = pos.z;
+        addedNormals[i * 3 + 1] = 1;
+      }
+
+      const normals = appendFloatAttribute(current.geometry.normals, existingVertexCount, addedNormals, addedCount, 3, 0);
+      const uvs = appendFloatAttribute(current.geometry.uvs, existingVertexCount, addedUvs, addedCount, 2, 0);
+      const colors = appendFloatAttribute(current.geometry.colors, existingVertexCount, addedColors, addedCount, 3, 1);
+
+      const faces = sourceFaces(current);
+      const siblings = new Map<number, number[]>();
+      copySiblingGroups(siblings, current.topology?.siblings, 0);
+      const topology: LogicalMesh = {
+        faces,
+        triangleToFaceIndex: sourceTriangleToFace(current, faces.length),
+        vertexToFaces: rebuildVertexToFaces(faces, siblings),
+        siblings,
+      };
+      topology.graph = MeshTopologyUtils.buildTopology(topology, totalVertexCount);
+      invalidateMeshConnectivity(topology);
+
+      const geometry: MeshGeometry = {
+        ...current.geometry,
+        vertices,
+        normals,
+        uvs,
+        colors,
+        aabb: totalVertexCount > 0 ? computeAABB(vertices) : undefined,
+      };
+
+      assetManager.updateAsset(current.id, {
+        geometry,
+        topology,
+        construction: undefined,
+      });
+
+      return newVertexIds;
+    });
+  }
+
+  /**
+   * Creates a new logical polygon face directly from ordered numeric vertex IDs.
+   * Supports triangles, quads, and convex/concave planar n-gons.
+   */
+  createFace(args: CreateLogicalFaceArgs): CreateLogicalFaceResult {
+    const target = requireStaticMesh(args.assetId, 'target');
+    if (!Array.isArray(args.vertexIds) || args.vertexIds.length < 3) {
+      throw new Error('A logical face requires at least 3 vertex IDs.');
+    }
+    const vertexIds = args.vertexIds.map(vId => requireLogicalVertexId(target, vId));
+    if (new Set(vertexIds).size !== vertexIds.length) {
+      throw new Error('A logical face cannot repeat a vertex ID.');
+    }
+
+    return assetHistory.execute(target.id, 'Create Logical Face', () => {
+      const current = requireStaticMesh(args.assetId, 'target');
+      const state = createConstructionMutationState(current);
+      const triangles = triangulateConstructionBoundary(state, vertexIds);
+      const faceId = state.faces.length;
+      const triangleStart = Math.floor(state.indices.length / 3);
+
+      state.faces.push([...vertexIds]);
+      for (let i = 0; i < triangles.length; i += 3) {
+        state.indices.push(triangles[i], triangles[i + 1], triangles[i + 2]);
+        state.triangleToFace.push(faceId);
+      }
+      const triangleEnd = Math.floor(state.indices.length / 3);
+      const triangleIds: number[] = [];
+      for (let t = triangleStart; t < triangleEnd; t += 1) triangleIds.push(t);
+
+      const prevDepth = activeLogicalModelingDepthByAsset.get(current.id) ?? 0;
+      activeLogicalModelingDepthByAsset.set(current.id, prevDepth + 1);
+      try {
+        finalizeConstructionMutation(state);
+      } finally {
+        if (prevDepth <= 0) {
+          activeLogicalModelingDepthByAsset.delete(current.id);
+          transientLogicalConstructionByAsset.delete(current.id);
+        } else {
+          activeLogicalModelingDepthByAsset.set(current.id, prevDepth);
+        }
+      }
+
+      return {
+        faceId,
+        vertexIds: [...vertexIds],
+        triangleIds,
+      };
+    });
   }
 
   extrudeFace(args: ExtrudeLogicalFaceArgs): ExtrudeLogicalFaceResult;
@@ -2160,30 +2756,70 @@ class StaticMeshAssetAPIService {
       };
       return this.extrudeConstructionFace(constructionArgs);
     }
+    const batch = this.extrudeFaces({
+      assetId: args.assetId,
+      faceIds: [args.faceId],
+      distance: args.distance,
+    });
+    const first = batch.results[0];
+    if (!first) throw new Error('Extrude Face did not produce a face result.');
+    return first;
+  }
+
+  /**
+   * Extrudes one or more logical faces in a single atomic history transaction
+   * and single topology rebuild.
+   */
+  extrudeFaces(args: ExtrudeLogicalFacesArgs): ExtrudeLogicalFacesResult {
     const asset = requireStaticMesh(args.assetId, 'target');
-    const faceId = requireLogicalFaceId(asset, args.faceId);
-    return this.runLogicalModeling(args.assetId, 'Extrude Face', adapter => {
-      const semanticFaceId = adapter.faceIdByLogical.get(faceId);
-      if (!semanticFaceId) throw new Error(`Logical face ${faceId} was not found.`);
-      const result = this.extrudeConstructionFace({ assetId: args.assetId, faceId: semanticFaceId, distance: args.distance });
-      const updated = requireStaticMesh(args.assetId, 'target');
-      const construction = updated.construction!;
+    const faceIds = Array.from(new Set(args.faceIds.map(faceId => requireLogicalFaceId(asset, faceId))));
+    if (faceIds.length === 0) throw new Error('Extrude requires at least one selected logical face.');
+    if (!Number.isFinite(args.distance) || Math.abs(args.distance) <= 1e-8) {
+      throw new Error('Extrude distance must be a finite non-zero number.');
+    }
+
+    return this.runLogicalModeling(args.assetId, faceIds.length === 1 ? 'Extrude Face' : 'Extrude Faces', adapter => {
+      const semanticFaceIds = faceIds.map(faceId => {
+        const semanticFaceId = adapter.faceIdByLogical.get(faceId);
+        if (!semanticFaceId) throw new Error(`Logical face ${faceId} was not found.`);
+        return semanticFaceId;
+      });
+
+      const current = requireStaticMesh(args.assetId, 'target');
+      const state = createConstructionMutationState(current);
+      const semanticResults = semanticFaceIds.map(semanticFaceId =>
+        this.extrudeConstructionFaceInState(state, {
+          assetId: args.assetId,
+          faceId: semanticFaceId,
+          distance: args.distance,
+        }),
+      );
+      finalizeConstructionMutation(state);
+      assetHistory.markDirty(args.assetId);
+
+      const construction = state.construction;
       const logicalFace = (semanticId: string): number => {
-        const face = construction.faces.find(candidate => candidate.id === semanticId);
-        if (!face) throw new Error(`Extrude Face could not resolve generated logical face '${semanticId}'.`);
+        const face = findConstructionFace(construction, semanticId);
         return face.faceId;
       };
       const vertex = (semanticId: string): number => {
-        const point = construction.points.find(candidate => candidate.id === semanticId);
-        const vertexId = point?.vertexIds?.[0];
-        if (vertexId === undefined) throw new Error(`Extrude Face could not resolve generated mesh vertex '${semanticId}'.`);
+        const point = findConstructionPoint(construction, semanticId);
+        const vertexId = point.vertexIds?.[0];
+        if (vertexId === undefined) throw new Error(`Extrude Faces could not resolve generated mesh vertex '${semanticId}'.`);
         return vertexId;
       };
-      return {
-        sourceFaceId: faceId,
+
+      const results = semanticResults.map((result, index): ExtrudeLogicalFaceResult => ({
+        sourceFaceId: faceIds[index],
         topFaceId: logicalFace(result.topFaceId),
         topVertexIds: result.topPointIds.map(vertex),
         sideFaceIds: result.sideFaceIds.map(logicalFace),
+      }));
+
+      return {
+        results,
+        topFaceIds: results.map(r => r.topFaceId),
+        sideFaceIds: results.flatMap(r => r.sideFaceIds),
       };
     });
   }
@@ -2200,41 +2836,19 @@ class StaticMeshAssetAPIService {
       };
       return this.insetConstructionFace(constructionArgs);
     }
-    const asset = requireStaticMesh(args.assetId, 'target');
-    const faceId = requireLogicalFaceId(asset, args.faceId);
-    return this.runLogicalModeling(args.assetId, 'Inset Face', adapter => {
-      const semanticFaceId = adapter.faceIdByLogical.get(faceId);
-      if (!semanticFaceId) throw new Error(`Logical face ${faceId} was not found.`);
-      const result = this.insetConstructionFace({ assetId: args.assetId, faceId: semanticFaceId, ratio: args.ratio });
-      const updated = requireStaticMesh(args.assetId, 'target');
-      const construction = updated.construction!;
-      const logicalFace = (semanticId: string): number => {
-        const face = construction.faces.find(candidate => candidate.id === semanticId);
-        if (!face) throw new Error(`Inset Face could not resolve generated logical face '${semanticId}'.`);
-        return face.faceId;
-      };
-      const vertex = (semanticId: string): number => {
-        const point = construction.points.find(candidate => candidate.id === semanticId);
-        const vertexId = point?.vertexIds?.[0];
-        if (vertexId === undefined) throw new Error(`Inset Face could not resolve generated mesh vertex '${semanticId}'.`);
-        return vertexId;
-      };
-      return {
-        sourceFaceId: faceId,
-        innerFaceId: logicalFace(result.innerFaceId),
-        innerVertexIds: result.innerPointIds.map(vertex),
-        borderFaceIds: result.borderFaceIds.map(logicalFace),
-      };
+    const batch = this.insetFaces({
+      assetId: args.assetId,
+      faceIds: [args.faceId],
+      ratio: args.ratio,
     });
+    const first = batch.results[0];
+    if (!first) throw new Error('Inset Face did not produce a face result.');
+    return first;
   }
 
-
   /**
-   * Insets multiple normal LogicalMesh faces as one atomic modeling action.
-   * Faces are treated individually (Blender's Individual-style behavior): each
-   * selected face receives its own center-relative inset ring. This keeps the
-   * operation predictable for arbitrary disconnected selections and avoids
-   * inventing a region-boundary solver in the normal modeling path.
+   * Insets multiple normal LogicalMesh faces as one atomic modeling action
+   * and single topology rebuild.
    */
   insetFaces(args: InsetLogicalFacesArgs): InsetLogicalFacesResult {
     const asset = requireStaticMesh(args.assetId, 'target');
@@ -2250,21 +2864,26 @@ class StaticMeshAssetAPIService {
         if (!semanticFaceId) throw new Error(`Logical face ${faceId} was not found.`);
         return semanticFaceId;
       });
-      const semanticResults = semanticFaceIds.map(faceId => this.insetConstructionFace({
-        assetId: args.assetId,
-        faceId,
-        ratio: args.ratio,
-      }));
-      const updated = requireStaticMesh(args.assetId, 'target');
-      const construction = updated.construction!;
+      const current = requireStaticMesh(args.assetId, 'target');
+      const state = createConstructionMutationState(current);
+      const semanticResults = semanticFaceIds.map(faceId =>
+        this.insetConstructionFaceInState(state, {
+          assetId: args.assetId,
+          faceId,
+          ratio: args.ratio,
+        }),
+      );
+      finalizeConstructionMutation(state);
+      assetHistory.markDirty(args.assetId);
+
+      const construction = state.construction;
       const logicalFace = (semanticId: string): number => {
-        const face = construction.faces.find(candidate => candidate.id === semanticId);
-        if (!face) throw new Error(`Inset Faces could not resolve generated logical face '${semanticId}'.`);
+        const face = findConstructionFace(construction, semanticId);
         return face.faceId;
       };
       const vertex = (semanticId: string): number => {
-        const point = construction.points.find(candidate => candidate.id === semanticId);
-        const vertexId = point?.vertexIds?.[0];
+        const point = findConstructionPoint(construction, semanticId);
+        const vertexId = point.vertexIds?.[0];
         if (vertexId === undefined) throw new Error(`Inset Faces could not resolve generated mesh vertex '${semanticId}'.`);
         return vertexId;
       };
@@ -2306,6 +2925,653 @@ class StaticMeshAssetAPIService {
     });
   }
 
+  /**
+   * Deletes one or more logical faces in a single atomic modeling operation.
+   */
+  deleteFaces(args: DeleteLogicalFacesArgs): DeleteLogicalFacesResult {
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const faceIds = Array.from(new Set(args.faceIds.map(faceId => requireLogicalFaceId(asset, faceId))));
+    if (faceIds.length === 0) throw new Error('Delete Faces requires at least one selected logical face.');
+
+    return this.runLogicalModeling(args.assetId, faceIds.length === 1 ? 'Delete Face' : 'Delete Faces', adapter => {
+      const semanticFaceIds = faceIds.map(faceId => {
+        const semanticFaceId = adapter.faceIdByLogical.get(faceId);
+        if (!semanticFaceId) throw new Error(`Logical face ${faceId} was not found.`);
+        return semanticFaceId;
+      });
+      const current = requireStaticMesh(args.assetId, 'target');
+      const state = createConstructionMutationState(current);
+      const touchedVertexIds = new Set<number>();
+
+      for (const semanticFaceId of semanticFaceIds) {
+        const face = findConstructionFace(state.construction, semanticFaceId);
+        const deleted = deleteConstructionFaceFromState(state, face);
+        deleted.vertexIds.forEach(v => touchedVertexIds.add(v));
+      }
+
+      if (args.compactUnusedVertices) {
+        compactUnusedConstructionVertices(state);
+      }
+
+      finalizeConstructionMutation(state);
+      assetHistory.markDirty(args.assetId);
+
+      return {
+        deletedFaceIds: [...faceIds],
+        vertexIds: Array.from(touchedVertexIds).sort((a, b) => a - b),
+        remainingFaceCount: state.faces.length,
+      };
+    });
+  }
+
+  /**
+   * Moves one or more mesh vertices (and any explicitly welded sibling vertices)
+   * in a single history transaction, recomputing normals, bounds, and shells.
+   */
+  moveVertices(args: MoveLogicalVerticesArgs): MoveLogicalVerticesResult {
+    const asset = requireStaticMesh(args.assetId, 'target');
+    if (!Array.isArray(args.vertices) || args.vertices.length === 0) {
+      throw new Error('moveVertices requires at least one vertex update.');
+    }
+
+    const updates = args.vertices.map((entry, idx) => {
+      const vertexId = requireLogicalVertexId(asset, entry.vertexId);
+      assertFinitePosition(entry.position, `Vertex ${vertexId} position [${idx}]`);
+      return { vertexId, position: clonePosition(entry.position) };
+    });
+
+    return assetHistory.execute(asset.id, 'Move Vertices', () => {
+      const current = requireStaticMesh(args.assetId, 'target');
+      const propagateSiblings = args.propagateSiblings ?? true;
+      const { vertexToCanonical, groups } = buildCanonicalVertexGroups(current);
+      const vertices = new Float32Array(current.geometry.vertices);
+      const movedSet = new Set<number>();
+
+      for (const update of updates) {
+        const targetIds = propagateSiblings
+          ? (groups.get(vertexToCanonical.get(update.vertexId) ?? update.vertexId) ?? [update.vertexId])
+          : [update.vertexId];
+        for (const vId of targetIds) {
+          const offset = vId * 3;
+          vertices[offset] = update.position.x;
+          vertices[offset + 1] = update.position.y;
+          vertices[offset + 2] = update.position.z;
+          movedSet.add(vId);
+        }
+      }
+
+      const normals = computeVertexNormals(Array.from(vertices), Array.from(current.geometry.indices));
+      const geometry: MeshGeometry = {
+        ...current.geometry,
+        vertices,
+        normals,
+        aabb: vertices.length > 0 ? computeAABB(vertices) : undefined,
+      };
+      if (current.topology) {
+        current.topology.bvh = undefined;
+        invalidateMeshConnectivity(current.topology);
+      }
+      const shells = resolveStaticMeshShells({
+        ...current,
+        geometry,
+      }).map(shell => materializeStaticMeshShell(shell));
+
+      assetManager.updateAsset(current.id, { geometry, shells });
+
+      return {
+        movedVertexIds: Array.from(movedSet).sort((a, b) => a - b),
+      };
+    });
+  }
+
+  /**
+   * Translates, offsets along face normal, and/or scales the vertices belonging
+   * to one or more logical faces around their shared centroid (or individual centroids).
+   */
+  transformFaces(args: TransformLogicalFacesArgs): TransformLogicalFacesResult {
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const faceIds = Array.from(new Set(args.faceIds.map(faceId => requireLogicalFaceId(asset, faceId))));
+    if (faceIds.length === 0) throw new Error('transformFaces requires at least one logical face.');
+
+    const translate = args.translate ?? { x: 0, y: 0, z: 0 };
+    assertFinitePosition(translate, 'transformFaces translate');
+    const normalOffset = args.normalOffset ?? 0;
+    if (!Number.isFinite(normalOffset)) throw new Error('transformFaces normalOffset must be a finite number.');
+
+    const scaleVec: Vector3 = typeof args.scale === 'number'
+      ? { x: args.scale, y: args.scale, z: args.scale }
+      : (args.scale ?? { x: 1, y: 1, z: 1 });
+    assertFinitePosition(scaleVec, 'transformFaces scale');
+
+    const faces = sourceFaces(asset);
+    const { vertexToCanonical, groups } = buildCanonicalVertexGroups(asset);
+    const pivotMode = args.pivot ?? 'SELECTION_CENTER';
+
+    // Compute per-vertex target position
+    const targetByCanonical = new Map<number, Vector3>();
+
+    const readCanonicalPos = (canonical: number): Vector3 => ({
+      x: asset.geometry.vertices[canonical * 3],
+      y: asset.geometry.vertices[canonical * 3 + 1],
+      z: asset.geometry.vertices[canonical * 3 + 2],
+    });
+
+    if (pivotMode === 'INDIVIDUAL_FACES') {
+      for (const faceId of faceIds) {
+        const faceVerts = faces[faceId];
+        const canonicals = Array.from(new Set(faceVerts.map(v => vertexToCanonical.get(v) ?? v)));
+        const positions = canonicals.map(readCanonicalPos);
+        const normal = computePlanarFaceNormal(positions);
+        const center = positions.reduce(
+          (acc, p) => ({ x: acc.x + p.x / positions.length, y: acc.y + p.y / positions.length, z: acc.z + p.z / positions.length }),
+          { x: 0, y: 0, z: 0 },
+        );
+        for (let i = 0; i < canonicals.length; i += 1) {
+          const cId = canonicals[i];
+          const p = positions[i];
+          targetByCanonical.set(cId, {
+            x: center.x + (p.x - center.x) * scaleVec.x + translate.x + normal.x * normalOffset,
+            y: center.y + (p.y - center.y) * scaleVec.y + translate.y + normal.y * normalOffset,
+            z: center.z + (p.z - center.z) * scaleVec.z + translate.z + normal.z * normalOffset,
+          });
+        }
+      }
+    } else {
+      const selectedCanonicals = new Set<number>();
+      const normals: Vector3[] = [];
+      for (const faceId of faceIds) {
+        const faceVerts = faces[faceId];
+        const canonicals = faceVerts.map(v => vertexToCanonical.get(v) ?? v);
+        canonicals.forEach(c => selectedCanonicals.add(c));
+        normals.push(computePlanarFaceNormal(canonicals.map(readCanonicalPos)));
+      }
+      const avgNormalRaw = normals.reduce(
+        (acc, n) => ({ x: acc.x + n.x, y: acc.y + n.y, z: acc.z + n.z }),
+        { x: 0, y: 0, z: 0 },
+      );
+      const nLen = Math.hypot(avgNormalRaw.x, avgNormalRaw.y, avgNormalRaw.z);
+      const avgNormal = nLen > 1e-8
+        ? { x: avgNormalRaw.x / nLen, y: avgNormalRaw.y / nLen, z: avgNormalRaw.z / nLen }
+        : { x: 0, y: 1, z: 0 };
+
+      const canonicalList = Array.from(selectedCanonicals);
+      const positions = canonicalList.map(readCanonicalPos);
+      const center = positions.reduce(
+        (acc, p) => ({ x: acc.x + p.x / positions.length, y: acc.y + p.y / positions.length, z: acc.z + p.z / positions.length }),
+        { x: 0, y: 0, z: 0 },
+      );
+
+      for (let i = 0; i < canonicalList.length; i += 1) {
+        const cId = canonicalList[i];
+        const p = positions[i];
+        targetByCanonical.set(cId, {
+          x: center.x + (p.x - center.x) * scaleVec.x + translate.x + avgNormal.x * normalOffset,
+          y: center.y + (p.y - center.y) * scaleVec.y + translate.y + avgNormal.y * normalOffset,
+          z: center.z + (p.z - center.z) * scaleVec.z + translate.z + avgNormal.z * normalOffset,
+        });
+      }
+    }
+
+    const vertexUpdates = Array.from(targetByCanonical.entries()).map(([vertexId, position]) => ({
+      vertexId,
+      position,
+    }));
+    const moved = this.moveVertices({
+      assetId: args.assetId,
+      vertices: vertexUpdates,
+      propagateSiblings: true,
+    });
+
+    // Compute final center of moved vertices
+    const updated = requireStaticMesh(args.assetId, 'target');
+    const finalPositions = Array.from(targetByCanonical.keys()).flatMap(c => groups.get(c) ?? [c]);
+    const uniqueVerts = Array.from(new Set(finalPositions));
+    const center = uniqueVerts.reduce(
+      (acc, vId) => ({
+        x: acc.x + updated.geometry.vertices[vId * 3] / Math.max(1, uniqueVerts.length),
+        y: acc.y + updated.geometry.vertices[vId * 3 + 1] / Math.max(1, uniqueVerts.length),
+        z: acc.z + updated.geometry.vertices[vId * 3 + 2] / Math.max(1, uniqueVerts.length),
+      }),
+      { x: 0, y: 0, z: 0 },
+    );
+
+    return {
+      faceIds,
+      movedVertexIds: moved.movedVertexIds,
+      center,
+    };
+  }
+
+  /**
+   * Welds two or more vertices together into a single shared vertex position,
+   * updating face boundaries and removing degenerate faces or unused vertices.
+   */
+  weldVertices(args: WeldLogicalVerticesArgs): WeldLogicalVerticesResult {
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const rawVertexIds = Array.from(new Set(args.vertexIds.map(v => requireLogicalVertexId(asset, v))));
+    if (rawVertexIds.length < 2) {
+      throw new Error('Weld Vertices requires at least 2 distinct mesh vertices.');
+    }
+
+    return assetHistory.execute(asset.id, 'Weld Vertices', () => {
+      const current = requireStaticMesh(args.assetId, 'target');
+      const { vertexToCanonical, groups } = buildCanonicalVertexGroups(current);
+      const selectedGroupSet = new Set<number>();
+      for (const vId of rawVertexIds) {
+        const canonical = vertexToCanonical.get(vId) ?? vId;
+        for (const member of groups.get(canonical) ?? [vId]) {
+          selectedGroupSet.add(member);
+        }
+      }
+      const weldedGroup = Array.from(selectedGroupSet).sort((a, b) => a - b);
+      if (weldedGroup.length < 2) {
+        throw new Error('Weld Vertices requires at least 2 distinct mesh vertices.');
+      }
+
+      let targetPosition: Vector3;
+      if (args.position) {
+        assertFinitePosition(args.position, 'Weld target position');
+        targetPosition = clonePosition(args.position);
+      } else if (args.mode === 'FIRST') {
+        const first = rawVertexIds[0];
+        targetPosition = {
+          x: current.geometry.vertices[first * 3],
+          y: current.geometry.vertices[first * 3 + 1],
+          z: current.geometry.vertices[first * 3 + 2],
+        };
+      } else {
+        targetPosition = weldedGroup.reduce(
+          (acc, vId) => ({
+            x: acc.x + current.geometry.vertices[vId * 3] / weldedGroup.length,
+            y: acc.y + current.geometry.vertices[vId * 3 + 1] / weldedGroup.length,
+            z: acc.z + current.geometry.vertices[vId * 3 + 2] / weldedGroup.length,
+          }),
+          { x: 0, y: 0, z: 0 },
+        );
+      }
+
+      const survivorPreCompact = weldedGroup[0];
+      const state = createConstructionMutationState(current);
+      // Move survivor vertex to targetPosition
+      state.vertices[survivorPreCompact * 3] = targetPosition.x;
+      state.vertices[survivorPreCompact * 3 + 1] = targetPosition.y;
+      state.vertices[survivorPreCompact * 3 + 2] = targetPosition.z;
+
+      // Replace all welded vertices in faces and re-triangulate
+      const nextFaces: number[][] = [];
+      const nextIndices: number[] = [];
+      const nextTriToFace: number[] = [];
+      let removedDegenerateFaces = 0;
+
+      for (const face of state.faces) {
+        const remapped = face.map(v => (selectedGroupSet.has(v) ? survivorPreCompact : v));
+        // Deduplicate consecutive or cyclic repeats
+        const deduped: number[] = [];
+        for (const v of remapped) {
+          if (!deduped.includes(v)) deduped.push(v);
+        }
+        if (deduped.length < 3) {
+          removedDegenerateFaces += 1;
+          continue;
+        }
+        const nextFaceId = nextFaces.length;
+        const tris = triangulateConstructionBoundary(state, deduped);
+        nextFaces.push(deduped);
+        for (let i = 0; i < tris.length; i += 3) {
+          nextIndices.push(tris[i], tris[i + 1], tris[i + 2]);
+          nextTriToFace.push(nextFaceId);
+        }
+      }
+
+      state.faces = nextFaces;
+      state.indices = nextIndices;
+      state.triangleToFace = nextTriToFace;
+
+      // Track where survivorPreCompact lands after compaction
+      const usedBeforeCompact = Array.from(new Set(state.faces.flat())).sort((a, b) => a - b);
+      const survivingVertexId = Math.max(0, usedBeforeCompact.indexOf(survivorPreCompact));
+
+      compactUnusedConstructionVertices(state);
+
+      const prevDepth = activeLogicalModelingDepthByAsset.get(current.id) ?? 0;
+      activeLogicalModelingDepthByAsset.set(current.id, prevDepth + 1);
+      try {
+        finalizeConstructionMutation(state);
+      } finally {
+        if (prevDepth <= 0) {
+          activeLogicalModelingDepthByAsset.delete(current.id);
+          transientLogicalConstructionByAsset.delete(current.id);
+        } else {
+          activeLogicalModelingDepthByAsset.set(current.id, prevDepth);
+        }
+      }
+
+      return {
+        survivingVertexId,
+        mergedVertexIds: weldedGroup,
+        position: targetPosition,
+        removedDegenerateFaces,
+      };
+    });
+  }
+
+  /**
+   * Connects selected boundary vertices across any shared logical faces by
+   * cutting those faces along the non-adjacent selected vertices (Blender 'J' / Maya Connect).
+   */
+  connectVertices(args: ConnectLogicalVerticesArgs): ConnectLogicalVerticesResult {
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const rawVertexIds = Array.from(new Set(args.vertexIds.map(v => requireLogicalVertexId(asset, v))));
+    if (rawVertexIds.length < 2) {
+      throw new Error('Connect Vertices requires at least 2 selected mesh vertices.');
+    }
+
+    return this.runLogicalModeling(args.assetId, 'Connect Vertices', adapter => {
+      const selectedPointIds = new Set<string>();
+      for (const vId of rawVertexIds) {
+        const ptId = adapter.pointIdByVertex.get(vId);
+        if (ptId) selectedPointIds.add(ptId);
+      }
+      if (selectedPointIds.size < 2) {
+        throw new Error('Connect Vertices requires at least 2 distinct topological vertices.');
+      }
+
+      const current = requireStaticMesh(args.assetId, 'target');
+      const state = createConstructionMutationState(current);
+
+      // Find all faces that contain at least 2 non-adjacent selected points
+      const cuts: Array<{
+        sourceFaceId: number;
+        newFaceId: number;
+        cutEdgeId: string;
+        vertexIds: [number, number];
+      }> = [];
+
+      // Collect candidate pairs on existing faces
+      const candidateFaceIds = state.construction.faces.map(f => f.id);
+      for (const semanticFaceId of candidateFaceIds) {
+        const face = state.construction.faces.find(f => f.id === semanticFaceId);
+        if (!face || face.pointIds.length < 4) continue;
+        const matchingPoints = face.pointIds.filter(ptId => selectedPointIds.has(ptId));
+        if (matchingPoints.length < 2) continue;
+
+        // Connect consecutive matching points that are non-adjacent on the face boundary
+        for (let i = 0; i < matchingPoints.length - 1; i += 1) {
+          const pointAId = matchingPoints[i];
+          const pointBId = matchingPoints[i + 1];
+          const currentFace = state.construction.faces.find(
+            f => f.pointIds.includes(pointAId) && f.pointIds.includes(pointBId) && f.pointIds.length >= 4,
+          );
+          if (!currentFace) continue;
+          if (findBoundaryEdgeIndex(currentFace.pointIds, pointAId, pointBId, true) >= 0) continue;
+
+          const pointAIndex = currentFace.pointIds.indexOf(pointAId);
+          const pointBIndex = currentFace.pointIds.indexOf(pointBId);
+          const sourceBoundary = constructionBoundaryPath(currentFace.pointIds, pointAIndex, pointBIndex);
+          const newBoundary = constructionBoundaryPath(currentFace.pointIds, pointBIndex, pointAIndex);
+          if (sourceBoundary.length < 3 || newBoundary.length < 3) continue;
+
+          const operationId = makeUniqueOperationId(
+            undefined,
+            'connect',
+            [
+              ...state.construction.faces.map(f => f.id),
+              ...state.construction.loops.map(l => l.id),
+              ...state.construction.points.map(p => p.id),
+            ],
+          );
+
+          const sourceResult = replaceConstructionFaceBoundaryInState(state, currentFace, sourceBoundary);
+          const newFace = addConstructionFaceToState(state, {
+            id: `${operationId}.face`,
+            name: currentFace.name ? `${currentFace.name} Connect` : undefined,
+            pointIds: newBoundary,
+          });
+          const pointAVertexId = ensurePointVertex(state, pointAId);
+          const pointBVertexId = ensurePointVertex(state, pointBId);
+          cuts.push({
+            sourceFaceId: sourceResult.faceId,
+            newFaceId: newFace.faceId,
+            cutEdgeId: meshEdgeKey(pointAVertexId, pointBVertexId),
+            vertexIds: [pointAVertexId, pointBVertexId],
+          });
+        }
+      }
+
+      if (cuts.length === 0) {
+        throw new Error('Connect Vertices requires at least two selected vertices that are non-adjacent on a common face.');
+      }
+
+      finalizeConstructionMutation(state);
+      assetHistory.markDirty(args.assetId);
+
+      return {
+        cuts,
+        cutEdgeIds: cuts.map(c => c.cutEdgeId),
+        newFaceIds: cuts.map(c => c.newFaceId),
+      };
+    });
+  }
+
+  /**
+   * Produces a comprehensive spatial and topological inspection report for an
+   * asset so AI agents and procedural tools can discover faces/edges by direction,
+   * area, and centroid without guessing numeric IDs.
+   */
+  inspectMesh(assetId: string): StaticMeshInspectionReport {
+    return inspectStaticMesh(requireStaticMesh(assetId, 'target'));
+  }
+
+  /**
+   * Queries logical faces by semantic direction tag ('TOP', 'BOTTOM', 'FRONT',
+   * 'BACK', 'LEFT', 'RIGHT', 'ANGLED'), normal vector, area, vertex count, or
+   * spatial sorting.
+   */
+  findFaces(args: StaticMeshFaceQueryArgs): StaticMeshInspectedFace[] {
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const { assetId: _assetId, ...query } = args;
+    return queryStaticMeshFaces(asset, query);
+  }
+
+  /**
+   * Queries logical edges by length, boundary/manifold status, incident face IDs,
+   * or spatial sorting.
+   */
+  findEdges(args: StaticMeshEdgeQueryArgs): StaticMeshInspectedEdge[] {
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const { assetId: _assetId, ...query } = args;
+    return queryStaticMeshEdges(asset, query);
+  }
+
+  /**
+   * Executes a declarative multi-step modeling script (supporting both numeric IDs
+   * and semantic `faceQuery` / `edgeQuery` selectors) in a single atomic Undo/Redo
+   * transaction. If any step fails, the entire asset rolls back cleanly.
+   */
+  runModelingSteps(args: RunStaticMeshModelingStepsArgs): RunStaticMeshModelingStepsResult {
+    const target = requireStaticMesh(args.assetId, 'target');
+    if (!Array.isArray(args.steps) || args.steps.length === 0) {
+      throw new Error('runModelingSteps requires at least one step.');
+    }
+
+    const label = args.label?.trim() || `AI Modeling Pipeline (${args.steps.length} steps)`;
+    return this.transaction(target.id, label, () => {
+      const stepResults: unknown[] = [];
+
+      const resolveStepFaceIds = (
+        stepIndex: number,
+        opName: string,
+        faceIds?: number[],
+        faceQuery?: StaticMeshFaceQuery,
+      ): number[] => {
+        if (faceIds && faceIds.length > 0) return faceIds;
+        if (faceQuery) {
+          const matches = this.findFaces({ assetId: target.id, ...faceQuery });
+          if (matches.length === 0) {
+            throw new Error(`Step ${stepIndex + 1} (${opName}): faceQuery matched 0 logical faces.`);
+          }
+          return matches.map(m => m.faceId);
+        }
+        throw new Error(`Step ${stepIndex + 1} (${opName}) requires either faceIds or faceQuery.`);
+      };
+
+      const resolveStepEdges = (
+        stepIndex: number,
+        opName: string,
+        edges?: Array<{ vertexAId: number; vertexBId: number }>,
+        edgeQuery?: StaticMeshEdgeQuery,
+      ): Array<{ vertexAId: number; vertexBId: number }> => {
+        if (edges && edges.length > 0) return edges;
+        if (edgeQuery) {
+          const matches = this.findEdges({ assetId: target.id, ...edgeQuery });
+          if (matches.length === 0) {
+            throw new Error(`Step ${stepIndex + 1} (${opName}): edgeQuery matched 0 logical edges.`);
+          }
+          return matches.map(m => ({ vertexAId: m.vertexAId, vertexBId: m.vertexBId }));
+        }
+        throw new Error(`Step ${stepIndex + 1} (${opName}) requires either edges or edgeQuery.`);
+      };
+
+      for (let i = 0; i < args.steps.length; i += 1) {
+        const step = args.steps[i];
+        switch (step.op) {
+          case 'ADD_PRIMITIVE': {
+            const { op: _op, ...primArgs } = step;
+            stepResults.push(this.addPrimitive({ assetId: target.id, ...primArgs }));
+            break;
+          }
+          case 'ADD_VERTICES': {
+            stepResults.push(this.addVertices({ assetId: target.id, positions: step.positions }));
+            break;
+          }
+          case 'CREATE_FACE': {
+            stepResults.push(this.createFace({ assetId: target.id, vertexIds: step.vertexIds }));
+            break;
+          }
+          case 'EXTRUDE_FACES': {
+            const faceIds = resolveStepFaceIds(i, step.op, step.faceIds, step.faceQuery);
+            stepResults.push(this.extrudeFaces({ assetId: target.id, faceIds, distance: step.distance }));
+            break;
+          }
+          case 'INSET_FACES': {
+            const faceIds = resolveStepFaceIds(i, step.op, step.faceIds, step.faceQuery);
+            stepResults.push(this.insetFaces({ assetId: target.id, faceIds, ratio: step.ratio }));
+            break;
+          }
+          case 'DELETE_FACES': {
+            const faceIds = resolveStepFaceIds(i, step.op, step.faceIds, step.faceQuery);
+            stepResults.push(
+              this.deleteFaces({
+                assetId: target.id,
+                faceIds,
+                compactUnusedVertices: step.compactUnusedVertices,
+              }),
+            );
+            break;
+          }
+          case 'BEVEL_EDGES': {
+            const edges = resolveStepEdges(i, step.op, step.edges, step.edgeQuery);
+            stepResults.push(
+              this.bevelEdges({
+                assetId: target.id,
+                edges,
+                width: step.width,
+                segments: step.segments,
+                profile: step.profile,
+                clampOverlap: step.clampOverlap,
+              }),
+            );
+            break;
+          }
+          case 'SPLIT_EDGE': {
+            let edgePair: { vertexAId: number; vertexBId: number };
+            if (step.vertexAId !== undefined && step.vertexBId !== undefined) {
+              edgePair = { vertexAId: step.vertexAId, vertexBId: step.vertexBId };
+            } else {
+              const matched = resolveStepEdges(i, step.op, undefined, step.edgeQuery);
+              edgePair = matched[0];
+            }
+            stepResults.push(
+              this.splitEdge({
+                assetId: target.id,
+                vertexAId: edgePair.vertexAId,
+                vertexBId: edgePair.vertexBId,
+                t: step.t,
+              }),
+            );
+            break;
+          }
+          case 'CUT_FACE': {
+            stepResults.push(
+              this.cutFace({
+                assetId: target.id,
+                faceId: step.faceId,
+                vertexAId: step.vertexAId,
+                vertexBId: step.vertexBId,
+              }),
+            );
+            break;
+          }
+          case 'CONNECT_VERTICES': {
+            stepResults.push(
+              this.connectVertices({
+                assetId: target.id,
+                vertexIds: step.vertexIds,
+              }),
+            );
+            break;
+          }
+          case 'WELD_VERTICES': {
+            stepResults.push(
+              this.weldVertices({
+                assetId: target.id,
+                vertexIds: step.vertexIds,
+                mode: step.mode,
+                position: step.position,
+              }),
+            );
+            break;
+          }
+          case 'MOVE_VERTICES': {
+            stepResults.push(
+              this.moveVertices({
+                assetId: target.id,
+                vertices: step.vertices,
+                propagateSiblings: step.propagateSiblings,
+              }),
+            );
+            break;
+          }
+          case 'TRANSFORM_FACES': {
+            const faceIds = resolveStepFaceIds(i, step.op, step.faceIds, step.faceQuery);
+            stepResults.push(
+              this.transformFaces({
+                assetId: target.id,
+                faceIds,
+                translate: step.translate,
+                normalOffset: step.normalOffset,
+                scale: step.scale,
+                pivot: step.pivot,
+              }),
+            );
+            break;
+          }
+          default: {
+            const exhaustive: never = step;
+            throw new Error(`Unsupported modeling step: ${JSON.stringify(exhaustive)}`);
+          }
+        }
+      }
+
+      return {
+        assetId: target.id,
+        stepsExecuted: args.steps.length,
+        stepResults,
+        inspection: this.inspectMesh(target.id),
+      };
+    });
+  }
+
   splitEdge(args: SplitLogicalEdgeArgs): SplitLogicalEdgeResult;
   splitEdge(args: SplitConstructionEdgeArgs): SplitConstructionEdgeResult;
   splitEdge(args: SplitLogicalEdgeArgs | SplitConstructionEdgeArgs): SplitLogicalEdgeResult | SplitConstructionEdgeResult {
@@ -2320,12 +3586,11 @@ class StaticMeshAssetAPIService {
       if (!pointAId || !pointBId || pointAId === pointBId) throw new Error('Split Edge could not resolve the selected logical edge.');
       const result = this.splitConstructionEdge({ assetId: args.assetId, pointAId, pointBId, t: args.t });
       const updated = requireStaticMesh(args.assetId, 'target');
-      const construction = updated.construction!;
+      const construction = getTransientOrPersistedConstruction(updated);
       return {
         vertexId: result.vertexId,
         updatedFaceIds: result.updatedFaceIds.map(semanticId => {
-          const face = construction.faces.find(candidate => candidate.id === semanticId);
-          if (!face) throw new Error(`Split Edge could not resolve updated logical face '${semanticId}'.`);
+          const face = findConstructionFace(construction, semanticId);
           return face.faceId;
         }),
         edgeIds: result.edgeIds,
@@ -2425,16 +3690,6 @@ class StaticMeshAssetAPIService {
       }
       const hasSharedEndpoint = Array.from(endpointUseCount.values()).some(count => count > 1);
 
-      // Blender solves every selected edge set as one bevel graph, even when the
-      // selected edges are disconnected. This matters after a bevel: the editor
-      // selects the new parallel rails, and beveling them again must clamp their
-      // shared surrounding topology as one operation instead of walking a fixed
-      // width independently along the now-short neighboring edges of an n-gon.
-      //
-      // The only compatibility fallback is topology the joint planner explicitly
-      // does not own yet (open one-rings and edgecount==2 terminal endpoints).
-      // Never decompose a connected selection because that would double-solve a
-      // shared endpoint and recreate the original connected-bevel bug.
       let state: ConstructionMutationState | null = null;
       let plan: BevelKernelPlan | null = null;
       try {
@@ -2463,15 +3718,14 @@ class StaticMeshAssetAPIService {
         }));
 
         const updated = requireStaticMesh(args.assetId, 'target');
-        const construction = updated.construction!;
+        const construction = getTransientOrPersistedConstruction(updated);
         const faceId = (semanticId: string): number => {
-          const face = construction.faces.find(candidate => candidate.id === semanticId);
-          if (!face) throw new Error(`Bevel Edges could not resolve logical face '${semanticId}'.`);
+          const face = findConstructionFace(construction, semanticId);
           return face.faceId;
         };
         const vertexId = (semanticId: string): number => {
-          const point = construction.points.find(candidate => candidate.id === semanticId);
-          const id = point?.vertexIds?.[0];
+          const point = findConstructionPoint(construction, semanticId);
+          const id = point.vertexIds?.[0];
           if (id === undefined) throw new Error(`Bevel Edges could not resolve mesh vertex '${semanticId}'.`);
           return id;
         };
@@ -2509,21 +3763,16 @@ class StaticMeshAssetAPIService {
       }
 
       const applied = applyJointBevelPlan(state, plan);
-      // Joint plan application commits through the staged mutation state rather
-      // than a nested assetHistory.execute(), so explicitly mark the outer
-      // runLogicalModeling transaction dirty for Undo/Redo.
       assetHistory.markDirty(args.assetId);
 
-      const updated = requireStaticMesh(args.assetId, 'target');
-      const construction = updated.construction!;
+      const construction = state.construction;
       const faceId = (semanticId: string): number => {
-        const face = construction.faces.find(candidate => candidate.id === semanticId);
-        if (!face) throw new Error(`Bevel Edges could not resolve logical face '${semanticId}'.`);
+        const face = findConstructionFace(construction, semanticId);
         return face.faceId;
       };
       const vertexId = (semanticId: string): number => {
-        const point = construction.points.find(candidate => candidate.id === semanticId);
-        const id = point?.vertexIds?.[0];
+        const point = findConstructionPoint(construction, semanticId);
+        const id = point.vertexIds?.[0];
         if (id === undefined) throw new Error(`Bevel Edges could not resolve mesh vertex '${semanticId}'.`);
         return id;
       };
@@ -3355,82 +4604,167 @@ class StaticMeshAssetAPIService {
    * the inner face, while a ring of new border faces connects the old boundary
    * to the new inner boundary. This relative inset does not require planarity.
    */
+  private insetConstructionFaceInState(
+    state: ConstructionMutationState,
+    args: InsetConstructionFaceArgs,
+  ): InsetConstructionFaceResult {
+    const sourceFace = findConstructionFace(state.construction, args.faceId);
+    const originalPointIds = [...sourceFace.pointIds];
+    const insetPositions = computeInsetPositions(state.construction, originalPointIds, args.ratio);
+    const operationId = makeUniqueOperationId(
+      args.id,
+      'inset',
+      [
+        ...state.construction.faces.map(face => face.id),
+        ...state.construction.loops.map(loop => loop.id),
+        ...state.construction.points.map(point => point.id),
+      ],
+    );
+
+    const innerPointIds: string[] = [];
+    for (let index = 0; index < originalPointIds.length; index += 1) {
+      const sourcePoint = findConstructionPoint(state.construction, originalPointIds[index]);
+      const pointId = makeUniqueConstructionId(
+        `${operationId}.point.${index}`,
+        'point',
+        state.construction.points.map(point => point.id),
+      );
+      state.construction.points.push({
+        id: pointId,
+        name: sourcePoint.name ? `${sourcePoint.name} Inset` : undefined,
+        role: sourcePoint.role,
+        groupId: sourcePoint.groupId,
+        tags: sourcePoint.tags ? [...sourcePoint.tags] : undefined,
+        data: sourcePoint.data
+          ? { ...sourcePoint.data, sourcePointId: sourcePoint.id }
+          : { sourcePointId: sourcePoint.id },
+        position: insetPositions[index],
+        vertexIds: [],
+      });
+      innerPointIds.push(pointId);
+    }
+
+    replaceConstructionFaceBoundaryInState(state, sourceFace, innerPointIds);
+
+    const borderFaceIds: string[] = [];
+    for (let i = 0; i < originalPointIds.length; i += 1) {
+      const next = (i + 1) % originalPointIds.length;
+      const border = addConstructionFaceToState(state, {
+        id: `${operationId}.border.${i}`,
+        pointIds: [originalPointIds[i], originalPointIds[next], innerPointIds[next], innerPointIds[i]],
+      });
+      borderFaceIds.push(border.id);
+    }
+
+    const innerLoopId = makeUniqueConstructionId(
+      `${operationId}.innerLoop`,
+      'loop',
+      state.construction.loops.map(loop => loop.id),
+    );
+    state.construction.loops.push({
+      id: innerLoopId,
+      pointIds: [...innerPointIds],
+      closed: true,
+      name: `${sourceFace.name ?? sourceFace.id} Inset Loop`,
+    });
+
+    return {
+      id: operationId,
+      sourceFaceId: sourceFace.id,
+      innerFaceId: sourceFace.id,
+      innerLoopId,
+      innerPointIds,
+      borderFaceIds,
+    };
+  }
+
+  /**
+   * Insets one Construction Face by scaling its ordered boundary toward the
+   * arithmetic face center. The input semantic face id is preserved and becomes
+   * the inner face, while a ring of new border faces connects the old boundary
+   * to the new inner boundary. This relative inset does not require planarity.
+   */
   insetConstructionFace(args: InsetConstructionFaceArgs): InsetConstructionFaceResult {
     return assetHistory.execute(args.assetId, 'Inset Construction Face', () => {
       const asset = requireStaticMesh(args.assetId, 'target');
       const state = createConstructionMutationState(asset);
-      const sourceFace = findConstructionFace(state.construction, args.faceId);
-      const originalPointIds = [...sourceFace.pointIds];
-      const insetPositions = computeInsetPositions(state.construction, originalPointIds, args.ratio);
-      const operationId = makeUniqueOperationId(
-        args.id,
-        'inset',
-        [
-          ...state.construction.faces.map(face => face.id),
-          ...state.construction.loops.map(loop => loop.id),
-          ...state.construction.points.map(point => point.id),
-        ],
-      );
-
-      const innerPointIds: string[] = [];
-      for (let index = 0; index < originalPointIds.length; index += 1) {
-        const sourcePoint = findConstructionPoint(state.construction, originalPointIds[index]);
-        const pointId = makeUniqueConstructionId(
-          `${operationId}.point.${index}`,
-          'point',
-          state.construction.points.map(point => point.id),
-        );
-        state.construction.points.push({
-          id: pointId,
-          name: sourcePoint.name ? `${sourcePoint.name} Inset` : undefined,
-          role: sourcePoint.role,
-          groupId: sourcePoint.groupId,
-          tags: sourcePoint.tags ? [...sourcePoint.tags] : undefined,
-          data: sourcePoint.data
-            ? { ...sourcePoint.data, sourcePointId: sourcePoint.id }
-            : { sourcePointId: sourcePoint.id },
-          position: insetPositions[index],
-          vertexIds: [],
-        });
-        innerPointIds.push(pointId);
-      }
-
-      // Keep the stable semantic face handle alive. The source face's logical face
-      // id also stays stable; only its boundary and triangulation are replaced.
-      replaceConstructionFaceBoundaryInState(state, sourceFace, innerPointIds);
-
-      const borderFaceIds: string[] = [];
-      for (let i = 0; i < originalPointIds.length; i += 1) {
-        const next = (i + 1) % originalPointIds.length;
-        const border = addConstructionFaceToState(state, {
-          id: `${operationId}.border.${i}`,
-          pointIds: [originalPointIds[i], originalPointIds[next], innerPointIds[next], innerPointIds[i]],
-        });
-        borderFaceIds.push(border.id);
-      }
-
-      const innerLoopId = makeUniqueConstructionId(
-        `${operationId}.innerLoop`,
-        'loop',
-        state.construction.loops.map(loop => loop.id),
-      );
-      state.construction.loops.push({
-        id: innerLoopId,
-        pointIds: [...innerPointIds],
-        closed: true,
-        name: `${sourceFace.name ?? sourceFace.id} Inset Loop`,
-      });
-
+      const result = this.insetConstructionFaceInState(state, args);
       finalizeConstructionMutation(state);
-      return {
-        id: operationId,
-        sourceFaceId: sourceFace.id,
-        innerFaceId: sourceFace.id,
-        innerLoopId,
-        innerPointIds,
-        borderFaceIds,
-      };
+      return result;
+    });
+  }
+
+  private extrudeConstructionFaceInState(
+    state: ConstructionMutationState,
+    args: ExtrudeConstructionFaceArgs,
+  ): ExtrudeConstructionFaceResult {
+    if (!Number.isFinite(args.distance) || Math.abs(args.distance) <= 1e-8) {
+      throw new Error('Extrude distance must be a finite non-zero number.');
+    }
+    const sourceFace = findConstructionFace(state.construction, args.faceId);
+    const sourcePointIds = [...sourceFace.pointIds];
+    const operationId = makeUniqueOperationId(
+      args.id,
+      'extrude',
+      [
+        ...state.construction.faces.map(face => face.id),
+        ...state.construction.loops.map(loop => loop.id),
+        ...state.construction.points.map(point => point.id),
+      ],
+    );
+    const direction = computeConstructionFaceNormal(state.construction, sourcePointIds);
+
+    const topPointIds: string[] = [];
+    for (let index = 0; index < sourcePointIds.length; index += 1) {
+      const sourcePoint = findConstructionPoint(state.construction, sourcePointIds[index]);
+      const pointId = makeUniqueConstructionId(
+        `${operationId}.point.${index}`,
+        'point',
+        state.construction.points.map(point => point.id),
+      );
+      state.construction.points.push({
+        id: pointId,
+        name: sourcePoint.name ? `${sourcePoint.name} Extruded` : undefined,
+        role: sourcePoint.role,
+        groupId: sourcePoint.groupId,
+        tags: sourcePoint.tags ? [...sourcePoint.tags] : undefined,
+        data: sourcePoint.data ? { ...sourcePoint.data, sourcePointId: sourcePoint.id } : { sourcePointId: sourcePoint.id },
+        position: {
+          x: sourcePoint.position.x + direction.x * args.distance,
+          y: sourcePoint.position.y + direction.y * args.distance,
+          z: sourcePoint.position.z + direction.z * args.distance,
+        },
+        vertexIds: [],
       });
+      topPointIds.push(pointId);
+    }
+
+    replaceConstructionFaceBoundaryInState(state, sourceFace, topPointIds);
+
+    const sideFaceIds: string[] = [];
+    for (let i = 0; i < sourcePointIds.length; i += 1) {
+      const next = (i + 1) % sourcePointIds.length;
+      const side = addConstructionFaceToState(state, {
+        id: `${operationId}.side.${i}`,
+        pointIds: [sourcePointIds[i], sourcePointIds[next], topPointIds[next], topPointIds[i]],
+      });
+      sideFaceIds.push(side.id);
+    }
+    const topLoopId = makeUniqueConstructionId(
+      `${operationId}.topLoop`,
+      'loop',
+      state.construction.loops.map(loop => loop.id),
+    );
+    state.construction.loops.push({ id: topLoopId, pointIds: [...topPointIds], closed: true });
+
+    return {
+      id: operationId,
+      sourceFaceId: sourceFace.id,
+      topFaceId: sourceFace.id,
+      topLoopId,
+      topPointIds,
+      sideFaceIds,
+    };
   }
 
   extrudeConstructionFace(args: ExtrudeConstructionFaceArgs): ExtrudeConstructionFaceResult {
@@ -3440,82 +4774,10 @@ class StaticMeshAssetAPIService {
         throw new Error('Extrude distance must be a finite non-zero number.');
       }
       const state = createConstructionMutationState(asset);
-      const sourceFace = findConstructionFace(state.construction, args.faceId);
-      const sourcePointIds = [...sourceFace.pointIds];
-      const operationId = makeUniqueOperationId(
-        args.id,
-        'extrude',
-        [
-          ...state.construction.faces.map(face => face.id),
-          ...state.construction.loops.map(loop => loop.id),
-          ...state.construction.points.map(point => point.id),
-        ],
-      );
-      // Face Extrude is normal-based by contract. A positive distance follows
-      // the current ordered logical face normal; a negative distance goes in the
-      // exact opposite direction. Arbitrary sweep directions belong in a separate
-      // future operation rather than weakening this modeller primitive.
-      const direction = computeConstructionFaceNormal(state.construction, sourcePointIds);
-
-      const topPointIds: string[] = [];
-      for (let index = 0; index < sourcePointIds.length; index += 1) {
-        const sourcePoint = findConstructionPoint(state.construction, sourcePointIds[index]);
-        const pointId = makeUniqueConstructionId(
-          `${operationId}.point.${index}`,
-          'point',
-          state.construction.points.map(point => point.id),
-        );
-        state.construction.points.push({
-          id: pointId,
-          name: sourcePoint.name ? `${sourcePoint.name} Extruded` : undefined,
-          role: sourcePoint.role,
-          groupId: sourcePoint.groupId,
-          tags: sourcePoint.tags ? [...sourcePoint.tags] : undefined,
-          data: sourcePoint.data ? { ...sourcePoint.data, sourcePointId: sourcePoint.id } : { sourcePointId: sourcePoint.id },
-          position: {
-            x: sourcePoint.position.x + direction.x * args.distance,
-            y: sourcePoint.position.y + direction.y * args.distance,
-            z: sourcePoint.position.z + direction.z * args.distance,
-          },
-          vertexIds: [],
-        });
-        topPointIds.push(pointId);
-      }
-
-      // Modeller-style extrusion consumes the source surface instead of leaving
-      // a duplicate cap behind at the original boundary. Preserve the stable
-      // semantic/logical face handle by moving that face onto the new top points;
-      // the old boundary remains available only through the generated side walls.
-      // This is equivalent to deleting the old source surface and continuing to
-      // edit the extruded face, while keeping AI/script handles stable.
-      replaceConstructionFaceBoundaryInState(state, sourceFace, topPointIds);
-
-      const sideFaceIds: string[] = [];
-      for (let i = 0; i < sourcePointIds.length; i += 1) {
-        const next = (i + 1) % sourcePointIds.length;
-        const side = addConstructionFaceToState(state, {
-          id: `${operationId}.side.${i}`,
-          pointIds: [sourcePointIds[i], sourcePointIds[next], topPointIds[next], topPointIds[i]],
-        });
-        sideFaceIds.push(side.id);
-      }
-      const topLoopId = makeUniqueConstructionId(
-        `${operationId}.topLoop`,
-        'loop',
-        state.construction.loops.map(loop => loop.id),
-      );
-      state.construction.loops.push({ id: topLoopId, pointIds: [...topPointIds], closed: true });
-
+      const result = this.extrudeConstructionFaceInState(state, args);
       finalizeConstructionMutation(state);
-      return {
-        id: operationId,
-        sourceFaceId: sourceFace.id,
-        topFaceId: sourceFace.id,
-        topLoopId,
-        topPointIds,
-        sideFaceIds,
-      };
-      });
+      return result;
+    });
   }
 
   bridgeLoops(args: BridgeConstructionLoopsArgs): BridgeConstructionLoopsResult {
@@ -3594,10 +4856,10 @@ class StaticMeshAssetAPIService {
       const sourceIds = unique(args.sourceAssetIds).filter(id => id !== target.id);
       const sources = sourceIds.map(id => requireStaticMesh(id, 'source'));
 
-      let vertices = new Float32Array(target.geometry.vertices);
-      let normals = new Float32Array(target.geometry.normals);
-      let uvs = new Float32Array(target.geometry.uvs);
-      let colors = target.geometry.colors
+      let vertices: Float32Array = new Float32Array(target.geometry.vertices);
+      let normals: Float32Array = new Float32Array(target.geometry.normals);
+      let uvs: Float32Array = new Float32Array(target.geometry.uvs);
+      let colors: Float32Array = target.geometry.colors
         ? new Float32Array(target.geometry.colors)
         : new Float32Array((vertices.length / 3) * 3).fill(1);
       let indices: number[] = Array.from(target.geometry.indices);

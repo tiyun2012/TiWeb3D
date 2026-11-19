@@ -426,6 +426,7 @@ export function finalizeStaticMeshTopologyAfterGeometryEdit(asset: StaticMeshAss
     return { topologyChanged: false, shellCount: resolveStaticMeshShells(asset).length };
   }
 
+  asset.topology.bvh = undefined;
   const result = reconcileMeshSiblingGroupsAfterGeometryEdit(asset.topology, asset.geometry.vertices);
   if (result.changed) {
     asset.shells = resolveStaticMeshShells(asset).map(materializeStaticMeshShell);

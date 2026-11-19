@@ -4,11 +4,42 @@ import {
   type StaticMeshTestFixtureKind,
   type StaticMeshTestFixtureResult,
 } from '@/engine/dev/StaticMeshTestFixtures';
+import {
+  clearScratchShowcaseMeshes,
+  runStaticMeshScratchStabilitySuite,
+  type ScratchStabilitySuiteReport,
+} from '@/engine/dev/StaticMeshScratchBenchmarks';
+import {
+  staticMeshAssetAPI,
+  type AddStaticMeshPrimitiveArgs,
+  type CreateStaticMeshPrimitiveArgs,
+  type RunStaticMeshModelingStepsArgs,
+  type RunStaticMeshModelingStepsResult,
+  type StaticMeshEdgeQuery,
+  type StaticMeshFaceQuery,
+  type StaticMeshInspectedEdge,
+  type StaticMeshInspectedFace,
+  type StaticMeshInspectionReport,
+  type StaticMeshPrimitiveResult,
+} from '@/engine/api/StaticMeshAssetAPI';
+import type { StaticMeshAsset } from '@/types';
 
 export interface StaticMeshTestConsoleCommand {
   (fixture?: StaticMeshTestFixtureKind): StaticMeshTestFixtureResult;
   clear(): number;
   help(): string;
+}
+
+export interface StaticMeshModelingConsoleHelper {
+  api: typeof staticMeshAssetAPI;
+  createPrimitiveMesh(args: CreateStaticMeshPrimitiveArgs): StaticMeshAsset;
+  addPrimitive(args: AddStaticMeshPrimitiveArgs): StaticMeshPrimitiveResult;
+  inspect(assetId: string): StaticMeshInspectionReport;
+  findFaces(assetId: string, query?: StaticMeshFaceQuery): StaticMeshInspectedFace[];
+  findEdges(assetId: string, query?: StaticMeshEdgeQuery): StaticMeshInspectedEdge[];
+  runSteps(args: RunStaticMeshModelingStepsArgs): RunStaticMeshModelingStepsResult;
+  runScratchBenchmarks(options?: { keepAssets?: boolean; path?: string }): ScratchStabilitySuiteReport;
+  clearScratchShowcase(): number;
 }
 
 const HELP = [
@@ -26,6 +57,11 @@ const HELP = [
   "smTest('extrude-normal') // tilted normal quad; Face Extrude follows its surface normal",
   "smTest('inset-orient') // horizontal + vertical/collinear + warped/sloped faces for relative Inset/normal display",
   'smTest.clear()     // remove TEST_StaticMesh_* fixtures',
+  "smModel.createPrimitiveMesh({ name: 'Tower', kind: 'BOX' }) // scratch primitive mesh",
+  'smModel.inspect(assetId) // semantic face/edge inspection report',
+  'smModel.runSteps({ assetId, steps: [...] }) // declarative AI modeling pipeline',
+  'smModel.runScratchBenchmarks() // builds & audits 10 simple-to-complex scratch meshes in /Content/Meshes',
+  'smModel.clearScratchShowcase() // removes Scratch_* showcase meshes',
 ].join('\n');
 
 export function installStaticMeshTestConsoleCommand(): StaticMeshTestConsoleCommand {
@@ -62,6 +98,34 @@ export function installStaticMeshTestConsoleCommand(): StaticMeshTestConsoleComm
     return HELP;
   };
 
-  (globalThis as typeof globalThis & { smTest?: StaticMeshTestConsoleCommand }).smTest = command;
+  const smModel: StaticMeshModelingConsoleHelper = {
+    api: staticMeshAssetAPI,
+    createPrimitiveMesh: args => staticMeshAssetAPI.createPrimitiveMesh(args),
+    addPrimitive: args => staticMeshAssetAPI.addPrimitive(args),
+    inspect: assetId => staticMeshAssetAPI.inspectMesh(assetId),
+    findFaces: (assetId, query = {}) => staticMeshAssetAPI.findFaces({ assetId, ...query }),
+    findEdges: (assetId, query = {}) => staticMeshAssetAPI.findEdges({ assetId, ...query }),
+    runSteps: args => staticMeshAssetAPI.runModelingSteps(args),
+    runScratchBenchmarks: (options = {}) => {
+      const report = runStaticMeshScratchStabilitySuite({ keepAssets: true, ...options });
+      console.info(
+        `[smModel] Scratch Stability Suite ${report.passed ? 'PASSED' : 'FAILED'} `
+        + `(${report.cases.length} meshes in ${report.totalDurationMs.toFixed(1)}ms; rollback=${report.rollbackVerified}, undoRedo=${report.undoRedoVerified}).`,
+      );
+      return report;
+    },
+    clearScratchShowcase: () => {
+      const removed = clearScratchShowcaseMeshes();
+      console.info(`[smModel] removed ${removed} scratch showcase mesh${removed === 1 ? '' : 'es'}.`);
+      return removed;
+    },
+  };
+
+  const globalScope = globalThis as typeof globalThis & {
+    smTest?: StaticMeshTestConsoleCommand;
+    smModel?: StaticMeshModelingConsoleHelper;
+  };
+  globalScope.smTest = command;
+  globalScope.smModel = smModel;
   return command;
 }

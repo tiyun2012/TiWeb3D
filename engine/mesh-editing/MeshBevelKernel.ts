@@ -159,8 +159,6 @@ const mapProfileSample = (
 };
 
 /**
-<<<<<<< HEAD
-=======
  * Project a generated profile point along the beveled edge direction onto a
  * target profile plane. Blender does this after mapping the superellipse into
  * the start/middle/end parallelogram. In terminal-edge corners it may move the
@@ -182,7 +180,6 @@ const projectAlongDirectionToPlane = (
 };
 
 /**
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
  * Blender's offset_meet() deliberately prefers the plane formed by the two
  * incident boundary edges at a corner when a logical face is non-planar. The
  * whole-face normal is retained only to choose which side of that local plane
@@ -249,8 +246,6 @@ export interface BevelKernelEdgePlan {
   endpointCornerKeys: [string[], string[]];
 }
 
-<<<<<<< HEAD
-=======
 export type BevelKernelCornerMeshKind = 'NONE' | 'POLY' | 'TRI_FAN' | 'ADJ';
 
 export interface BevelKernelAdjPlan {
@@ -262,13 +257,10 @@ export interface BevelKernelAdjPlan {
   facePointKeys: string[][];
 }
 
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 export interface BevelKernelCornerPlan {
   sourcePointId: string;
   selectedEdgeKeys: string[];
   boundaryPointKeys: string[];
-<<<<<<< HEAD
-=======
   /**
    * Blender-style VMesh ownership for this endpoint. NONE means the profile
    * terminates without a separate corner polygon (for example a two-boundary-
@@ -286,7 +278,6 @@ export interface BevelKernelCornerPlan {
   fanPointKey?: string;
   /** Structured segmented vertex mesh for ADJ corners. */
   adj?: BevelKernelAdjPlan;
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 }
 
 export interface BevelKernelPlan {
@@ -811,8 +802,6 @@ const solveAtWidth = (
   const replacements = new Map<string, string[]>();
   const corners: BevelKernelCornerPlan[] = [];
   const canonicalKeyByKey = new Map<string, string>();
-<<<<<<< HEAD
-=======
   // Blender's general two-profile weld case is angle-independent: when
   // exactly two selected edges meet and the pre-subdivision VMesh boundary has
   // exactly two effective BoundVerts, the two profile rows are welded together
@@ -826,7 +815,6 @@ const solveAtWidth = (
   // the actual plane depends on the final profile start/end points and is built
   // later during segmented profile sampling.
   const terminalProfileProjectionVertices = new Set<string>();
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
   // Rail endpoint per original face corner. Usually this is also the sole
   // replacement point for that corner, but Blender's edgecount==2 terminal
   // case replaces the source corner with TWO points (leg + profile side) while
@@ -854,10 +842,7 @@ const solveAtWidth = (
     const vertexPosition = findPoint(construction, vertexId);
     const selectedNeighborSet = new Set(star.neighbors.filter(neighborId => selectedKeys.has(edgeKey(vertexId, neighborId))));
     if (selectedNeighborSet.size === 0) throw new Error('Bevel lost a selected edge at a touched vertex.');
-<<<<<<< HEAD
-=======
 
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     // Blender can order a touched vertex as one continuous face chain with a
     // single boundary gap. The common and well-defined edge-bevel case there
     // is a terminal selected edge (selcount==1). Multi-selected open fans need
@@ -875,15 +860,12 @@ const solveAtWidth = (
     // edge. Keeping this inside the joint planner is essential when the other
     // endpoint has a different/high-valence fan.
     const twoEdgeTerminal = star.neighbors.length === 2 && selectedNeighborSet.size === 1;
-<<<<<<< HEAD
-=======
     // Blender calls move_profile_plane() for terminal bevels with edgecount>=3.
     // This is the common single selected-edge box/chamfer endpoint and is what
     // makes multi-segment profiles terminate in the endpoint-face plane.
     if (selectedNeighborSet.size === 1 && star.neighbors.length >= 3) {
       terminalProfileProjectionVertices.add(vertexId);
     }
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     const terminalSelectedNeighborId = twoEdgeTerminal ? Array.from(selectedNeighborSet)[0] : null;
     const terminalUnselectedNeighborId = twoEdgeTerminal
       ? star.neighbors.find(neighborId => !selectedNeighborSet.has(neighborId)) ?? null
@@ -1105,8 +1087,6 @@ const solveAtWidth = (
         sourcePointId: vertexId,
         selectedEdgeKeys: [edgeKey(vertexId, selectedNeighborId)],
         boundaryPointKeys: uniqueBoundary,
-<<<<<<< HEAD
-=======
         baseBoundaryPointKeys: [...uniqueBoundary],
         closed: star.closed,
         // Blender build_boundary_terminal_edge() uses M_TRI_FAN when a
@@ -1116,7 +1096,6 @@ const solveAtWidth = (
         // point. Treating this as one POLY hides those required radial edges.
         meshKind: uniqueBoundary.length === 3 ? 'TRI_FAN' : 'NONE',
         fanPointKey: uniqueBoundary.length === 3 ? legKey : undefined,
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
       });
     }
     else {
@@ -1179,8 +1158,6 @@ const solveAtWidth = (
       }
       if (boundary.length > 1 && boundary[0] === boundary[boundary.length - 1]) boundary.pop();
       const uniqueBoundary = boundary.filter((key, index) => boundary.indexOf(key) === index);
-<<<<<<< HEAD
-=======
 
       let terminalFanPointKey: string | undefined;
       if (selectedNeighborSet.size === 1 && uniqueBoundary.length === 3) {
@@ -1208,13 +1185,10 @@ const solveAtWidth = (
 
       const isNoCap = (selectedNeighborSet.size === 1 && uniqueBoundary.length <= 2)
         || isTwoSelectedProfileWeld;
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
       corners.push({
         sourcePointId: vertexId,
         selectedEdgeKeys: star.neighbors.filter(neighborId => selectedNeighborSet.has(neighborId)).map(neighborId => edgeKey(vertexId, neighborId)),
         boundaryPointKeys: uniqueBoundary,
-<<<<<<< HEAD
-=======
         baseBoundaryPointKeys: [...uniqueBoundary],
         closed: star.closed,
         // Match Blender's VMesh classification before subdivision: a terminal
@@ -1228,7 +1202,6 @@ const solveAtWidth = (
             ? 'TRI_FAN'
             : 'POLY',
         fanPointKey: terminalFanPointKey,
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
       });
     }
   }
@@ -1314,12 +1287,6 @@ const solveAtWidth = (
     };
 
     const attachProfileArcAtEndpoint = (endpointId: string, profileKeys: string[]) => {
-<<<<<<< HEAD
-      // Blender's M_NONE corner case (typically one selected edge in a 3-edge
-      // manifold fan) has no separate vertex patch: the opposite reconstructed
-      // original face owns the profile arc directly. Expand that face-corner
-      // replacement first so every endpoint profile segment gets a paired edge.
-=======
       // Blender's selcount==2/count==2 weld owns no corner surface. Its two
       // profile rows are reconciled after all incident rows have been sampled.
       // Inserting either row into a reconstructed face or POLY boundary here
@@ -1349,7 +1316,6 @@ const solveAtWidth = (
       // fan, the appropriate reconstructed original face owns the profile arc;
       // on an open rim there may be no opposite face, and the row intentionally
       // remains part of the open mesh boundary.
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
       const endpointCorners = cornersByVertex.get(endpointId) ?? [];
       for (const endpointCorner of endpointCorners) {
         const replacementKey = cornerKey(endpointCorner.faceId, endpointId);
@@ -1361,19 +1327,6 @@ const solveAtWidth = (
           return;
         }
       }
-<<<<<<< HEAD
-
-      // Otherwise the endpoint VMesh/cap owns the arc. This is the common path
-      // for terminal triangles and connected selected-edge corners.
-      const corner = corners.find(candidate => candidate.sourcePointId === endpointId);
-      if (!corner) {
-        throw new BevelKernelUnsupportedTopologyError(
-          'Multi-segment bevel could not find an endpoint face or VMesh boundary to own its profile arc.',
-        );
-      }
-      corner.boundaryPointKeys = insertProfileArc(corner.boundaryPointKeys, profileKeys);
-=======
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     };
 
     for (const edgePlan of edgePlans) {
@@ -1410,12 +1363,6 @@ const solveAtWidth = (
         for (let segment = 1; segment < segments; segment += 1) {
           const sample = normalizedProfile[segment];
           const key = `p:${edgePlan.edgeKey}:${endpointIndex}:${segment}`;
-<<<<<<< HEAD
-          generatedByKey.set(key, {
-            key,
-            sourcePointId: endpointId,
-            position: mapProfileSample(startPoint.position, middle, endPoint.position, sample),
-=======
           let profilePosition = mapProfileSample(startPoint.position, middle, endPoint.position, sample);
 
           if (terminalProfileProjectionVertices.has(endpointId)) {
@@ -1446,7 +1393,6 @@ const solveAtWidth = (
             key,
             sourcePointId: endpointId,
             position: profilePosition,
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
           });
           keys.push(key);
         }
@@ -1470,8 +1416,6 @@ const solveAtWidth = (
       attachProfileArcAtEndpoint(edgePlan.pointAId, aProfile);
       attachProfileArcAtEndpoint(edgePlan.pointBId, bProfile);
     }
-<<<<<<< HEAD
-=======
 
     // Weld segmented profile rows whenever Blender's VMesh is the two-boundary
     // selcount==2 weld case. A straight selected-chain split is one instance,
@@ -1875,7 +1819,6 @@ const solveAtWidth = (
         edgePlan.endpointCornerKeys[1].map(canonicalKey),
       ];
     }
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
   }
 
   // Track longitudinal usage on selected edges too. Bound points are lateral to
@@ -1966,12 +1909,6 @@ const solveAtWidth = (
  * - closed one-rings plus one-gap open terminal face fans (`selcount == 1`),
  * - Segments=1 remains the exact sharp-chamfer compatibility path,
  * - Segments>1 emits profile strips and expands endpoint VMesh boundaries,
-<<<<<<< HEAD
- * - global overlap clamping.
- *
- * The current multi-segment corner fill is deliberately a boundary n-gon, not
- * Blender's final M_ADJ/Grid Fill interior. General miter/VMesh subdivision,
-=======
  * - closed general corners with 2+ selected sectors use structured M_ADJ cells,
  * - global overlap clamping.
  *
@@ -1979,7 +1916,6 @@ const solveAtWidth = (
  * and odd/even center rules. Interior placement currently uses a stable Coons
  * interpolation from the solved profile boundary rather than Blender's complete
  * cubic-subdivision / pipe / special-triangle implementations. General miters,
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
  * multi-selected open-fan miters, multiple face-chain gaps and UV interpolation
  * should extend this plan rather than reintroduce per-edge mutation.
  */

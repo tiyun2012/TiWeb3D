@@ -292,19 +292,11 @@ selected logical edges
     -> sample endpoint profiles when segments > 1
     -> rewrite every original face once
     -> create `segments` selected-edge strip faces per source edge
-<<<<<<< HEAD
-    -> create one corner patch where the boundary has 3+ vertices
-    -> clamp the whole network before mutation when boundaries would overlap
-```
-
-This makes shared corners deterministic: two selected cube edges can weld directly through a two-point corner boundary, three selected cube edges create one triangular corner patch, four-edge loops are solved as one network, and valence-4 endpoint fans are handled without applying the setback twice. The generated topology is validated by the focused mesh test as one shell with paired half-edges.
-=======
     -> create the classified corner VMesh (`NONE`, `POLY`, `TRI_FAN`, or structured `ADJ`)
     -> clamp the whole network before mutation when boundaries would overlap
 ```
 
 This makes shared corners deterministic: whenever exactly two selected edges reduce to a two-point effective corner boundary, their segmented profile rows weld directly through `M_NONE` regardless of whether the edges are straight or angled; one-segment three-edge corners create one triangular patch; segmented general corners that still require a surface use authored `ADJ` grid cells; four-edge loops are solved as one network; and valence-4 endpoint fans are handled without applying the setback twice. The generated topology is validated by the focused mesh tests as one shell with paired half-edges.
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 
 The current joint-kernel scope is deliberately smaller than Blender's full bevel implementation:
 
@@ -312,11 +304,7 @@ The current joint-kernel scope is deliberately smaller than Blender's full bevel
 - closed cyclic one-rings are supported, plus the common one-gap open terminal face chain when `selcount == 1`;
 - `segments = 1` is the stable sharp-chamfer compatibility path;
 - `segments > 1` samples a normalized superellipse profile and emits multiple edge strips while expanding the owning original/corner boundaries;
-<<<<<<< HEAD
-- the current segmented corner interior is one manifold n-gon patch, not yet Blender's final Grid Fill / `M_ADJ` VMesh interior;
-=======
 - `selcount == 2` corners with exactly two effective boundary roles are Blender-style `M_NONE` welds even when the selected edges meet at an angle; only closed segmented corners that still require a real surface after that classification use the structured `M_ADJ` VMesh grid; topology/parity follows Blender, while interior point placement is currently Coons-based rather than Blender's full cubic subdivision;
->>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 - explicit inner/outer miter modes, multi-selected open fans, custom profile curves, and UV/custom-loop interpolation remain future work.
 
 Endpoint valence is independent: one end may have a different number of incident edges or selected edges than the other. The joint path includes Blender-style degree-2 terminal construction, straight/near-collinear terminal handling, finite-segment clamping for zero-offset neighbors, reflex/non-planar corner handling, and topology-safe local welding. A legacy semantic Construction bevel remains available for compatibility, but normal numeric-ID bevels do not intentionally decompose a supported selection into repeated single-edge mutations.
@@ -338,3 +326,50 @@ For `bevelEdge()` the result exposes:
 For `bevelEdges()`, aggregate `bevelFaceIds` contains all strip faces from all selected source edges and aggregate `bevelEdgeIds` contains all unique profile rails. The editor deliberately selects those returned profile rails after the operation, so another Bevel command can continue from the newly generated profile topology without rediscovering render triangles.
 
 Both batch operations return aggregate result ids suitable for restoring editor selection after the mutation, and neither persists the transient Construction adapter used internally by the normal LogicalMesh path. See `STATIC_MESH_BEVEL_ARCHITECTURE.md` for the Blender source mapping and extension roadmap.
+
+## Modeling from scratch: procedural primitives & direct vertex/face authoring
+
+Normal Static Mesh assets can be authored from an empty mesh (`staticMeshAssetAPI.create(...)`) without importing external geometry or using the legacy Construction Point layer:
+
+- `addPrimitive({ assetId, kind, size?, center?, segmentsX?, segmentsZ?, radialSegments?, radius? })` appends a welded, manifold procedural shell (`'PLANE' | 'BOX' | 'GRID' | 'CYLINDER' | 'PYRAMID'`) directly into the asset's `MeshGeometry` + `LogicalMesh`.
+- `createPrimitiveMesh({ name, path?, kind, ... })` creates a new Static Mesh asset and populates it with a welded primitive in one call.
+- `addVertices({ assetId, positions })` appends raw 3D vertex coordinates and returns their allocated numeric vertex IDs.
+- `createFace({ assetId, vertexIds })` creates a new logical polygon face (triangle, quad, or convex/concave n-gon) from existing numeric vertex IDs.
+
+In the Static Mesh Editor UI, the **Mesh Assembly** section of the left Tool Dock exposes quick-create **Scratch Primitives** buttons (`Plane`, `Box`, `Grid`, `Cyl`, `Pyr`) that invoke `addPrimitive`, select the new shell, and automatically frame the camera when starting from an empty mesh.
+
+## Complete batch & vertex topology operations
+
+In addition to single-component overloads and `insetFaces` / `bevelEdges`, the normal modeling API supports:
+
+- `extrudeFaces({ assetId, faceIds, distance })`: extrudes one or more logical faces along their individual surface normals in a single mutation state and single topology rebuild.
+- `deleteFaces({ assetId, faceIds, compactUnusedVertices? })`: removes one or more logical faces in a single atomic operation.
+- `moveVertices({ assetId, vertices, propagateSiblings? })`: updates vertex coordinates (and explicitly welded siblings), recomputes normals/AABB/shells, and invalidates cached BVH/connectivity.
+- `transformFaces({ assetId, faceIds, translate?, normalOffset?, scale?, pivot? })`: translates, offsets along normal, and/or scales selected faces around `'SELECTION_CENTER'` or `'INDIVIDUAL_FACES'`.
+- `weldVertices({ assetId, vertexIds, mode?, position? })`: merges two or more vertices into a single shared vertex (`'AVERAGE' | 'FIRST'`), re-triangulates affected faces, removes collapsed faces, and compacts orphan vertices.
+- `connectVertices({ assetId, vertexIds })`: connects pairs of non-adjacent selected vertices across shared logical faces (wired to `staticMesh.connect` in the editor).
+
+## AI-easy semantic queries & declarative pipeline (`runModelingSteps`)
+
+To make procedural and AI-driven modeling resilient to numeric ID shifts after topology edits, `staticMeshAssetAPI` provides semantic inspection, spatial queries, and a declarative multi-step transaction runner:
+
+- `inspectMesh(assetId)`: returns a `StaticMeshInspectionReport` summarizing vertex/triangle/face/edge/shell counts, `isClosedManifold`, boundary/non-manifold edge counts, bounding box, and full per-face (`center`, `normal`, `area`, `directionTag`) and per-edge metadata.
+- `findFaces({ assetId, directionTag?, normalDirection?, maxAngleDeg?, minArea?, maxArea?, vertexCount?, sortBy?, limit? })`: filters and sorts logical faces semantically (for example `{ directionTag: 'TOP', sortBy: 'MIN_AREA', limit: 1 }`).
+- `findEdges({ assetId, onlyManifold?, onlyBoundary?, incidentFaceIds?, minLength?, maxLength?, sortBy?, limit? })`: filters and sorts logical edges semantically.
+- `runModelingSteps({ assetId, label?, steps })`: executes an ordered list of declarative modeling steps (`ADD_PRIMITIVE`, `ADD_VERTICES`, `CREATE_FACE`, `EXTRUDE_FACES`, `INSET_FACES`, `DELETE_FACES`, `BEVEL_EDGES`, `SPLIT_EDGE`, `CUT_FACE`, `CONNECT_VERTICES`, `WELD_VERTICES`, `MOVE_VERTICES`, `TRANSFORM_FACES`) in one atomic Undo/Redo transaction. Face and edge steps accept either explicit IDs or dynamic `faceQuery` / `edgeQuery` selectors evaluated against the live topology at that step. If any step fails validation, the entire transaction rolls back cleanly.
+
+In the browser developer console, `globalThis.smModel` exposes `smModel.createPrimitiveMesh(...)`, `smModel.addPrimitive(...)`, `smModel.inspect(assetId)`, `smModel.findFaces(assetId, query)`, `smModel.findEdges(assetId, query)`, `smModel.runSteps(...)`, `smModel.runScratchBenchmarks()`, and `smModel.clearScratchShowcase()`.
+
+## Progressive From-Scratch Stability Suite (`npm run test:mesh-scratch`)
+
+To continuously verify modeling API stability from empty meshes through complex multi-shell assets, `engine/dev/StaticMeshScratchBenchmarks.ts` defines a 10-case progressive benchmark and strict geometric/topological integrity validator (`validateStaticMeshIntegrity`):
+
+- **Simple**: raw `addVertices` + `createFace` closed gable-roof prism (`Scratch_01_HandAuthoredPrism`) and a 4-shell primitive gallery (`Scratch_02_PrimitiveGallery`: `BOX`, `PYRAMID`, `CYLINDER`, `GRID`).
+- **Medium**: beveled 6-sided recessed industrial crate (`Scratch_03_IndustrialCrate`) and a 10-step declarative stepped pedestal (`Scratch_04_SteppedPedestal`).
+- **Complex**: 14-step multi-shell watchtower (`Scratch_05_Watchtower`), 15-step multi-shell sci-fi turret (`Scratch_06_SciFiTurret`), and a watertight Genus-1 hollow window frame bridged by hand and beveled on outer edges (`Scratch_09_Genus1WindowFrame`).
+- **Stress & Edge Cases**: chained multi-operation topology torture (`Scratch_07_TopologyTorture`: double bevel -> inset -> extrude -> split -> connect -> weld -> delete), 12×12 high-density grid batch inset/extrude/taper (`Scratch_08_HighDensityGrid`), and concave 6-gon L-bracket extrusion + 16-gon cylinder cap rim bevel (`Scratch_10_ConcaveAndCylinderBevel`).
+- **Safety Audits**: verifies zero `NaN`/degenerate triangles, valid `triangleToFaceIndex`, zero `asset.construction` leakage, BVH raycast execution, atomic `runModelingSteps` rollback on mid-pipeline failure, multi-step Undo/Redo round-trips, and adversarial input guards.
+
+Run via CLI with `npm run test:mesh-scratch`, or run `smModel.runScratchBenchmarks()` in the browser console to spawn all 10 verified meshes into `/Content/Meshes` for live 3D inspection.
+
+

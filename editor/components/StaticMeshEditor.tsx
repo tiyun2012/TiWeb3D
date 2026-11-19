@@ -23,6 +23,7 @@ import {
 import type { ViewportFocusProvider } from '@/editor/viewports/viewportFocus';
 import { assetManager } from '@/engine/AssetManager';
 import { staticMeshAssetAPI } from '@/engine/api/StaticMeshAssetAPI';
+import type { StaticMeshPrimitiveKind } from '@/engine/mesh-editing/StaticMeshPrimitivesAndControl';
 import { eventBus } from '@/engine/EventBus';
 import { GizmoSystem } from '@/engine/GizmoSystem';
 import type { MeshPickingResult } from '@/engine/MeshTopologyUtils';
@@ -1551,6 +1552,35 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
     setAssetRevision(value => value + 1);
   }, [applyShellSelection, assetId]);
 
+  const handleAddPrimitive = useCallback((kind: StaticMeshPrimitiveKind) => {
+    const target = assetManager.getAsset(assetId);
+    if (!target || target.type !== 'MESH') return;
+    const wasEmpty = target.geometry.vertices.length === 0;
+
+    const result = staticMeshAssetAPI.addPrimitive({
+      assetId: target.id,
+      kind,
+    });
+    const updated = assetManager.getAsset(target.id) as StaticMeshAsset;
+    if (result.shellId) {
+      applyShellSelection([result.shellId], 'FACE');
+      setHierarchySection('SHELL');
+    }
+
+    dirtyRef.current = 'FULL';
+    previewEngineRef.current?.clearDeformation();
+    setStats({
+      verts: updated.geometry.vertices.length / 3,
+      tris: updated.geometry.indices.length / 3,
+    });
+    const fit = computeFitCamera(updated);
+    setFitCamera(fit);
+    if (wasEmpty) {
+      setCamera(p => ({ ...p, radius: fit.radius, target: { ...fit.target } }));
+    }
+    setAssetRevision(value => value + 1);
+  }, [applyShellSelection, assetId]);
+
   const handleAddReferenceMesh = useCallback((sourceAssetId: string) => {
     const target = assetManager.getAsset(assetId);
     if (!target || target.type !== 'MESH') return;
@@ -1774,24 +1804,56 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         return;
       }
 
-      if (selectedLogicalFaceId == null) return;
+      if (command === 'WELD') {
+        const selectedVertices = Array.from(engine.selectionSystem.subSelection.vertexIds);
+        if (selectedVertices.length < 2) return;
+        const result = staticMeshAssetAPI.weldVertices({
+          assetId,
+          vertexIds: selectedVertices,
+          mode: 'AVERAGE',
+        });
+        ensurePreviewSelectionTarget(engine);
+        engine.api.commands.mesh.setComponentMode('VERTEX');
+        engine.api.commands.selection.setMeshComponents({
+          mode: 'VERTEX',
+          ids: [result.survivingVertexId],
+          operation: 'REPLACE',
+        });
+        changeMeshComponentMode('VERTEX');
+        setSelectedShellIds([]);
+        setHierarchySection('VERTICES');
+        return;
+      }
+
+      if (command === 'CONNECT') {
+        const selectedVertices = Array.from(engine.selectionSystem.subSelection.vertexIds);
+        if (selectedVertices.length < 2) return;
+        const result = staticMeshAssetAPI.connectVertices({
+          assetId,
+          vertexIds: selectedVertices,
+        });
+        selectLogicalEdges(result.cutEdgeIds);
+        return;
+      }
+
+      if (selectedLogicalFaceIds.length === 0) return;
 
       if (command === 'EXTRUDE') {
         if (!Number.isFinite(topologyExtrudeDistance) || Math.abs(topologyExtrudeDistance) <= 1e-8) {
           setTopologyFeedback('Extrude distance must be a non-zero finite number.');
           return;
         }
-        const result = staticMeshAssetAPI.extrudeFace({
+        const result = staticMeshAssetAPI.extrudeFaces({
           assetId,
-          faceId: selectedLogicalFaceId,
+          faceIds: selectedLogicalFaceIds,
           distance: topologyExtrudeDistance,
         });
-        selectLogicalFace(result.topFaceId);
-        // UI-only modeller convenience: after Extrude, keep the new top face
+        selectLogicalFaces(result.topFaceIds);
+        // UI-only modeller convenience: after Extrude, keep the new top face(s)
         // selected and enter Move so the transform gizmo is immediately ready.
         setTool('MOVE');
       } else if (command === 'DELETE_FACE') {
-        staticMeshAssetAPI.deleteFace({ assetId, faceId: selectedLogicalFaceId });
+        staticMeshAssetAPI.deleteFaces({ assetId, faceIds: selectedLogicalFaceIds });
         selectLogicalFace(null);
       }
     } catch (error) {
@@ -1806,13 +1868,18 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
         || (command === 'SPLIT_EDGE' && error.message.startsWith('Split '))
         || (command === 'BEVEL' && error.message.startsWith('Bevel '))
         || (command === 'CUT_FACE' && error.message.startsWith('Cut Face'))
+        || (command === 'WELD' && error.message.startsWith('Weld '))
+        || (command === 'CONNECT' && error.message.startsWith('Connect '))
       );
       if (!expectedModelingValidation) console.error(`[StaticMeshEditor] ${command} failed`, error);
     }
   }, [
     assetId,
+    changeMeshComponentMode,
+    ensurePreviewSelectionTarget,
     selectLogicalEdges,
     selectLogicalFace,
+    selectLogicalFaces,
     selectedLogicalCut,
     selectedLogicalFaceId,
     selectedLogicalFaceIds,
@@ -1948,10 +2015,10 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             ? selectedLogicalEdges.length > 0
             : command === 'CUT_FACE'
               ? Boolean(selectedLogicalCut)
-              : command === 'INSET'
-                ? selectedLogicalFaceIds.length > 0
-                : selectedLogicalFaceId != null
-                  && (command === 'EXTRUDE' || command === 'DELETE_FACE'),
+              : command === 'WELD' || command === 'CONNECT'
+                ? selectionCounts.vertices >= 2
+                : (command === 'INSET' || command === 'EXTRUDE' || command === 'DELETE_FACE')
+                  && selectedLogicalFaceIds.length > 0,
         configureSoftSelection,
       },
     };
@@ -2137,6 +2204,7 @@ export const StaticMeshEditor: React.FC<StaticMeshEditorProps> = ({ assetId, edi
             onSoftSelectionConnectivityChange={connectivity => configureSoftSelection({ connectivity })}
             compositionSources={compositionSources}
             onAppendMesh={handleAppendMesh}
+            onAddPrimitive={handleAddPrimitive}
             topologyInsetRatio={topologyInsetRatio}
             topologyExtrudeDistance={topologyExtrudeDistance}
             topologySplitPosition={topologySplitPosition}

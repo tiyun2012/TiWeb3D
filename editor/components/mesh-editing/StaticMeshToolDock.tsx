@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { SoftSelectionMode } from '@/engine/mesh-editing/SoftSelection';
+import type { StaticMeshPrimitiveKind } from '@/engine/mesh-editing/StaticMeshPrimitivesAndControl';
 import { editorCommandRegistry, type EditorCommandContext, type ResolvedEditorCommand } from '@/editor/commands/EditorCommandRegistry';
 import type { MeshComponentMode, SoftSelectionConnectivity, SoftSelectionFalloff, StaticMeshAsset } from '@/types';
 import type { StaticMeshCompositionSource } from '@/engine/api/StaticMeshAssetAPI';
@@ -45,6 +46,7 @@ export interface StaticMeshToolDockProps {
   onSoftSelectionConnectivityChange: (connectivity: SoftSelectionConnectivity) => void;
   compositionSources?: StaticMeshCompositionSource[];
   onAppendMesh?: (sourceAssetId: string) => void;
+  onAddPrimitive?: (kind: StaticMeshPrimitiveKind) => void;
   topologyInsetRatio: number;
   topologyExtrudeDistance: number;
   topologySplitPosition: number;
@@ -230,6 +232,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   onSoftSelectionConnectivityChange,
   compositionSources = [],
   onAppendMesh,
+  onAddPrimitive,
   topologyInsetRatio,
   topologyExtrudeDistance,
   topologySplitPosition,
@@ -336,13 +339,14 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   const topologyActionButtons = useMemo(() => {
     const maybeCommand = (id: string) => editorCommandRegistry.resolve(id, commandContext);
     return [
-      { key: 'extrude', command: maybeCommand('staticMesh.extrude'), label: 'Extrude', icon: 'ArrowUpSquare', badge: 'API', hint: 'Extrude the selected logical face.' },
-      { key: 'inset', command: maybeCommand('staticMesh.inset'), label: 'Inset', icon: 'Shrink', badge: 'API', hint: 'Inset the selected logical face.' },
-      { key: 'deleteFace', command: maybeCommand('staticMesh.deleteFace'), label: 'Delete Face', icon: 'Trash2', badge: 'API', hint: 'Delete the selected logical face and leave an opening.' },
+      { key: 'extrude', command: maybeCommand('staticMesh.extrude'), label: 'Extrude', icon: 'ArrowUpSquare', badge: 'API', hint: 'Extrude the selected logical face(s).' },
+      { key: 'inset', command: maybeCommand('staticMesh.inset'), label: 'Inset', icon: 'Shrink', badge: 'API', hint: 'Inset the selected logical face(s).' },
+      { key: 'deleteFace', command: maybeCommand('staticMesh.deleteFace'), label: 'Delete Face', icon: 'Trash2', badge: 'API', hint: 'Delete the selected logical face(s) and leave an opening.' },
       { key: 'splitEdge', command: maybeCommand('staticMesh.splitEdge'), label: 'Split Edge', icon: 'Scissors', badge: 'API', hint: 'Insert one mesh vertex on the selected logical edge.' },
       { key: 'cutFace', command: maybeCommand('staticMesh.cutFace'), label: 'Cut Face', icon: 'Scissors', badge: 'API', hint: 'Cut one logical face between two selected non-adjacent mesh vertices.' },
-      { key: 'bevel', command: maybeCommand('staticMesh.bevel'), label: 'Bevel', icon: 'Ungroup', badge: 'API', hint: 'Bevel the selected manifold logical edge.' },
-      { key: 'connect', command: maybeCommand('staticMesh.connect'), label: 'Connect', icon: 'GitCommit', badge: 'M3', hint: 'Connect selected components with new topology.' },
+      { key: 'bevel', command: maybeCommand('staticMesh.bevel'), label: 'Bevel', icon: 'Ungroup', badge: 'API', hint: 'Bevel the selected manifold logical edge(s).' },
+      { key: 'weld', command: maybeCommand('staticMesh.weld'), label: 'Weld', icon: 'Merge', badge: 'API', hint: 'Weld two or more selected vertices into a single shared vertex.' },
+      { key: 'connect', command: maybeCommand('staticMesh.connect'), label: 'Connect', icon: 'GitCommit', badge: 'API', hint: 'Connect selected non-adjacent vertices across shared logical faces.' },
     ];
   }, [commandContext]);
 
@@ -448,8 +452,36 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
             <div className="space-y-1.5">
               <SubsectionLabel
                 title="Mesh Assembly"
-                subtitle="Choose a Static Mesh asset, then append a remapped copy into this asset."
+                subtitle="Start modeling from scratch with welded primitives, or append another Static Mesh asset."
               />
+              {onAddPrimitive && (
+                <div className="rounded border border-white/5 bg-black/15 p-2 space-y-1.5">
+                  <div className="text-[8px] font-semibold uppercase tracking-wider text-text-secondary/80">
+                    Scratch Primitives (Welded Manifold)
+                  </div>
+                  <div className="grid grid-cols-5 gap-1">
+                    {([
+                      { kind: 'PLANE', label: 'Plane', icon: 'Square' },
+                      { kind: 'BOX', label: 'Box', icon: 'Box' },
+                      { kind: 'GRID', label: 'Grid', icon: 'Grid' },
+                      { kind: 'CYLINDER', label: 'Cyl', icon: 'Circle' },
+                      { kind: 'PYRAMID', label: 'Pyr', icon: 'Triangle' },
+                    ] as Array<{ kind: StaticMeshPrimitiveKind; label: string; icon: string }>).map(item => (
+                      <button
+                        key={item.kind}
+                        type="button"
+                        title={`Add ${item.label} primitive shell`}
+                        aria-label={`Add ${item.label} primitive`}
+                        onClick={() => onAddPrimitive(item.kind)}
+                        className="flex flex-col items-center justify-center gap-1 rounded border border-white/10 bg-white/[0.03] px-1 py-1.5 text-[8px] font-semibold text-text-secondary hover:bg-white/[0.08] hover:text-white transition-colors"
+                      >
+                        <Icon name={item.icon as any} size={11} />
+                        <span>{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               {compositionSources.length === 0 ? (
                 <div className="rounded border border-white/5 bg-black/15 p-2 text-[9px] leading-4 text-text-secondary">
                   No other Static Mesh assets are available. Create or import a mesh to use it as an append source.

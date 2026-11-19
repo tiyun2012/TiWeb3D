@@ -51,7 +51,7 @@ export const MeshTopologyUtils = {
 
                 halfEdges.push(he);
                 
-                if (vertices[vCurrent].edge === -1) {
+                if (vCurrent >= 0 && vCurrent < vertexCount && vertices[vCurrent].edge === -1) {
                     vertices[vCurrent].edge = heIdx;
                 }
 
@@ -60,7 +60,9 @@ export const MeshTopologyUtils = {
                 edgeKeyToHalfEdge.set(key, heIdx);
             }
             
-            faces[faceIdx].edge = faceStartEdgeIdx;
+            if (len > 0) {
+                faces[faceIdx].edge = faceStartEdgeIdx;
+            }
         });
 
         // Link Pairs
@@ -82,22 +84,41 @@ export const MeshTopologyUtils = {
      * Builds a recursive AABB Tree (BVH) for O(log N) raycasting.
      */
     buildBVH: (mesh: LogicalMesh, vertices: Float32Array): BVHNode => {
-        const indices = mesh.faces.map((_, i) => i);
-        
-        // Pre-calculate face centroids and bounds to avoid re-computing during build
-        const faceData = indices.map(i => {
+        if (!mesh.faces || mesh.faces.length === 0 || vertices.length === 0) {
+            return {
+                aabb: { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } },
+                faceIndices: [],
+            };
+        }
+
+        const faceData: Array<{ i: number; bounds: AABB; center: Vector3 }> = [];
+        for (let i = 0; i < mesh.faces.length; i++) {
             const face = mesh.faces[i];
+            if (!face || face.length < 3) continue;
             const bounds = AABBUtils.create();
             const center = { x: 0, y: 0, z: 0 };
-            
-            face.forEach(vIdx => {
-                const x = vertices[vIdx*3], y = vertices[vIdx*3+1], z = vertices[vIdx*3+2];
-                AABBUtils.expandPoint(bounds, {x, y, z});
+            let validCount = 0;
+
+            for (let k = 0; k < face.length; k++) {
+                const vIdx = face[k];
+                const offset = vIdx * 3;
+                if (offset < 0 || offset + 2 >= vertices.length) continue;
+                const x = vertices[offset], y = vertices[offset + 1], z = vertices[offset + 2];
+                AABBUtils.expandPoint(bounds, { x, y, z });
                 center.x += x; center.y += y; center.z += z;
-            });
-            center.x /= face.length; center.y /= face.length; center.z /= face.length;
-            return { i, bounds, center };
-        });
+                validCount++;
+            }
+            if (validCount < 3) continue;
+            center.x /= validCount; center.y /= validCount; center.z /= validCount;
+            faceData.push({ i, bounds, center });
+        }
+
+        if (faceData.length === 0) {
+            return {
+                aabb: { min: { x: 0, y: 0, z: 0 }, max: { x: 0, y: 0, z: 0 } },
+                faceIndices: [],
+            };
+        }
 
         const buildRecursive = (items: typeof faceData): BVHNode => {
             const node: BVHNode = { aabb: AABBUtils.create() };
@@ -150,10 +171,11 @@ export const MeshTopologyUtils = {
      * Accelerated Raycast using BVH Tree.
      */
     raycastMesh: (mesh: LogicalMesh, vertices: Float32Array, ray: Ray, tolerance: number = 0.05): MeshPickingResult | null => {
+        if (!mesh.faces || mesh.faces.length === 0 || vertices.length === 0) return null;
         let bestResult: MeshPickingResult | null = null;
         let minT = Infinity;
 
-        // Force rebuild if vertex count mismatch (topology changed)
+        // Force rebuild if BVH is not cached
         if (!mesh.bvh) mesh.bvh = MeshTopologyUtils.buildBVH(mesh, vertices);
         const root = mesh.bvh as BVHNode;
 
