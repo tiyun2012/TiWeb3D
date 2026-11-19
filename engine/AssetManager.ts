@@ -179,11 +179,6 @@ class AssetManagerService {
             },
             topology,
             shells: [],
-            construction: {
-                points: [],
-                faces: [],
-                loops: [],
-            },
         };
 
         this.registerAsset(asset);

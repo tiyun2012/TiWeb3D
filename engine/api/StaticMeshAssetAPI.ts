@@ -15,6 +15,12 @@ import type {
   Vector3,
 } from '@/types';
 import { materializeStaticMeshShell, offsetStaticMeshShell, resolveStaticMeshShells } from '@/engine/mesh-editing/StaticMeshShells';
+import { computePlanarFaceNormal, computeRelativeInsetPositions } from '@/engine/mesh-editing/MeshPlanarGeometry';
+import {
+  BevelKernelUnsupportedTopologyError,
+  buildJointBevelPlan,
+  type BevelKernelPlan,
+} from '@/engine/mesh-editing/MeshBevelKernel';
 import {
   getStaticMeshEdgeFaceIds,
   getStaticMeshFaceInfo,
@@ -37,6 +43,23 @@ export type {
 export interface CreateStaticMeshArgs {
   name: string;
   path?: string;
+}
+
+export interface AdoptStaticMeshTopologyArgs {
+  assetId: string;
+  /** Prefixes keep generated semantic handles recognizable and stable. */
+  pointPrefix?: string;
+  facePrefix?: string;
+}
+
+export interface AdoptStaticMeshTopologyResult {
+  assetId: string;
+  adopted: boolean;
+  pointsCreated: number;
+  facesCreated: number;
+  loopsCreated: number;
+  pointIds: string[];
+  faceIds: string[];
 }
 
 export interface AppendStaticMeshArgs {
@@ -87,6 +110,143 @@ export interface StaticMeshReferenceArgs {
   sourceAssetIds: string[];
 }
 
+export interface ExtrudeLogicalFaceArgs {
+  assetId: string;
+  /** Numeric logical face id from StaticMeshAsset.topology.faces. */
+  faceId: number;
+  distance: number;
+}
+
+export interface InsetLogicalFaceArgs {
+  assetId: string;
+  /** Numeric logical face id from StaticMeshAsset.topology.faces. */
+  faceId: number;
+  /** Relative movement toward the arithmetic face center. Must be > 0 and < 1. */
+  ratio: number;
+}
+
+export interface InsetLogicalFacesArgs {
+  assetId: string;
+  /** Numeric logical face ids. Each face is inset individually with the same ratio. */
+  faceIds: number[];
+  /** Relative movement toward each face's arithmetic center. Must be > 0 and < 1. */
+  ratio: number;
+}
+
+export interface DeleteLogicalFaceArgs {
+  assetId: string;
+  /** Numeric logical face id from StaticMeshAsset.topology.faces. */
+  faceId: number;
+}
+
+export interface SplitLogicalEdgeArgs {
+  assetId: string;
+  vertexAId: number;
+  vertexBId: number;
+  t?: number;
+}
+
+export interface CutLogicalFaceArgs {
+  assetId: string;
+  faceId: number;
+  vertexAId: number;
+  vertexBId: number;
+}
+
+export interface BevelLogicalEdgeArgs {
+  assetId: string;
+  vertexAId: number;
+  vertexBId: number;
+  width: number;
+  /** Number of polygon strips across the bevel profile. Defaults to 1. */
+  segments?: number;
+  /** Blender-style superellipse profile shape. 0.5 is circular. Defaults to 0.5. */
+  profile?: number;
+}
+
+export interface BevelLogicalEdgesArgs {
+  assetId: string;
+  edges: Array<{ vertexAId: number; vertexBId: number }>;
+  width: number;
+  /** Reduce width as one network when neighboring bevel boundaries would overlap. Defaults to true. */
+  clampOverlap?: boolean;
+  /** Number of polygon strips across every selected edge profile. Defaults to 1. */
+  segments?: number;
+  /** Blender-style superellipse profile shape. 0.5 is circular. Defaults to 0.5. */
+  profile?: number;
+}
+
+export interface ExtrudeLogicalFaceResult {
+  sourceFaceId: number;
+  topFaceId: number;
+  topVertexIds: number[];
+  sideFaceIds: number[];
+}
+
+export interface InsetLogicalFaceResult {
+  sourceFaceId: number;
+  innerFaceId: number;
+  innerVertexIds: number[];
+  borderFaceIds: number[];
+}
+
+export interface InsetLogicalFacesResult {
+  results: InsetLogicalFaceResult[];
+  innerFaceIds: number[];
+  borderFaceIds: number[];
+}
+
+export interface DeleteLogicalFaceResult {
+  deletedFaceId: number;
+  vertexIds: number[];
+  triangleIds: number[];
+}
+
+export interface SplitLogicalEdgeResult {
+  vertexId: number;
+  updatedFaceIds: number[];
+  edgeIds: [string, string];
+  t: number;
+}
+
+export interface CutLogicalFaceResult {
+  sourceFaceId: number;
+  newFaceId: number;
+  cutEdgeId: string;
+  vertexIds: [number, number];
+}
+
+export interface BevelLogicalEdgeResult {
+  bevelFaceId: number;
+  /** All strip faces for this source edge. Length equals segments. */
+  bevelFaceIds: number[];
+  endpointCapFaceIds: number[];
+  updatedFaceIds: number[];
+  /** Outer profile rails retained for compatibility with the one-segment API. */
+  bevelEdgeIds: [string, string];
+  /** Every longitudinal profile rail, including the two outer rails. */
+  profileEdgeIds: string[];
+  width: number;
+  segments: number;
+  profile: number;
+}
+
+export interface BevelLogicalEdgesResult {
+  results: BevelLogicalEdgeResult[];
+  bevelFaceIds: number[];
+  endpointCapFaceIds: number[];
+  /** Corner VMesh-style patch faces created where 3+ selected edges meet. */
+  cornerFaceIds: number[];
+  updatedFaceIds: number[];
+  bevelEdgeIds: string[];
+  /** Effective width after optional overlap clamping. */
+  width: number;
+  requestedWidth: number;
+  clamped: boolean;
+  segments: number;
+  profile: number;
+}
+
 export interface AddConstructionPointArgs {
   assetId: string;
   id?: string;
@@ -128,7 +288,6 @@ export interface ExtrudeConstructionFaceArgs {
   assetId: string;
   faceId: string;
   distance: number;
-  direction?: Vector3;
   id?: string;
 }
 
@@ -142,8 +301,8 @@ export interface BridgeConstructionLoopsArgs {
 export interface InsetConstructionFaceArgs {
   assetId: string;
   faceId: string;
-  /** World-space inset distance measured in the face plane. Must be positive. */
-  amount: number;
+  /** Relative movement toward the arithmetic face center. Must be > 0 and < 1. */
+  ratio: number;
   id?: string;
 }
 
@@ -189,6 +348,17 @@ export interface SplitConstructionEdgeArgs {
   id?: string;
 }
 
+export interface BevelConstructionEdgeArgs {
+  assetId: string;
+  /** Stable semantic endpoint ids for one manifold authored edge. */
+  pointAId: string;
+  pointBId: string;
+  /** Positive world-space distance measured from each endpoint along its local one-ring edges. */
+  width: number;
+  /** Optional stable operation prefix used for generated semantic ids. */
+  id?: string;
+}
+
 export interface ConstructionFaceResult {
   id: string;
   assetId: string;
@@ -200,7 +370,9 @@ export interface ConstructionFaceResult {
 
 export interface ExtrudeConstructionFaceResult {
   id: string;
+  /** Stable input face handle. After extrusion this face has moved to the new top boundary. */
   sourceFaceId: string;
+  /** Same stable semantic handle as sourceFaceId; exposed explicitly for operation chaining. */
   topFaceId: string;
   topLoopId: string;
   topPointIds: string[];
@@ -251,6 +423,21 @@ export interface SplitConstructionEdgeResult {
   updatedLoopIds: string[];
   edgeIds: [string, string];
   t: number;
+}
+
+export interface BevelConstructionEdgeResult {
+  id: string;
+  sourcePointIds: [string, string];
+  /** Offset points on the first and second incident faces, each ordered A -> B. */
+  sidePointIds: [[string, string], [string, string]];
+  bevelFaceId: string;
+  bevelLogicalFaceId: number;
+  /** Optional endpoint cap faces created when an endpoint has valence > 3. */
+  endpointCapFaceIds: string[];
+  updatedFaceIds: string[];
+  /** The two long edges bordering the generated bevel face. */
+  bevelEdgeIds: [string, string];
+  width: number;
 }
 
 const unique = (ids: Iterable<string>) => Array.from(new Set(ids));
@@ -444,6 +631,104 @@ const makeUniqueConstructionId = (preferred: string | undefined, prefix: string,
   return `${prefix}-${index}`;
 };
 
+const buildCanonicalVertexGroups = (asset: StaticMeshAsset): {
+  vertexToCanonical: Map<number, number>;
+  groups: Map<number, number[]>;
+} => {
+  const vertexCount = Math.floor(asset.geometry.vertices.length / 3);
+  const parent = Array.from({ length: vertexCount }, (_, index) => index);
+
+  const find = (value: number): number => {
+    let root = value;
+    while (parent[root] !== root) root = parent[root];
+    let current = value;
+    while (parent[current] !== current) {
+      const next = parent[current];
+      parent[current] = root;
+      current = next;
+    }
+    return root;
+  };
+
+  const union = (a: number, b: number): void => {
+    if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0 || a >= vertexCount || b >= vertexCount) return;
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA === rootB) return;
+    const keep = Math.min(rootA, rootB);
+    const merge = Math.max(rootA, rootB);
+    parent[merge] = keep;
+  };
+
+  for (const [vertexId, siblings] of asset.topology?.siblings ?? new Map<number, number[]>()) {
+    for (const siblingId of siblings) union(vertexId, siblingId);
+  }
+
+  const groups = new Map<number, number[]>();
+  const vertexToCanonical = new Map<number, number>();
+  for (let vertexId = 0; vertexId < vertexCount; vertexId += 1) {
+    const root = find(vertexId);
+    let group = groups.get(root);
+    if (!group) {
+      group = [];
+      groups.set(root, group);
+    }
+    group.push(vertexId);
+  }
+
+  // Normalize every group to its smallest render vertex id so generated ids are
+  // deterministic even if an imported siblings map is asymmetric.
+  const normalized = new Map<number, number[]>();
+  for (const group of groups.values()) {
+    const canonical = Math.min(...group);
+    const sorted = [...group].sort((a, b) => a - b);
+    normalized.set(canonical, sorted);
+    for (const vertexId of sorted) vertexToCanonical.set(vertexId, canonical);
+  }
+  return { vertexToCanonical, groups: normalized };
+};
+
+const isConstructionTopologyAdopted = (asset: StaticMeshAsset): boolean => {
+  const faces = sourceFaces(asset);
+  const construction = asset.construction;
+  if (faces.length === 0 || !construction) return false;
+  if (construction.faces.length !== faces.length) return false;
+  const mappedFaceIds = new Set(construction.faces.map(face => face.faceId));
+  if (mappedFaceIds.size !== faces.length) return false;
+  for (let faceId = 0; faceId < faces.length; faceId += 1) {
+    const semanticFace = construction.faces.find(face => face.faceId === faceId);
+    if (!semanticFace || semanticFace.pointIds.length !== faces[faceId].length) return false;
+  }
+  return true;
+};
+
+const assertAdoptableSiblingPositions = (
+  asset: StaticMeshAsset,
+  groups: Map<number, number[]>,
+): void => {
+  const vertices = asset.geometry.vertices;
+  const epsilon = 1e-5;
+  for (const [canonical, group] of groups) {
+    if (group.length < 2) continue;
+    const base = canonical * 3;
+    const bx = vertices[base];
+    const by = vertices[base + 1];
+    const bz = vertices[base + 2];
+    for (const vertexId of group) {
+      const offset = vertexId * 3;
+      if (
+        Math.abs(vertices[offset] - bx) > epsilon
+        || Math.abs(vertices[offset + 1] - by) > epsilon
+        || Math.abs(vertices[offset + 2] - bz) > epsilon
+      ) {
+        throw new Error(
+          `Adopt Topology cannot bind sibling vertices ${canonical} and ${vertexId} because their positions differ.`,
+        );
+      }
+    }
+  }
+};
+
 const makeUniqueOperationId = (preferred: string | undefined, prefix: string, used: Iterable<string>): string => {
   const taken = Array.from(used);
   const collides = (candidate: string) => taken.some(id => id === candidate || id.startsWith(`${candidate}.`));
@@ -519,6 +804,230 @@ const constructionBoundaryPath = (
   throw new Error('Cut Face boundary traversal failed.');
 };
 
+interface OrientedConstructionEdge {
+  index: number;
+  startId: string;
+  endId: string;
+  previousId: string;
+  nextId: string;
+  matchesRequestedOrder: boolean;
+}
+
+const findOrientedConstructionEdge = (
+  pointIds: readonly string[],
+  pointAId: string,
+  pointBId: string,
+): OrientedConstructionEdge | null => {
+  for (let index = 0; index < pointIds.length; index += 1) {
+    const nextIndex = (index + 1) % pointIds.length;
+    const startId = pointIds[index];
+    const endId = pointIds[nextIndex];
+    const matchesRequestedOrder = startId === pointAId && endId === pointBId;
+    const matchesReverseOrder = startId === pointBId && endId === pointAId;
+    if (!matchesRequestedOrder && !matchesReverseOrder) continue;
+    return {
+      index,
+      startId,
+      endId,
+      previousId: pointIds[(index - 1 + pointIds.length) % pointIds.length],
+      nextId: pointIds[(index + 2) % pointIds.length],
+      matchesRequestedOrder,
+    };
+  }
+  return null;
+};
+
+const constructionPointAtDistance = (
+  construction: StaticMeshConstructionData,
+  fromPointId: string,
+  towardPointId: string,
+  distance: number,
+): Vector3 => {
+  const from = findConstructionPoint(construction, fromPointId).position;
+  const toward = findConstructionPoint(construction, towardPointId).position;
+  const dx = toward.x - from.x;
+  const dy = toward.y - from.y;
+  const dz = toward.z - from.z;
+  const length = Math.hypot(dx, dy, dz);
+  if (length <= 1e-8) throw new Error('Bevel neighboring edges must have non-zero length.');
+  if (distance >= length - 1e-6) {
+    throw new Error('Bevel width is too large for one of the neighboring edges.');
+  }
+  const scale = distance / length;
+  return { x: from.x + dx * scale, y: from.y + dy * scale, z: from.z + dz * scale };
+};
+
+/**
+ * Blender's terminal-edge bevel has a special edgecount==2 case: the two
+ * profile sides cannot both be represented by one point slid along the only
+ * unbeveled neighbor. Instead each incident face gets its own point on the
+ * selected-edge offset line, then a third artificial point is placed on the
+ * lone unbeveled edge to close the endpoint triangle.
+ */
+const constructionSelectedEdgeOffsetPoint = (
+  construction: StaticMeshConstructionData,
+  face: StaticMeshConstructionFace,
+  endpointId: string,
+  selectedOtherId: string,
+  distance: number,
+): Vector3 => {
+  const endpointIndex = face.pointIds.indexOf(endpointId);
+  if (endpointIndex < 0 || face.pointIds.length < 3) {
+    throw new Error('Bevel Edge could not resolve a terminal endpoint face.');
+  }
+  const count = face.pointIds.length;
+  const previousId = face.pointIds[(endpointIndex - 1 + count) % count];
+  const nextId = face.pointIds[(endpointIndex + 1) % count];
+  if (selectedOtherId !== previousId && selectedOtherId !== nextId) {
+    throw new Error('Bevel Edge terminal endpoint is not incident to the selected edge in one face.');
+  }
+
+  const endpoint = findConstructionPoint(construction, endpointId).position;
+  const other = findConstructionPoint(construction, selectedOtherId).position;
+  // Match MeshBevelKernel.faceOffsetLine(): use the face-boundary direction
+  // through the selected edge, then cross the face normal into the face.
+  let dx: number;
+  let dy: number;
+  let dz: number;
+  if (selectedOtherId === nextId) {
+    dx = other.x - endpoint.x;
+    dy = other.y - endpoint.y;
+    dz = other.z - endpoint.z;
+  } else {
+    dx = endpoint.x - other.x;
+    dy = endpoint.y - other.y;
+    dz = endpoint.z - other.z;
+  }
+  const edgeLength = Math.hypot(dx, dy, dz);
+  if (edgeLength <= 1e-8) throw new Error('Bevel selected edge must have non-zero length.');
+  dx /= edgeLength;
+  dy /= edgeLength;
+  dz /= edgeLength;
+
+  const normal = computeConstructionFaceNormal(construction, face.pointIds);
+  let ix = normal.y * dz - normal.z * dy;
+  let iy = normal.z * dx - normal.x * dz;
+  let iz = normal.x * dy - normal.y * dx;
+  const inwardLength = Math.hypot(ix, iy, iz);
+  if (inwardLength <= 1e-8) throw new Error('Bevel terminal face is degenerate.');
+  ix /= inwardLength;
+  iy /= inwardLength;
+  iz /= inwardLength;
+
+  return {
+    x: endpoint.x + ix * distance,
+    y: endpoint.y + iy * distance,
+    z: endpoint.z + iz * distance,
+  };
+};
+
+interface BevelEndpointFanPlan {
+  /** Ordered non-selected edges around the endpoint, from one selected face to the other. */
+  neighborIds: string[];
+  /** Ordered authored faces crossed between consecutive neighbor ids. */
+  faceIds: string[];
+}
+
+const constructionFaceNeighborsAtPoint = (
+  face: StaticMeshConstructionFace,
+  pointId: string,
+): [string, string] | null => {
+  const index = face.pointIds.indexOf(pointId);
+  if (index < 0) return null;
+  const count = face.pointIds.length;
+  if (count < 3) return null;
+  return [
+    face.pointIds[(index - 1 + count) % count],
+    face.pointIds[(index + 1) % count],
+  ];
+};
+
+/**
+ * Resolves the one-ring fan around one bevel endpoint after conceptually removing
+ * the selected edge. Interior manifold vertices produce one simple path between
+ * the two neighboring edges from the selected incident faces. Valence-3 is the
+ * two-neighbor special case; higher valence inserts intermediate neighbors and
+ * later receives an endpoint cap polygon.
+ *
+ * A boundary endpoint with no extra face remains supported (two neighbors, no
+ * cap). More complex open/branched endpoint fans reject instead of guessing.
+ */
+const planBevelEndpointFan = (
+  construction: StaticMeshConstructionData,
+  endpointId: string,
+  selectedOtherId: string,
+  startNeighborId: string,
+  endNeighborId: string,
+  selectedFaceIds: ReadonlySet<string>,
+): BevelEndpointFanPlan => {
+  const endpointFaces = construction.faces.filter(face => (
+    !selectedFaceIds.has(face.id) && face.pointIds.includes(endpointId)
+  ));
+
+  if (endpointFaces.length === 0) {
+    return { neighborIds: [startNeighborId, endNeighborId], faceIds: [] };
+  }
+
+  type FanEdge = { to: string; faceId: string };
+  const adjacency = new Map<string, FanEdge[]>();
+  const addAdjacency = (from: string, to: string, faceId: string) => {
+    const entries = adjacency.get(from) ?? [];
+    entries.push({ to, faceId });
+    adjacency.set(from, entries);
+  };
+
+  for (const face of endpointFaces) {
+    const neighbors = constructionFaceNeighborsAtPoint(face, endpointId);
+    if (!neighbors) throw new Error('Bevel Edge could not resolve an endpoint face boundary.');
+    const [a, b] = neighbors;
+    if (a === b || a === endpointId || b === endpointId || a === selectedOtherId || b === selectedOtherId) {
+      throw new Error('Bevel Edge endpoint topology is non-manifold or degenerate.');
+    }
+    addAdjacency(a, b, face.id);
+    addAdjacency(b, a, face.id);
+  }
+
+  type FanSolution = { neighborIds: string[]; faceIds: string[] };
+  const solutions: FanSolution[] = [];
+  const usedFaces = new Set<string>();
+  const pathNeighbors = [startNeighborId];
+  const pathFaces: string[] = [];
+
+  const visit = (neighborId: string) => {
+    if (solutions.length > 1) return;
+    if (neighborId === endNeighborId) {
+      if (usedFaces.size === endpointFaces.length) {
+        solutions.push({ neighborIds: [...pathNeighbors], faceIds: [...pathFaces] });
+      }
+      return;
+    }
+    for (const edge of adjacency.get(neighborId) ?? []) {
+      if (usedFaces.has(edge.faceId)) continue;
+      usedFaces.add(edge.faceId);
+      pathFaces.push(edge.faceId);
+      pathNeighbors.push(edge.to);
+      visit(edge.to);
+      pathNeighbors.pop();
+      pathFaces.pop();
+      usedFaces.delete(edge.faceId);
+    }
+  };
+  visit(startNeighborId);
+
+  if (solutions.length === 0) {
+    throw new Error('Bevel Edge endpoint fan is open, disconnected, or non-manifold.');
+  }
+  if (solutions.length > 1) {
+    throw new Error('Bevel Edge endpoint fan branches and cannot be resolved uniquely.');
+  }
+
+  const plan = solutions[0];
+  if (new Set(plan.neighborIds).size !== plan.neighborIds.length) {
+    throw new Error('Bevel Edge endpoint fan contains a repeated neighbor.');
+  }
+  return plan;
+};
+
 type ConstructionMutationState = {
   asset: StaticMeshAsset;
   construction: StaticMeshConstructionData;
@@ -551,6 +1060,60 @@ const createConstructionMutationState = (asset: StaticMeshAsset): ConstructionMu
     triangleToFace: Array.from(sourceTriangleToFace(asset, faces.length)),
     siblings,
   };
+};
+
+const compactUnusedConstructionVertices = (state: ConstructionMutationState): void => {
+  const usedVertexIds = Array.from(new Set(state.faces.flat())).sort((a, b) => a - b);
+  const remap = new Map<number, number>();
+  usedVertexIds.forEach((vertexId, nextId) => remap.set(vertexId, nextId));
+
+  const nextVertices: number[] = [];
+  const nextUvs: number[] = [];
+  const nextColors: number[] = [];
+  for (const vertexId of usedVertexIds) {
+    nextVertices.push(
+      state.vertices[vertexId * 3] ?? 0,
+      state.vertices[vertexId * 3 + 1] ?? 0,
+      state.vertices[vertexId * 3 + 2] ?? 0,
+    );
+    nextUvs.push(state.uvs[vertexId * 2] ?? 0, state.uvs[vertexId * 2 + 1] ?? 0);
+    nextColors.push(
+      state.colors[vertexId * 3] ?? 1,
+      state.colors[vertexId * 3 + 1] ?? 1,
+      state.colors[vertexId * 3 + 2] ?? 1,
+    );
+  }
+
+  state.faces = state.faces.map(face => face.map(vertexId => {
+    const nextId = remap.get(vertexId);
+    if (nextId === undefined) throw new Error('Construction vertex compaction lost a face vertex.');
+    return nextId;
+  }));
+  state.indices = state.indices.map(vertexId => {
+    const nextId = remap.get(vertexId);
+    if (nextId === undefined) throw new Error('Construction vertex compaction lost an indexed vertex.');
+    return nextId;
+  });
+
+  for (const point of state.construction.points) {
+    point.vertexIds = Array.from(new Set((point.vertexIds ?? [])
+      .map(vertexId => remap.get(vertexId))
+      .filter((vertexId): vertexId is number => vertexId !== undefined)));
+  }
+
+  const nextSiblings = new Map<number, number[]>();
+  for (const [vertexId, siblings] of state.siblings.entries()) {
+    const nextVertexId = remap.get(vertexId);
+    if (nextVertexId === undefined) continue;
+    const nextGroup = Array.from(new Set(siblings
+      .map(siblingId => remap.get(siblingId))
+      .filter((siblingId): siblingId is number => siblingId !== undefined)));
+    if (nextGroup.length > 0) nextSiblings.set(nextVertexId, nextGroup);
+  }
+  state.siblings = nextSiblings;
+  state.vertices = nextVertices;
+  state.uvs = nextUvs;
+  state.colors = nextColors;
 };
 
 const computeVertexNormals = (vertices: readonly number[], indices: readonly number[]): Float32Array => {
@@ -615,10 +1178,14 @@ const triangleAreaSquared = (state: ConstructionMutationState, a: number, b: num
 };
 
 /**
- * Triangulates the current ordered convex Construction Face boundary while
- * tolerating collinear boundary points introduced by Split Edge. Preserve the
- * historical vertex-0 fan whenever it is non-degenerate; otherwise rotate the
- * fan root, then fall back to convex ear clipping for repeated split points.
+ * Triangulates an ordered simple Construction Face boundary of arbitrary vertex
+ * count. Repeated bevels routinely reconstruct quads as 5/6/8-sided n-gons, so
+ * this compiler step must not assume that a non-degenerate triangle fan is a
+ * valid triangulation: on a concave polygon such a fan can cross the boundary.
+ *
+ * Convex polygons keep the historical rotating-fan path (which handles
+ * collinear Split Edge points well). Concave polygons use projected 2D ear
+ * clipping while preserving the original 3D winding.
  */
 const triangulateConstructionBoundary = (
   state: ConstructionMutationState,
@@ -626,6 +1193,31 @@ const triangulateConstructionBoundary = (
 ): number[] => {
   if (vertexIds.length < 3) throw new Error('A Construction Face requires at least 3 vertices.');
   const epsilonSq = 1e-20;
+  const epsilon2d = 1e-10;
+
+  const positions: Vector3[] = vertexIds.map(vertexId => ({
+    x: state.vertices[vertexId * 3],
+    y: state.vertices[vertexId * 3 + 1],
+    z: state.vertices[vertexId * 3 + 2],
+  }));
+  const normal = computePlanarFaceNormal(positions);
+  const ax = Math.abs(normal.x);
+  const ay = Math.abs(normal.y);
+  const az = Math.abs(normal.z);
+  const projected: Vec2[] = positions.map(position => {
+    if (ax >= ay && ax >= az) return { x: position.y, y: position.z };
+    if (ay >= ax && ay >= az) return { x: position.x, y: position.z };
+    return { x: position.x, y: position.y };
+  });
+
+  let twiceArea = 0;
+  for (let index = 0; index < projected.length; index += 1) {
+    twiceArea += cross2(projected[index], projected[(index + 1) % projected.length]);
+  }
+  if (Math.abs(twiceArea) <= epsilon2d) throw new Error('Construction Face triangulation is degenerate.');
+  const orientation = twiceArea > 0 ? 1 : -1;
+  const orientedTurn = (a: Vec2, b: Vec2, c: Vec2): number =>
+    cross2(subtract2(b, a), subtract2(c, b)) * orientation;
 
   const fanForRoot = (rootIndex: number): number[] | null => {
     const ordered = Array.from({ length: vertexIds.length }, (_, offset) => vertexIds[(rootIndex + offset) % vertexIds.length]);
@@ -637,34 +1229,79 @@ const triangulateConstructionBoundary = (
     return triangles;
   };
 
-  for (let rootIndex = 0; rootIndex < vertexIds.length; rootIndex += 1) {
-    const fan = fanForRoot(rootIndex);
-    if (fan) return fan;
+  // A triangle fan is only topologically valid for a convex boundary. The old
+  // implementation returned the first non-degenerate fan even for concave
+  // n-gons, which could produce triangles outside the logical face.
+  const isConvex = projected.every((point, index) => (
+    orientedTurn(
+      point,
+      projected[(index + 1) % projected.length],
+      projected[(index + 2) % projected.length],
+    ) >= -epsilon2d
+  ));
+  if (isConvex) {
+    for (let rootIndex = 0; rootIndex < vertexIds.length; rootIndex += 1) {
+      const fan = fanForRoot(rootIndex);
+      if (fan) return fan;
+    }
   }
+
+  const pointInTriangleInclusive = (point: Vec2, a: Vec2, b: Vec2, c: Vec2): boolean => {
+    const ab = cross2(subtract2(b, a), subtract2(point, a)) * orientation;
+    const bc = cross2(subtract2(c, b), subtract2(point, b)) * orientation;
+    const ca = cross2(subtract2(a, c), subtract2(point, c)) * orientation;
+    return ab >= -epsilon2d && bc >= -epsilon2d && ca >= -epsilon2d;
+  };
 
   const remaining = vertexIds.map((_, index) => index);
   const triangles: number[] = [];
+  let guard = 0;
   while (remaining.length > 3) {
     let earPosition = -1;
     for (let position = 0; position < remaining.length; position += 1) {
-      const prev = remaining[(position - 1 + remaining.length) % remaining.length];
-      const current = remaining[position];
-      const next = remaining[(position + 1) % remaining.length];
-      if (triangleAreaSquared(state, vertexIds[prev], vertexIds[current], vertexIds[next]) > epsilonSq) {
-        earPosition = position;
-        triangles.push(vertexIds[prev], vertexIds[current], vertexIds[next]);
-        break;
+      const prevIndex = remaining[(position - 1 + remaining.length) % remaining.length];
+      const currentIndex = remaining[position];
+      const nextIndex = remaining[(position + 1) % remaining.length];
+      const a = projected[prevIndex];
+      const b = projected[currentIndex];
+      const c = projected[nextIndex];
+
+      if (orientedTurn(a, b, c) <= epsilon2d) continue;
+      if (triangleAreaSquared(state, vertexIds[prevIndex], vertexIds[currentIndex], vertexIds[nextIndex]) <= epsilonSq) continue;
+
+      let containsBoundaryPoint = false;
+      for (const testIndex of remaining) {
+        if (testIndex === prevIndex || testIndex === currentIndex || testIndex === nextIndex) continue;
+        if (pointInTriangleInclusive(projected[testIndex], a, b, c)) {
+          containsBoundaryPoint = true;
+          break;
+        }
       }
+      if (containsBoundaryPoint) continue;
+
+      earPosition = position;
+      triangles.push(vertexIds[prevIndex], vertexIds[currentIndex], vertexIds[nextIndex]);
+      break;
     }
-    if (earPosition < 0) throw new Error('Construction Face triangulation is degenerate.');
+
+    if (earPosition < 0) {
+      throw new Error('Construction Face triangulation requires a simple non-self-intersecting n-gon.');
+    }
     remaining.splice(earPosition, 1);
+    guard += 1;
+    if (guard > vertexIds.length * vertexIds.length) {
+      throw new Error('Construction Face triangulation did not converge.');
+    }
   }
 
-  const [a, b, c] = remaining.map(index => vertexIds[index]);
-  if (triangleAreaSquared(state, a, b, c) <= epsilonSq) {
+  const [aIndex, bIndex, cIndex] = remaining;
+  if (triangleAreaSquared(state, vertexIds[aIndex], vertexIds[bIndex], vertexIds[cIndex]) <= epsilonSq) {
     throw new Error('Construction Face triangulation is degenerate.');
   }
-  triangles.push(a, b, c);
+  triangles.push(vertexIds[aIndex], vertexIds[bIndex], vertexIds[cIndex]);
+  if (triangles.length !== (vertexIds.length - 2) * 3) {
+    throw new Error('Construction Face triangulation produced an incomplete n-gon triangulation.');
+  }
   return triangles;
 };
 
@@ -841,160 +1478,27 @@ const replaceConstructionFaceBoundaryInState = (
 };
 
 const dot3 = (a: Vector3, b: Vector3): number => a.x * b.x + a.y * b.y + a.z * b.z;
-const subtract3 = (a: Vector3, b: Vector3): Vector3 => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
-const cross3 = (a: Vector3, b: Vector3): Vector3 => ({
-  x: a.y * b.z - a.z * b.y,
-  y: a.z * b.x - a.x * b.z,
-  z: a.x * b.y - a.y * b.x,
-});
 
 /**
- * Computes a constant-width planar inset for the currently supported polygon
- * contract: ordered, planar, non-self-intersecting convex faces. The calculation
- * happens in a local 2D basis and is lifted back into the original face plane.
+ * Legacy Construction adapter for the normal-mesh relative inset implementation.
+ * Geometry math is intentionally independent of Construction so ordinary,
+ * warped, wall/roof and split-edge boundaries follow the same code path.
  */
 const computeInsetPositions = (
   construction: StaticMeshConstructionData,
   pointIds: readonly string[],
-  amount: number,
-): Vector3[] => {
-  if (!Number.isFinite(amount) || amount <= 1e-8) {
-    throw new Error('Inset amount must be a finite positive number.');
-  }
-  if (pointIds.length < 3) throw new Error('Inset requires a face with at least 3 points.');
-
-  const positions = pointIds.map(pointId => clonePosition(findConstructionPoint(construction, pointId).position));
-  const normal = computeConstructionFaceNormal(construction, pointIds);
-  const origin = positions[0];
-
-  let u: Vector3 | null = null;
-  for (let i = 1; i < positions.length; i += 1) {
-    const edge = subtract3(positions[i], origin);
-    const length = Math.hypot(edge.x, edge.y, edge.z);
-    if (length > 1e-8) {
-      u = { x: edge.x / length, y: edge.y / length, z: edge.z / length };
-      break;
-    }
-  }
-  if (!u) throw new Error('Inset face has no valid edge direction.');
-  const vRaw = cross3(normal, u);
-  const vLength = Math.hypot(vRaw.x, vRaw.y, vRaw.z);
-  if (vLength <= 1e-8) throw new Error('Inset face basis is degenerate.');
-  const v = { x: vRaw.x / vLength, y: vRaw.y / vLength, z: vRaw.z / vLength };
-
-  const projected: Vec2[] = positions.map(position => {
-    const delta = subtract3(position, origin);
-    return { x: dot3(delta, u!), y: dot3(delta, v) };
-  });
-
-  const extent = projected.reduce((max, point) => Math.max(max, Math.abs(point.x), Math.abs(point.y)), 1);
-  const planeTolerance = Math.max(1e-6, extent * 1e-6);
-  for (const position of positions) {
-    const planeDistance = Math.abs(dot3(subtract3(position, origin), normal));
-    if (planeDistance > planeTolerance) {
-      throw new Error('Inset currently requires a planar Construction Face.');
-    }
-  }
-
-  let twiceArea = 0;
-  for (let i = 0; i < projected.length; i += 1) {
-    const next = projected[(i + 1) % projected.length];
-    twiceArea += cross2(projected[i], next);
-  }
-  if (Math.abs(twiceArea) <= 1e-10) throw new Error('Inset face area is degenerate.');
-  const orientation = twiceArea > 0 ? 1 : -1;
-
-  // Keep the first inset implementation deterministic by enforcing the same
-  // convex-polygon contract already documented for createFaceFromPoints().
-  for (let i = 0; i < projected.length; i += 1) {
-    const a = projected[i];
-    const b = projected[(i + 1) % projected.length];
-    const c = projected[(i + 2) % projected.length];
-    const turn = cross2(subtract2(b, a), subtract2(c, b)) * orientation;
-    if (turn < -1e-8) throw new Error('Inset currently supports convex Construction Faces only.');
-  }
-
-  const offsetLines = projected.map((point, index) => {
-    const next = projected[(index + 1) % projected.length];
-    const edge = subtract2(next, point);
-    const length = Math.hypot(edge.x, edge.y);
-    if (length <= 1e-8) throw new Error('Inset face contains a zero-length edge.');
-    const direction = { x: edge.x / length, y: edge.y / length };
-    const inward = {
-      x: -direction.y * orientation,
-      y: direction.x * orientation,
-    };
-    return {
-      point: { x: point.x + inward.x * amount, y: point.y + inward.y * amount },
-      direction,
-    };
-  });
-
-  const inset2d: Vec2[] = [];
-  for (let i = 0; i < projected.length; i += 1) {
-    const previous = offsetLines[(i - 1 + offsetLines.length) % offsetLines.length];
-    const current = offsetLines[i];
-    const denominator = cross2(previous.direction, current.direction);
-    if (Math.abs(denominator) <= 1e-10) {
-      throw new Error('Inset currently requires non-collinear neighboring edges.');
-    }
-    const delta = subtract2(current.point, previous.point);
-    const t = cross2(delta, current.direction) / denominator;
-    inset2d.push({
-      x: previous.point.x + previous.direction.x * t,
-      y: previous.point.y + previous.direction.y * t,
-    });
-  }
-
-  let insetTwiceArea = 0;
-  for (let i = 0; i < inset2d.length; i += 1) {
-    insetTwiceArea += cross2(inset2d[i], inset2d[(i + 1) % inset2d.length]);
-  }
-  if (insetTwiceArea * orientation <= 1e-10) {
-    throw new Error('Inset amount is too large for this face.');
-  }
-
-  // A valid convex inset must remain inside every authored boundary half-plane.
-  for (const point of inset2d) {
-    for (let i = 0; i < projected.length; i += 1) {
-      const a = projected[i];
-      const b = projected[(i + 1) % projected.length];
-      const side = cross2(subtract2(b, a), subtract2(point, a)) * orientation;
-      if (side < -1e-7) throw new Error('Inset amount is too large for this face.');
-    }
-  }
-
-  return inset2d.map(point => ({
-    x: origin.x + u!.x * point.x + v.x * point.y,
-    y: origin.y + u!.y * point.x + v.y * point.y,
-    z: origin.z + u!.z * point.x + v.z * point.y,
-  }));
-};
-
-const normalizeVector = (vector: Vector3, label: string): Vector3 => {
-  assertFinitePosition(vector, label);
-  const length = Math.hypot(vector.x, vector.y, vector.z);
-  if (length <= 1e-8) throw new Error(`${label} must have non-zero length.`);
-  return { x: vector.x / length, y: vector.y / length, z: vector.z / length };
-};
+  ratio: number,
+): Vector3[] => computeRelativeInsetPositions(
+  pointIds.map(pointId => clonePosition(findConstructionPoint(construction, pointId).position)),
+  ratio,
+);
 
 const computeConstructionFaceNormal = (
   construction: StaticMeshConstructionData,
   pointIds: readonly string[],
-): Vector3 => {
-  let nx = 0;
-  let ny = 0;
-  let nz = 0;
-  for (let i = 0; i < pointIds.length; i += 1) {
-    const current = findConstructionPoint(construction, pointIds[i]).position;
-    const next = findConstructionPoint(construction, pointIds[(i + 1) % pointIds.length]).position;
-    nx += (current.y - next.y) * (current.z + next.z);
-    ny += (current.z - next.z) * (current.x + next.x);
-    nz += (current.x - next.x) * (current.y + next.y);
-  }
-  return normalizeVector({ x: nx, y: ny, z: nz }, 'Construction Face normal');
-};
-
+): Vector3 => computePlanarFaceNormal(
+  pointIds.map(pointId => clonePosition(findConstructionPoint(construction, pointId).position)),
+);
 const finalizeConstructionMutation = (state: ConstructionMutationState): void => {
   const vertexCount = Math.floor(state.vertices.length / 3);
   const vertices = new Float32Array(state.vertices);
@@ -1034,6 +1538,322 @@ const finalizeConstructionMutation = (state: ConstructionMutationState): void =>
   });
 };
 
+interface AppliedJointBevelEdgeResult {
+  bevelFaceId: string;
+  bevelFaceIds: string[];
+  endpointCapFaceIds: string[];
+  updatedFaceIds: string[];
+  railPointIds: [[string, string], [string, string]];
+  profileRailPointIds: Array<[string, string]>;
+}
+
+interface AppliedJointBevelResult {
+  edgeResults: AppliedJointBevelEdgeResult[];
+  cornerFaceIds: string[];
+  updatedFaceIds: string[];
+}
+
+const bevelPlanCornerKey = (faceId: string, pointId: string): string => `${faceId}\u0000${pointId}`;
+
+const compactCyclicPointIds = (pointIds: readonly string[]): string[] => {
+  const compact: string[] = [];
+  for (const pointId of pointIds) {
+    if (compact[compact.length - 1] !== pointId) compact.push(pointId);
+  }
+  if (compact.length > 1 && compact[0] === compact[compact.length - 1]) compact.pop();
+  return compact;
+};
+
+const boundaryDirectedEdge = (pointIds: readonly string[], a: string, b: string): 1 | -1 | 0 => {
+  for (let index = 0; index < pointIds.length; index += 1) {
+    const current = pointIds[index];
+    const next = pointIds[(index + 1) % pointIds.length];
+    if (current === a && next === b) return 1;
+    if (current === b && next === a) return -1;
+  }
+  return 0;
+};
+
+/**
+ * Materializes a joint bevel plan into the temporary Construction adapter in one
+ * topology mutation. Original faces are rewritten once, then edge strips and
+ * VMesh-style corner patches are added. Numeric mesh ids are resolved only after
+ * compaction so editor selections receive stable post-operation ids.
+ */
+const applyJointBevelPlan = (
+  state: ConstructionMutationState,
+  plan: BevelKernelPlan,
+): AppliedJointBevelResult => {
+  const operationId = makeUniqueOperationId(
+    undefined,
+    'bevel-network',
+    [
+      ...state.construction.faces.map(face => face.id),
+      ...state.construction.loops.map(loop => loop.id),
+      ...state.construction.points.map(point => point.id),
+    ],
+  );
+
+  const semanticPointIdByPlanKey = new Map<string, string>();
+  plan.points.forEach((plannedPoint, index) => {
+    const sourcePoint = findConstructionPoint(state.construction, plannedPoint.sourcePointId);
+    const pointId = makeUniqueConstructionId(
+      `${operationId}.point.${index}`,
+      'point',
+      state.construction.points.map(point => point.id),
+    );
+    state.construction.points.push({
+      id: pointId,
+      name: sourcePoint.name ? `${sourcePoint.name} Bevel` : undefined,
+      role: 'GUIDE',
+      groupId: sourcePoint.groupId,
+      tags: sourcePoint.tags ? [...sourcePoint.tags] : undefined,
+      data: {
+        ...(sourcePoint.data ?? {}),
+        sourcePointId: sourcePoint.id,
+        bevelOperationId: operationId,
+      },
+      position: clonePosition(plannedPoint.position),
+      vertexIds: [],
+    });
+    semanticPointIdByPlanKey.set(plannedPoint.key, pointId);
+  });
+
+  const resolvePlanPoint = (key: string): string => {
+    const pointId = semanticPointIdByPlanKey.get(key);
+    if (!pointId) throw new Error(`Bevel network could not resolve planned boundary point '${key}'.`);
+    return pointId;
+  };
+
+  const originalFaceIds = state.construction.faces.map(face => face.id);
+  const updatedFaceIds: string[] = [];
+  const updatedFacesBySourcePoint = new Map<string, Set<string>>();
+  for (const faceId of originalFaceIds) {
+    const face = findConstructionFace(state.construction, faceId);
+    const originalBoundary = [...face.pointIds];
+    const nextBoundary: string[] = [];
+    let changed = false;
+    for (const sourcePointId of originalBoundary) {
+      const replacementKeys = plan.replacements.get(bevelPlanCornerKey(face.id, sourcePointId));
+      if (!replacementKeys) {
+        nextBoundary.push(sourcePointId);
+        continue;
+      }
+      changed = true;
+      const replacementPointIds = replacementKeys.map(resolvePlanPoint);
+      nextBoundary.push(...replacementPointIds);
+      const touchedFaces = updatedFacesBySourcePoint.get(sourcePointId) ?? new Set<string>();
+      touchedFaces.add(face.id);
+      updatedFacesBySourcePoint.set(sourcePointId, touchedFaces);
+    }
+    if (!changed) continue;
+    const compactBoundary = compactCyclicPointIds(nextBoundary);
+    if (compactBoundary.length < 3 || new Set(compactBoundary).size !== compactBoundary.length) {
+      throw new Error(`Bevel network would create a degenerate logical face '${face.id}'.`);
+    }
+    replaceConstructionFaceBoundaryInState(state, face, compactBoundary);
+    updatedFaceIds.push(face.id);
+  }
+
+  const bevelFaceIds: string[] = [];
+  const bevelFaceIdsByEdge: string[][] = [];
+  for (let index = 0; index < plan.edges.length; index += 1) {
+    const edgePlan = plan.edges[index];
+    const [profileA, profileB] = edgePlan.profilePointKeys;
+    if (profileA.length !== plan.segments + 1 || profileB.length !== plan.segments + 1) {
+      throw new Error('Bevel network profile row does not match the requested segment count.');
+    }
+    const sourceEdgeFaceIds: string[] = [];
+    for (let segment = 0; segment < plan.segments; segment += 1) {
+      const rawPointIds = [
+        resolvePlanPoint(profileA[segment]),
+        resolvePlanPoint(profileA[segment + 1]),
+        resolvePlanPoint(profileB[segment + 1]),
+        resolvePlanPoint(profileB[segment]),
+      ];
+      const pointIds = compactCyclicPointIds(rawPointIds);
+      // Blender's VMesh can intentionally share the same BMVert between adjacent
+      // boundary roles. For one segment that turns a nominal bevel quad into a
+      // valid triangle at a collapsed endpoint; do not materialize coincident
+      // duplicate vertices just to preserve a four-id array.
+      if (pointIds.length < 3 || new Set(pointIds).size !== pointIds.length) {
+        throw new Error('Bevel network produced a collapsed or self-touching edge strip.');
+      }
+      const bevelFace = addConstructionFaceToState(state, {
+        id: `${operationId}.edge.${index}.segment.${segment}`,
+        name: plan.segments === 1
+          ? `Bevel Edge ${index + 1}`
+          : `Bevel Edge ${index + 1} Segment ${segment + 1}`,
+        pointIds: [...pointIds],
+      });
+      bevelFaceIds.push(bevelFace.id);
+      sourceEdgeFaceIds.push(bevelFace.id);
+    }
+    bevelFaceIdsByEdge.push(sourceEdgeFaceIds);
+  }
+
+  const cornerFaceIdBySourcePoint = new Map<string, string>();
+  for (let index = 0; index < plan.corners.length; index += 1) {
+    const corner = plan.corners[index];
+    if (corner.boundaryPointKeys.length < 3) continue;
+    let pointIds = corner.boundaryPointKeys.map(resolvePlanPoint);
+    pointIds = pointIds.filter((pointId, pointIndex) => pointIds.indexOf(pointId) === pointIndex);
+    if (pointIds.length < 3) continue;
+
+    // A manifold cap must traverse every shared boundary edge opposite to the
+    // already-created neighboring face. Use the first shared edge to normalize
+    // the cyclic boundary orientation before triangulation.
+    let shouldReverse = false;
+    let foundSharedDirection = false;
+    for (let edgeIndex = 0; edgeIndex < pointIds.length && !foundSharedDirection; edgeIndex += 1) {
+      const a = pointIds[edgeIndex];
+      const b = pointIds[(edgeIndex + 1) % pointIds.length];
+      for (const existingFace of state.construction.faces) {
+        const relation = boundaryDirectedEdge(existingFace.pointIds, a, b);
+        if (relation === 0) continue;
+        shouldReverse = relation === 1;
+        foundSharedDirection = true;
+        break;
+      }
+    }
+    if (shouldReverse) pointIds = [...pointIds].reverse();
+
+    const cap = addConstructionFaceToState(state, {
+      id: `${operationId}.corner.${index}`,
+      name: `Bevel Corner ${index + 1}`,
+      pointIds,
+    });
+    cornerFaceIdBySourcePoint.set(corner.sourcePointId, cap.id);
+  }
+
+  compactUnusedConstructionVertices(state);
+  finalizeConstructionMutation(state);
+
+  const edgeResults: AppliedJointBevelEdgeResult[] = plan.edges.map((edgePlan, index) => ({
+    bevelFaceId: bevelFaceIdsByEdge[index][0],
+    bevelFaceIds: bevelFaceIdsByEdge[index],
+    endpointCapFaceIds: [edgePlan.pointAId, edgePlan.pointBId]
+      .map(pointId => cornerFaceIdBySourcePoint.get(pointId))
+      .filter((faceId): faceId is string => Boolean(faceId)),
+    updatedFaceIds: Array.from(new Set([
+      ...(updatedFacesBySourcePoint.get(edgePlan.pointAId) ?? []),
+      ...(updatedFacesBySourcePoint.get(edgePlan.pointBId) ?? []),
+    ])),
+    railPointIds: edgePlan.railPointKeys.map(([a, b]) => [resolvePlanPoint(a), resolvePlanPoint(b)]) as [[string, string], [string, string]],
+    profileRailPointIds: edgePlan.profilePointKeys[0].map((a, profileIndex) => [
+      resolvePlanPoint(a),
+      resolvePlanPoint(edgePlan.profilePointKeys[1][profileIndex]),
+    ] as [string, string]),
+  }));
+
+  return {
+    edgeResults,
+    cornerFaceIds: Array.from(cornerFaceIdBySourcePoint.values()),
+    updatedFaceIds,
+  };
+};
+
+interface LogicalModelingAdapter {
+  construction: StaticMeshConstructionData;
+  pointIdByVertex: Map<number, string>;
+  faceIdByLogical: Map<number, string>;
+}
+
+/**
+ * Build a temporary semantic view of the current logical topology. This adapter
+ * exists only so the proven Construction algorithms can be reused while the
+ * public/editor modeling contract moves to normal numeric mesh ids. It is never
+ * persisted by the normal-mesh API path.
+ */
+const buildLogicalModelingAdapter = (asset: StaticMeshAsset): LogicalModelingAdapter => {
+  const faces = sourceFaces(asset);
+  const { vertexToCanonical, groups } = buildCanonicalVertexGroups(asset);
+  assertAdoptableSiblingPositions(asset, groups);
+
+  const pointIdByCanonical = new Map<number, string>();
+  const pointIdByVertex = new Map<number, string>();
+  const points: StaticMeshConstructionPoint[] = [];
+
+  for (const canonical of Array.from(groups.keys()).sort((a, b) => a - b)) {
+    const group = groups.get(canonical)!;
+    const id = `__logical.point.${canonical}`;
+    pointIdByCanonical.set(canonical, id);
+    for (const vertexId of group) pointIdByVertex.set(vertexId, id);
+    const offset = canonical * 3;
+    points.push({
+      id,
+      role: 'CORNER',
+      position: {
+        x: asset.geometry.vertices[offset],
+        y: asset.geometry.vertices[offset + 1],
+        z: asset.geometry.vertices[offset + 2],
+      },
+      vertexIds: [...group],
+    });
+  }
+
+  const faceIdByLogical = new Map<number, string>();
+  const semanticFaces: StaticMeshConstructionFace[] = faces.map((faceVertexIds, faceId) => {
+    const id = `__logical.face.${faceId}`;
+    faceIdByLogical.set(faceId, id);
+    const pointIds = faceVertexIds.map(vertexId => {
+      const canonical = vertexToCanonical.get(vertexId);
+      if (canonical === undefined) throw new Error(`Logical mesh could not resolve vertex ${vertexId}.`);
+      const pointId = pointIdByCanonical.get(canonical);
+      if (!pointId) throw new Error(`Logical mesh could not resolve canonical vertex ${canonical}.`);
+      return pointId;
+    });
+    if (new Set(pointIds).size !== pointIds.length) {
+      throw new Error(`Logical face ${faceId} is degenerate after explicit sibling welds.`);
+    }
+    return { id, pointIds, faceId };
+  });
+
+  return {
+    construction: { points, faces: semanticFaces, loops: [] },
+    pointIdByVertex,
+    faceIdByLogical,
+  };
+};
+
+const replaceAllText = (value: string, search: string, replacement: string): string =>
+  value.split(search).join(replacement);
+
+const logicalModelingError = (error: unknown): Error => {
+  if (!(error instanceof Error)) return new Error(String(error));
+  const replacements: ReadonlyArray<readonly [string, string]> = [
+    ['Construction Points', 'mesh vertices'],
+    ['Construction Point', 'mesh vertex'],
+    ['Construction Faces', 'logical faces'],
+    ['Construction Face', 'logical face'],
+    ['Construction Loop', 'mesh loop'],
+    ['authored faces', 'logical faces'],
+    ['authored face', 'logical face'],
+    ['authored edge', 'logical edge'],
+    ['authored vertices', 'mesh vertices'],
+  ];
+  const message = replacements.reduce(
+    (current, [search, replacement]) => replaceAllText(current, search, replacement),
+    error.message,
+  );
+  return message === error.message ? error : new Error(message);
+};
+
+const requireLogicalFaceId = (asset: StaticMeshAsset, faceId: number): number => {
+  if (!Number.isInteger(faceId) || faceId < 0 || faceId >= sourceFaces(asset).length) {
+    throw new Error(`Logical face ${faceId} was not found.`);
+  }
+  return faceId;
+};
+
+const requireLogicalVertexId = (asset: StaticMeshAsset, vertexId: number): number => {
+  const vertexCount = Math.floor(asset.geometry.vertices.length / 3);
+  if (!Number.isInteger(vertexId) || vertexId < 0 || vertexId >= vertexCount) {
+    throw new Error(`Mesh vertex ${vertexId} was not found.`);
+  }
+  return vertexId;
+};
+
 /**
  * Stable asset-level API for Static Mesh composition. UI surfaces should call
  * this service instead of mutating geometry/editor metadata directly.
@@ -1041,6 +1861,120 @@ const finalizeConstructionMutation = (state: ConstructionMutationState): void =>
 class StaticMeshAssetAPIService {
   create(args: CreateStaticMeshArgs): StaticMeshAsset {
     return assetManager.createStaticMesh(args.name, args.path ?? '/Content/Meshes');
+  }
+
+  /**
+   * Adds stable semantic Construction handles to an existing logical Static Mesh
+   * without changing geometry, logical faces, triangle mapping, shells or winding.
+   * Explicit sibling/weld groups become one Construction Point with multiple
+   * bound render vertices; equal XYZ positions alone are never merged.
+   *
+   * Construction Loops are intentionally not guessed here. A loop is an authored
+   * path/region concept, while raw logical topology only guarantees vertices and
+   * faces. Modeling operations may create explicit loops later.
+   */
+  adoptTopology(args: AdoptStaticMeshTopologyArgs): AdoptStaticMeshTopologyResult {
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const faces = sourceFaces(asset);
+    if (faces.length === 0) throw new Error('Adopt Topology requires at least one logical face.');
+
+    if (isConstructionTopologyAdopted(asset)) {
+      return {
+        assetId: asset.id,
+        adopted: false,
+        pointsCreated: 0,
+        facesCreated: 0,
+        loopsCreated: 0,
+        pointIds: (asset.construction?.points ?? []).map(point => point.id),
+        faceIds: (asset.construction?.faces ?? []).map(face => face.id),
+      };
+    }
+
+    const existing = asset.construction;
+    if (existing && (existing.points.length > 0 || existing.faces.length > 0 || existing.loops.length > 0)) {
+      throw new Error('Adopt Topology requires an empty Construction layer; this mesh already contains authored Construction data.');
+    }
+
+    return assetHistory.execute(asset.id, 'Adopt Static Mesh Topology', () => {
+      const current = requireStaticMesh(args.assetId, 'target');
+      const currentFaces = sourceFaces(current);
+      const { vertexToCanonical, groups } = buildCanonicalVertexGroups(current);
+      assertAdoptableSiblingPositions(current, groups);
+
+      const pointPrefix = args.pointPrefix?.trim() || 'point:auto';
+      const facePrefix = args.facePrefix?.trim() || 'face:auto';
+      const pointIdByCanonical = new Map<number, string>();
+      const points: StaticMeshConstructionPoint[] = [];
+
+      for (const canonical of Array.from(groups.keys()).sort((a, b) => a - b)) {
+        const group = groups.get(canonical)!;
+        const offset = canonical * 3;
+        const id = `${pointPrefix}.${canonical}`;
+        pointIdByCanonical.set(canonical, id);
+        points.push({
+          id,
+          role: 'CORNER',
+          position: {
+            x: current.geometry.vertices[offset],
+            y: current.geometry.vertices[offset + 1],
+            z: current.geometry.vertices[offset + 2],
+          },
+          tags: ['adopted-topology'],
+          data: { source: 'logical-topology', canonicalVertexId: canonical },
+          vertexIds: [...group],
+        });
+      }
+
+      const constructionFaces: StaticMeshConstructionFace[] = currentFaces.map((faceVertexIds, faceId) => {
+        const pointIds = faceVertexIds.map(vertexId => {
+          const canonical = vertexToCanonical.get(vertexId);
+          if (canonical === undefined) throw new Error(`Adopt Topology could not resolve mesh vertex ${vertexId}.`);
+          const pointId = pointIdByCanonical.get(canonical);
+          if (!pointId) throw new Error(`Adopt Topology could not resolve canonical mesh vertex ${canonical}.`);
+          return pointId;
+        });
+        if (new Set(pointIds).size !== pointIds.length) {
+          throw new Error(`Adopt Topology found a degenerate logical face ${faceId} after applying explicit sibling welds.`);
+        }
+        return {
+          id: `${facePrefix}.${faceId}`,
+          name: `Adopted Face ${faceId}`,
+          pointIds,
+          faceId,
+        };
+      });
+
+      const construction: StaticMeshConstructionData = {
+        points,
+        faces: constructionFaces,
+        loops: [],
+      };
+      assetManager.updateAsset(current.id, { construction });
+      return {
+        assetId: current.id,
+        adopted: true,
+        pointsCreated: points.length,
+        facesCreated: constructionFaces.length,
+        loopsCreated: 0,
+        pointIds: points.map(point => point.id),
+        faceIds: constructionFaces.map(face => face.id),
+      };
+    });
+  }
+
+  isTopologyAdopted(assetId: string): boolean {
+    return isConstructionTopologyAdopted(requireStaticMesh(assetId, 'target'));
+  }
+
+  canAdoptTopology(assetId: string): boolean {
+    const asset = requireStaticMesh(assetId, 'target');
+    if (sourceFaces(asset).length === 0 || isConstructionTopologyAdopted(asset)) return false;
+    const construction = asset.construction;
+    return !construction || (
+      construction.points.length === 0
+      && construction.faces.length === 0
+      && construction.loops.length === 0
+    );
   }
 
   getHistoryState(assetId: string): AssetHistoryState {
@@ -1076,6 +2010,445 @@ class StaticMeshAssetAPIService {
   transaction<T>(assetId: string, label: string, mutation: () => T): T {
     requireStaticMesh(assetId, 'target');
     return assetHistory.transaction(assetId, label, mutation);
+  }
+
+  /**
+   * Normal mesh modeling is authoritative on LogicalMesh numeric ids. The
+   * mature legacy Construction algorithms are currently reused through a
+   * transient adapter, but that adapter is removed before commit. A human
+   * normal-topology edit also invalidates any pre-existing optional planning
+   * metadata rather than pretending to keep a second topology synchronized;
+   * Undo restores the complete pre-edit snapshot when needed.
+   */
+  private runLogicalModeling<T>(assetId: string, label: string, mutation: (adapter: LogicalModelingAdapter) => T): T {
+    try {
+      return assetHistory.transaction(assetId, label, () => {
+        const asset = requireStaticMesh(assetId, 'target');
+        const adapter = buildLogicalModelingAdapter(asset);
+        // Internal bridge only. Do not emit an intermediate ASSET_UPDATED event.
+        asset.construction = adapter.construction;
+        const result = mutation(adapter);
+        const updated = requireStaticMesh(assetId, 'target');
+        assetManager.updateAsset(updated.id, { construction: undefined });
+        return result;
+      });
+    } catch (error) {
+      throw logicalModelingError(error);
+    }
+  }
+
+  extrudeFace(args: ExtrudeLogicalFaceArgs): ExtrudeLogicalFaceResult;
+  extrudeFace(args: ExtrudeConstructionFaceArgs): ExtrudeConstructionFaceResult;
+  extrudeFace(args: ExtrudeLogicalFaceArgs | ExtrudeConstructionFaceArgs): ExtrudeLogicalFaceResult | ExtrudeConstructionFaceResult {
+    if (typeof args.faceId === 'string') {
+      const constructionArgs: ExtrudeConstructionFaceArgs = {
+        assetId: args.assetId,
+        faceId: args.faceId,
+        distance: args.distance,
+        ...('id' in args && args.id !== undefined ? { id: args.id } : {}),
+      };
+      return this.extrudeConstructionFace(constructionArgs);
+    }
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const faceId = requireLogicalFaceId(asset, args.faceId);
+    return this.runLogicalModeling(args.assetId, 'Extrude Face', adapter => {
+      const semanticFaceId = adapter.faceIdByLogical.get(faceId);
+      if (!semanticFaceId) throw new Error(`Logical face ${faceId} was not found.`);
+      const result = this.extrudeConstructionFace({ assetId: args.assetId, faceId: semanticFaceId, distance: args.distance });
+      const updated = requireStaticMesh(args.assetId, 'target');
+      const construction = updated.construction!;
+      const logicalFace = (semanticId: string): number => {
+        const face = construction.faces.find(candidate => candidate.id === semanticId);
+        if (!face) throw new Error(`Extrude Face could not resolve generated logical face '${semanticId}'.`);
+        return face.faceId;
+      };
+      const vertex = (semanticId: string): number => {
+        const point = construction.points.find(candidate => candidate.id === semanticId);
+        const vertexId = point?.vertexIds?.[0];
+        if (vertexId === undefined) throw new Error(`Extrude Face could not resolve generated mesh vertex '${semanticId}'.`);
+        return vertexId;
+      };
+      return {
+        sourceFaceId: faceId,
+        topFaceId: logicalFace(result.topFaceId),
+        topVertexIds: result.topPointIds.map(vertex),
+        sideFaceIds: result.sideFaceIds.map(logicalFace),
+      };
+    });
+  }
+
+  insetFace(args: InsetLogicalFaceArgs): InsetLogicalFaceResult;
+  insetFace(args: InsetConstructionFaceArgs): InsetConstructionFaceResult;
+  insetFace(args: InsetLogicalFaceArgs | InsetConstructionFaceArgs): InsetLogicalFaceResult | InsetConstructionFaceResult {
+    if (typeof args.faceId === 'string') {
+      const constructionArgs: InsetConstructionFaceArgs = {
+        assetId: args.assetId,
+        faceId: args.faceId,
+        ratio: args.ratio,
+        ...('id' in args && args.id !== undefined ? { id: args.id } : {}),
+      };
+      return this.insetConstructionFace(constructionArgs);
+    }
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const faceId = requireLogicalFaceId(asset, args.faceId);
+    return this.runLogicalModeling(args.assetId, 'Inset Face', adapter => {
+      const semanticFaceId = adapter.faceIdByLogical.get(faceId);
+      if (!semanticFaceId) throw new Error(`Logical face ${faceId} was not found.`);
+      const result = this.insetConstructionFace({ assetId: args.assetId, faceId: semanticFaceId, ratio: args.ratio });
+      const updated = requireStaticMesh(args.assetId, 'target');
+      const construction = updated.construction!;
+      const logicalFace = (semanticId: string): number => {
+        const face = construction.faces.find(candidate => candidate.id === semanticId);
+        if (!face) throw new Error(`Inset Face could not resolve generated logical face '${semanticId}'.`);
+        return face.faceId;
+      };
+      const vertex = (semanticId: string): number => {
+        const point = construction.points.find(candidate => candidate.id === semanticId);
+        const vertexId = point?.vertexIds?.[0];
+        if (vertexId === undefined) throw new Error(`Inset Face could not resolve generated mesh vertex '${semanticId}'.`);
+        return vertexId;
+      };
+      return {
+        sourceFaceId: faceId,
+        innerFaceId: logicalFace(result.innerFaceId),
+        innerVertexIds: result.innerPointIds.map(vertex),
+        borderFaceIds: result.borderFaceIds.map(logicalFace),
+      };
+    });
+  }
+
+
+  /**
+   * Insets multiple normal LogicalMesh faces as one atomic modeling action.
+   * Faces are treated individually (Blender's Individual-style behavior): each
+   * selected face receives its own center-relative inset ring. This keeps the
+   * operation predictable for arbitrary disconnected selections and avoids
+   * inventing a region-boundary solver in the normal modeling path.
+   */
+  insetFaces(args: InsetLogicalFacesArgs): InsetLogicalFacesResult {
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const faceIds = Array.from(new Set(args.faceIds.map(faceId => requireLogicalFaceId(asset, faceId))));
+    if (faceIds.length === 0) throw new Error('Inset requires at least one selected logical face.');
+    if (!Number.isFinite(args.ratio) || args.ratio <= 0 || args.ratio >= 1) {
+      throw new Error('Inset ratio must be greater than 0 and less than 1.');
+    }
+
+    return this.runLogicalModeling(args.assetId, faceIds.length === 1 ? 'Inset Face' : 'Inset Faces', adapter => {
+      const semanticFaceIds = faceIds.map(faceId => {
+        const semanticFaceId = adapter.faceIdByLogical.get(faceId);
+        if (!semanticFaceId) throw new Error(`Logical face ${faceId} was not found.`);
+        return semanticFaceId;
+      });
+      const semanticResults = semanticFaceIds.map(faceId => this.insetConstructionFace({
+        assetId: args.assetId,
+        faceId,
+        ratio: args.ratio,
+      }));
+      const updated = requireStaticMesh(args.assetId, 'target');
+      const construction = updated.construction!;
+      const logicalFace = (semanticId: string): number => {
+        const face = construction.faces.find(candidate => candidate.id === semanticId);
+        if (!face) throw new Error(`Inset Faces could not resolve generated logical face '${semanticId}'.`);
+        return face.faceId;
+      };
+      const vertex = (semanticId: string): number => {
+        const point = construction.points.find(candidate => candidate.id === semanticId);
+        const vertexId = point?.vertexIds?.[0];
+        if (vertexId === undefined) throw new Error(`Inset Faces could not resolve generated mesh vertex '${semanticId}'.`);
+        return vertexId;
+      };
+      const results = semanticResults.map((result, index): InsetLogicalFaceResult => ({
+        sourceFaceId: faceIds[index],
+        innerFaceId: logicalFace(result.innerFaceId),
+        innerVertexIds: result.innerPointIds.map(vertex),
+        borderFaceIds: result.borderFaceIds.map(logicalFace),
+      }));
+      return {
+        results,
+        innerFaceIds: results.map(result => result.innerFaceId),
+        borderFaceIds: results.flatMap(result => result.borderFaceIds),
+      };
+    });
+  }
+
+  deleteFace(args: DeleteLogicalFaceArgs): DeleteLogicalFaceResult;
+  deleteFace(args: DeleteConstructionFaceArgs): DeleteConstructionFaceResult;
+  deleteFace(args: DeleteLogicalFaceArgs | DeleteConstructionFaceArgs): DeleteLogicalFaceResult | DeleteConstructionFaceResult {
+    if (typeof args.faceId === 'string') {
+      const constructionArgs: DeleteConstructionFaceArgs = {
+        assetId: args.assetId,
+        faceId: args.faceId,
+      };
+      return this.deleteConstructionFace(constructionArgs);
+    }
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const faceId = requireLogicalFaceId(asset, args.faceId);
+    return this.runLogicalModeling(args.assetId, 'Delete Face', adapter => {
+      const semanticFaceId = adapter.faceIdByLogical.get(faceId);
+      if (!semanticFaceId) throw new Error(`Logical face ${faceId} was not found.`);
+      const result = this.deleteConstructionFace({ assetId: args.assetId, faceId: semanticFaceId });
+      return {
+        deletedFaceId: faceId,
+        vertexIds: [...result.vertexIds],
+        triangleIds: [...result.triangleIds],
+      };
+    });
+  }
+
+  splitEdge(args: SplitLogicalEdgeArgs): SplitLogicalEdgeResult;
+  splitEdge(args: SplitConstructionEdgeArgs): SplitConstructionEdgeResult;
+  splitEdge(args: SplitLogicalEdgeArgs | SplitConstructionEdgeArgs): SplitLogicalEdgeResult | SplitConstructionEdgeResult {
+    if ('pointAId' in args) return this.splitConstructionEdge(args);
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const vertexAId = requireLogicalVertexId(asset, args.vertexAId);
+    const vertexBId = requireLogicalVertexId(asset, args.vertexBId);
+    if (vertexAId === vertexBId) throw new Error('Split Edge requires two different mesh vertices.');
+    return this.runLogicalModeling(args.assetId, 'Split Edge', adapter => {
+      const pointAId = adapter.pointIdByVertex.get(vertexAId);
+      const pointBId = adapter.pointIdByVertex.get(vertexBId);
+      if (!pointAId || !pointBId || pointAId === pointBId) throw new Error('Split Edge could not resolve the selected logical edge.');
+      const result = this.splitConstructionEdge({ assetId: args.assetId, pointAId, pointBId, t: args.t });
+      const updated = requireStaticMesh(args.assetId, 'target');
+      const construction = updated.construction!;
+      return {
+        vertexId: result.vertexId,
+        updatedFaceIds: result.updatedFaceIds.map(semanticId => {
+          const face = construction.faces.find(candidate => candidate.id === semanticId);
+          if (!face) throw new Error(`Split Edge could not resolve updated logical face '${semanticId}'.`);
+          return face.faceId;
+        }),
+        edgeIds: result.edgeIds,
+        t: result.t,
+      };
+    });
+  }
+
+  cutFace(args: CutLogicalFaceArgs): CutLogicalFaceResult;
+  cutFace(args: CutConstructionFaceArgs): CutConstructionFaceResult;
+  cutFace(args: CutLogicalFaceArgs | CutConstructionFaceArgs): CutLogicalFaceResult | CutConstructionFaceResult {
+    if ('pointAId' in args) return this.cutConstructionFace(args);
+    const asset = requireStaticMesh(args.assetId, 'target');
+    const faceId = requireLogicalFaceId(asset, args.faceId);
+    const vertexAId = requireLogicalVertexId(asset, args.vertexAId);
+    const vertexBId = requireLogicalVertexId(asset, args.vertexBId);
+    return this.runLogicalModeling(args.assetId, 'Cut Face', adapter => {
+      const semanticFaceId = adapter.faceIdByLogical.get(faceId);
+      const pointAId = adapter.pointIdByVertex.get(vertexAId);
+      const pointBId = adapter.pointIdByVertex.get(vertexBId);
+      if (!semanticFaceId || !pointAId || !pointBId) throw new Error('Cut Face could not resolve the selected logical topology.');
+      const result = this.cutConstructionFace({ assetId: args.assetId, faceId: semanticFaceId, pointAId, pointBId });
+      return {
+        sourceFaceId: result.sourceLogicalFaceId,
+        newFaceId: result.newLogicalFaceId,
+        cutEdgeId: result.cutEdgeId,
+        vertexIds: [vertexAId, vertexBId],
+      };
+    });
+  }
+
+  bevelEdge(args: BevelLogicalEdgeArgs): BevelLogicalEdgeResult;
+  bevelEdge(args: BevelConstructionEdgeArgs): BevelConstructionEdgeResult;
+  bevelEdge(args: BevelLogicalEdgeArgs | BevelConstructionEdgeArgs): BevelLogicalEdgeResult | BevelConstructionEdgeResult {
+    if ('pointAId' in args) return this.bevelConstructionEdge(args);
+    const result = this.bevelEdges({
+      assetId: args.assetId,
+      edges: [{ vertexAId: args.vertexAId, vertexBId: args.vertexBId }],
+      width: args.width,
+      segments: args.segments,
+      profile: args.profile,
+    });
+    const edgeResult = result.results[0];
+    if (!edgeResult) throw new Error('Bevel Edge did not produce an edge result.');
+    return edgeResult;
+  }
+
+
+  /**
+   * Bevels a batch of normal LogicalMesh edges in one history transaction.
+   *
+   * Supported closed-manifold selections are solved by one Blender-style joint
+   * planner even when selected edges are disconnected: every touched vertex is
+   * solved once, all original faces are rewritten once, then segmented bevel
+   * strips and corner patches are emitted from that shared boundary. Legacy
+   * fallback is reserved for endpoint topology the joint planner explicitly
+   * does not support yet.
+   */
+  bevelEdges(args: BevelLogicalEdgesArgs): BevelLogicalEdgesResult {
+    const asset = requireStaticMesh(args.assetId, 'target');
+    if (!Number.isFinite(args.width) || args.width <= 1e-8) {
+      throw new Error('Bevel width must be a finite positive number.');
+    }
+    const segments = args.segments ?? 1;
+    const profile = args.profile ?? 0.5;
+    if (!Number.isFinite(segments) || Math.floor(segments) !== segments || segments < 1 || segments > 64) {
+      throw new Error('Bevel segments must be an integer from 1 to 64.');
+    }
+    if (!Number.isFinite(profile) || profile < 0 || profile > 1) {
+      throw new Error('Bevel profile must be between 0 and 1.');
+    }
+
+    const uniqueEdges = new Map<string, { vertexAId: number; vertexBId: number }>();
+    for (const edge of args.edges) {
+      const vertexAId = requireLogicalVertexId(asset, edge.vertexAId);
+      const vertexBId = requireLogicalVertexId(asset, edge.vertexBId);
+      if (vertexAId === vertexBId) throw new Error('Bevel requires two different mesh vertices per edge.');
+      uniqueEdges.set(meshEdgeKey(vertexAId, vertexBId), { vertexAId, vertexBId });
+    }
+    const edges = Array.from(uniqueEdges.values());
+    if (edges.length === 0) throw new Error('Bevel requires at least one selected logical edge.');
+
+    return this.runLogicalModeling(args.assetId, edges.length === 1 ? 'Bevel Edge' : 'Bevel Edges', adapter => {
+      const selected = edges.map(edge => {
+        const pointAId = adapter.pointIdByVertex.get(edge.vertexAId);
+        const pointBId = adapter.pointIdByVertex.get(edge.vertexBId);
+        if (!pointAId || !pointBId || pointAId === pointBId) {
+          throw new Error('Bevel could not resolve one selected logical edge.');
+        }
+        return { ...edge, pointAId, pointBId };
+      });
+
+      const endpointUseCount = new Map<string, number>();
+      for (const edge of selected) {
+        endpointUseCount.set(edge.pointAId, (endpointUseCount.get(edge.pointAId) ?? 0) + 1);
+        endpointUseCount.set(edge.pointBId, (endpointUseCount.get(edge.pointBId) ?? 0) + 1);
+      }
+      const hasSharedEndpoint = Array.from(endpointUseCount.values()).some(count => count > 1);
+
+      // Blender solves every selected edge set as one bevel graph, even when the
+      // selected edges are disconnected. This matters after a bevel: the editor
+      // selects the new parallel rails, and beveling them again must clamp their
+      // shared surrounding topology as one operation instead of walking a fixed
+      // width independently along the now-short neighboring edges of an n-gon.
+      //
+      // The only compatibility fallback is topology the joint planner explicitly
+      // does not own yet (open one-rings and edgecount==2 terminal endpoints).
+      // Never decompose a connected selection because that would double-solve a
+      // shared endpoint and recreate the original connected-bevel bug.
+      let state: ConstructionMutationState | null = null;
+      let plan: BevelKernelPlan | null = null;
+      try {
+        state = createConstructionMutationState(requireStaticMesh(args.assetId, 'target'));
+        plan = buildJointBevelPlan(
+          state.construction,
+          selected.map(edge => ({ pointAId: edge.pointAId, pointBId: edge.pointBId })),
+          args.width,
+          args.clampOverlap ?? true,
+          segments,
+          profile,
+        );
+      } catch (error) {
+        if (!(error instanceof BevelKernelUnsupportedTopologyError) || hasSharedEndpoint) throw error;
+      }
+
+      if (!state || !plan) {
+        if (segments !== 1) {
+          throw new Error('Multi-segment bevel is not yet supported for this legacy endpoint topology. Use Segments = 1 or simplify the local fan.');
+        }
+        const semanticResults = selected.map(edge => this.bevelConstructionEdge({
+          assetId: args.assetId,
+          pointAId: edge.pointAId,
+          pointBId: edge.pointBId,
+          width: args.width,
+        }));
+
+        const updated = requireStaticMesh(args.assetId, 'target');
+        const construction = updated.construction!;
+        const faceId = (semanticId: string): number => {
+          const face = construction.faces.find(candidate => candidate.id === semanticId);
+          if (!face) throw new Error(`Bevel Edges could not resolve logical face '${semanticId}'.`);
+          return face.faceId;
+        };
+        const vertexId = (semanticId: string): number => {
+          const point = construction.points.find(candidate => candidate.id === semanticId);
+          const id = point?.vertexIds?.[0];
+          if (id === undefined) throw new Error(`Bevel Edges could not resolve mesh vertex '${semanticId}'.`);
+          return id;
+        };
+        const results = semanticResults.map((result): BevelLogicalEdgeResult => {
+          const bevelEdgeIds: [string, string] = [
+            meshEdgeKey(vertexId(result.sidePointIds[0][0]), vertexId(result.sidePointIds[0][1])),
+            meshEdgeKey(vertexId(result.sidePointIds[1][0]), vertexId(result.sidePointIds[1][1])),
+          ];
+          return {
+            bevelFaceId: faceId(result.bevelFaceId),
+            bevelFaceIds: [faceId(result.bevelFaceId)],
+            endpointCapFaceIds: result.endpointCapFaceIds.map(faceId),
+            updatedFaceIds: result.updatedFaceIds.map(faceId),
+            bevelEdgeIds,
+            profileEdgeIds: [...bevelEdgeIds],
+            width: result.width,
+            segments: 1,
+            profile,
+          };
+        });
+        const endpointCapFaceIds = Array.from(new Set(results.flatMap(result => result.endpointCapFaceIds)));
+        return {
+          results,
+          bevelFaceIds: results.map(result => result.bevelFaceId),
+          endpointCapFaceIds,
+          cornerFaceIds: endpointCapFaceIds,
+          updatedFaceIds: Array.from(new Set(results.flatMap(result => result.updatedFaceIds))),
+          bevelEdgeIds: Array.from(new Set(results.flatMap(result => result.profileEdgeIds))),
+          width: args.width,
+          requestedWidth: args.width,
+          clamped: false,
+          segments: 1,
+          profile,
+        };
+      }
+
+      const applied = applyJointBevelPlan(state, plan);
+      // Joint plan application commits through the staged mutation state rather
+      // than a nested assetHistory.execute(), so explicitly mark the outer
+      // runLogicalModeling transaction dirty for Undo/Redo.
+      assetHistory.markDirty(args.assetId);
+
+      const updated = requireStaticMesh(args.assetId, 'target');
+      const construction = updated.construction!;
+      const faceId = (semanticId: string): number => {
+        const face = construction.faces.find(candidate => candidate.id === semanticId);
+        if (!face) throw new Error(`Bevel Edges could not resolve logical face '${semanticId}'.`);
+        return face.faceId;
+      };
+      const vertexId = (semanticId: string): number => {
+        const point = construction.points.find(candidate => candidate.id === semanticId);
+        const id = point?.vertexIds?.[0];
+        if (id === undefined) throw new Error(`Bevel Edges could not resolve mesh vertex '${semanticId}'.`);
+        return id;
+      };
+
+      const results = applied.edgeResults.map((result): BevelLogicalEdgeResult => {
+        const bevelEdgeIds: [string, string] = [
+          meshEdgeKey(vertexId(result.railPointIds[0][0]), vertexId(result.railPointIds[0][1])),
+          meshEdgeKey(vertexId(result.railPointIds[1][0]), vertexId(result.railPointIds[1][1])),
+        ];
+        return {
+          bevelFaceId: faceId(result.bevelFaceId),
+          bevelFaceIds: result.bevelFaceIds.map(faceId),
+          endpointCapFaceIds: result.endpointCapFaceIds.map(faceId),
+          updatedFaceIds: result.updatedFaceIds.map(faceId),
+          bevelEdgeIds,
+          profileEdgeIds: result.profileRailPointIds.map(([a, b]) => meshEdgeKey(vertexId(a), vertexId(b))),
+          width: plan.effectiveWidth,
+          segments: plan.segments,
+          profile: plan.profile,
+        };
+      });
+      const cornerFaceIds = applied.cornerFaceIds.map(faceId);
+      return {
+        results,
+        bevelFaceIds: results.flatMap(result => result.bevelFaceIds),
+        endpointCapFaceIds: Array.from(new Set(results.flatMap(result => result.endpointCapFaceIds))),
+        cornerFaceIds,
+        updatedFaceIds: applied.updatedFaceIds.map(faceId),
+        bevelEdgeIds: Array.from(new Set(results.flatMap(result => result.profileEdgeIds))),
+        width: plan.effectiveWidth,
+        requestedWidth: plan.requestedWidth,
+        clamped: plan.clamped,
+        segments: plan.segments,
+        profile: plan.profile,
+      };
+    });
   }
 
 
@@ -1313,7 +2686,7 @@ class StaticMeshAssetAPIService {
    * This deliberately composes with Split Edge: callers can first insert exact
    * boundary points, then cut between those stable point handles.
    */
-  cutFace(args: CutConstructionFaceArgs): CutConstructionFaceResult {
+  cutConstructionFace(args: CutConstructionFaceArgs): CutConstructionFaceResult {
     return assetHistory.execute(args.assetId, 'Cut Construction Face', () => {
       const asset = requireStaticMesh(args.assetId, 'target');
       const state = createConstructionMutationState(asset);
@@ -1372,11 +2745,395 @@ class StaticMeshAssetAPIService {
   }
 
   /**
+   * Bevels one manifold authored edge. The selected edge must have exactly two
+   * consistently wound non-coplanar incident faces. Endpoint valence is not
+   * artificially capped: each endpoint is solved independently from its local
+   * fan. Interior manifold fans propagate offset points along their incident
+   * edges; Blender's edgecount==2 terminal case instead creates two face-side
+   * profile points plus an artificial point on the lone unbeveled edge.
+   *
+   * Width is measured from each selected-edge endpoint along its neighboring
+   * authored edges. Unsupported open/branched/non-manifold endpoint fans reject
+   * atomically rather than guessing topology.
+   */
+  bevelConstructionEdge(args: BevelConstructionEdgeArgs): BevelConstructionEdgeResult {
+    return assetHistory.execute(args.assetId, 'Bevel Construction Edge', () => {
+      if (!Number.isFinite(args.width) || args.width <= 1e-8) {
+        throw new Error('Bevel width must be a finite positive number.');
+      }
+
+      const asset = requireStaticMesh(args.assetId, 'target');
+      const state = createConstructionMutationState(asset);
+      if (args.pointAId === args.pointBId) throw new Error('Bevel Edge requires two different Construction Points.');
+      const pointA = findConstructionPoint(state.construction, args.pointAId);
+      const pointB = findConstructionPoint(state.construction, args.pointBId);
+
+      const loopsUsingSelectedEdge = state.construction.loops.filter(
+        loop => findBoundaryEdgeIndex(loop.pointIds, pointA.id, pointB.id, loop.closed) >= 0,
+      );
+      if (loopsUsingSelectedEdge.length > 0) {
+        throw new Error('Bevel Edge currently does not support a Construction Loop that directly owns the selected edge.');
+      }
+
+      const incidentFaces = state.construction.faces.filter(
+        face => findBoundaryEdgeIndex(face.pointIds, pointA.id, pointB.id, true) >= 0,
+      );
+      if (incidentFaces.length !== 2) {
+        throw new Error('Bevel Edge requires exactly two incident authored faces.');
+      }
+
+      const incidentInfo = incidentFaces.map(face => ({
+        face,
+        edge: findOrientedConstructionEdge(face.pointIds, pointA.id, pointB.id),
+      }));
+      if (incidentInfo.some(item => !item.edge)) {
+        throw new Error('Bevel Edge could not resolve the selected face boundaries.');
+      }
+
+      const forward = incidentInfo.find(item => item.edge!.matchesRequestedOrder);
+      const reverse = incidentInfo.find(item => !item.edge!.matchesRequestedOrder);
+      if (!forward || !reverse) {
+        throw new Error('Bevel Edge requires consistently wound manifold faces with opposite shared-edge directions.');
+      }
+
+      const forwardNormal = computeConstructionFaceNormal(state.construction, forward.face.pointIds);
+      const reverseNormal = computeConstructionFaceNormal(state.construction, reverse.face.pointIds);
+      if (Math.abs(dot3(forwardNormal, reverseNormal)) > 0.9999) {
+        throw new Error('Bevel Edge requires a non-coplanar edge.');
+      }
+
+      const edgeForward = forward.edge!; // A -> B
+      const edgeReverse = reverse.edge!; // B -> A
+      const neighborAForward = edgeForward.previousId;
+      const neighborBForward = edgeForward.nextId;
+      const neighborBReverse = edgeReverse.previousId;
+      const neighborAReverse = edgeReverse.nextId;
+      const neighborIds = [neighborAForward, neighborBForward, neighborBReverse, neighborAReverse];
+      if (neighborIds.some(id => id === pointA.id || id === pointB.id)) {
+        throw new Error('Bevel Edge requires non-degenerate neighboring edges.');
+      }
+      // Blender explicitly supports a terminal bevel vertex with only two total
+      // incident edges. In that case both selected faces see the same lone
+      // unbeveled neighbor, but they still need distinct profile-side points.
+      const endpointATwoEdge = neighborAForward === neighborAReverse;
+      const endpointBTwoEdge = neighborBForward === neighborBReverse;
+
+      const selectedFaceIds = new Set([forward.face.id, reverse.face.id]);
+      // A cap path is ordered forward-side -> reverse-side so its closing edge
+      // pairs with the bevel face's forwardA -> reverseA endpoint edge.
+      const endpointAPlan = endpointATwoEdge ? null : planBevelEndpointFan(
+        state.construction,
+        pointA.id,
+        pointB.id,
+        neighborAForward,
+        neighborAReverse,
+        selectedFaceIds,
+      );
+      // At B the bevel face endpoint edge runs reverseB -> forwardB, therefore
+      // order the cap reverse-side -> forward-side so its closing edge pairs.
+      const endpointBPlan = endpointBTwoEdge ? null : planBevelEndpointFan(
+        state.construction,
+        pointB.id,
+        pointA.id,
+        neighborBReverse,
+        neighborBForward,
+        selectedFaceIds,
+      );
+
+      const operationId = makeUniqueOperationId(
+        args.id,
+        'bevel',
+        [
+          ...state.construction.faces.map(face => face.id),
+          ...state.construction.loops.map(loop => loop.id),
+          ...state.construction.points.map(point => point.id),
+        ],
+      );
+
+      const makeBevelPointAt = (
+        preferredId: string,
+        sourcePoint: StaticMeshConstructionPoint,
+        position: Vector3,
+      ): string => {
+        const pointId = makeUniqueConstructionId(
+          preferredId,
+          'point',
+          state.construction.points.map(point => point.id),
+        );
+        state.construction.points.push({
+          id: pointId,
+          name: sourcePoint.name ? `${sourcePoint.name} Bevel` : undefined,
+          role: 'GUIDE',
+          groupId: sourcePoint.groupId,
+          tags: sourcePoint.tags ? [...sourcePoint.tags] : undefined,
+          data: {
+            ...(sourcePoint.data ?? {}),
+            sourcePointId: sourcePoint.id,
+            bevelOperationId: operationId,
+          },
+          position: clonePosition(position),
+          vertexIds: [],
+        });
+        return pointId;
+      };
+
+      const makeBevelPoint = (
+        preferredId: string,
+        sourcePoint: StaticMeshConstructionPoint,
+        towardPointId: string,
+      ): string => makeBevelPointAt(
+        preferredId,
+        sourcePoint,
+        constructionPointAtDistance(state.construction, sourcePoint.id, towardPointId, args.width),
+      );
+
+      const createEndpointOffsets = (
+        endpoint: StaticMeshConstructionPoint,
+        plan: BevelEndpointFanPlan,
+        endpointLabel: 'a' | 'b',
+      ): Map<string, string> => {
+        const offsets = new Map<string, string>();
+        plan.neighborIds.forEach((neighborId, index) => {
+          offsets.set(
+            neighborId,
+            makeBevelPoint(`${operationId}.end${endpointLabel}.${index}`, endpoint, neighborId),
+          );
+        });
+        return offsets;
+      };
+
+      const offsetsA = endpointATwoEdge
+        ? new Map([[
+            neighborAForward,
+            makeBevelPoint(`${operationId}.enda.leg`, pointA, neighborAForward),
+          ]])
+        : createEndpointOffsets(pointA, endpointAPlan!, 'a');
+      const offsetsB = endpointBTwoEdge
+        ? new Map([[
+            neighborBForward,
+            makeBevelPoint(`${operationId}.endb.leg`, pointB, neighborBForward),
+          ]])
+        : createEndpointOffsets(pointB, endpointBPlan!, 'b');
+
+      const terminalAForwardId = endpointATwoEdge
+        ? makeBevelPointAt(
+            `${operationId}.enda.forward`,
+            pointA,
+            constructionSelectedEdgeOffsetPoint(state.construction, forward.face, pointA.id, pointB.id, args.width),
+          )
+        : null;
+      const terminalAReverseId = endpointATwoEdge
+        ? makeBevelPointAt(
+            `${operationId}.enda.reverse`,
+            pointA,
+            constructionSelectedEdgeOffsetPoint(state.construction, reverse.face, pointA.id, pointB.id, args.width),
+          )
+        : null;
+      const terminalBForwardId = endpointBTwoEdge
+        ? makeBevelPointAt(
+            `${operationId}.endb.forward`,
+            pointB,
+            constructionSelectedEdgeOffsetPoint(state.construction, forward.face, pointB.id, pointA.id, args.width),
+          )
+        : null;
+      const terminalBReverseId = endpointBTwoEdge
+        ? makeBevelPointAt(
+            `${operationId}.endb.reverse`,
+            pointB,
+            constructionSelectedEdgeOffsetPoint(state.construction, reverse.face, pointB.id, pointA.id, args.width),
+          )
+        : null;
+
+      const forwardAId = terminalAForwardId ?? offsetsA.get(neighborAForward)!;
+      const reverseAId = terminalAReverseId ?? offsetsA.get(neighborAReverse)!;
+      const reverseBId = terminalBReverseId ?? offsetsB.get(neighborBReverse)!;
+      const forwardBId = terminalBForwardId ?? offsetsB.get(neighborBForward)!;
+
+      const boundaryByFace = new Map<string, string[]>(
+        state.construction.faces.map(face => [face.id, [...face.pointIds]]),
+      );
+      const boundaryByLoop = new Map<string, string[]>(
+        state.construction.loops.map(loop => [loop.id, [...loop.pointIds]]),
+      );
+      const insertOnAllAuthoredBoundaries = (edgeAId: string, edgeBId: string, pointId: string) => {
+        let touched = 0;
+        for (const face of state.construction.faces) {
+          const boundary = boundaryByFace.get(face.id)!;
+          const next = insertPointOnBoundaryEdge(boundary, edgeAId, edgeBId, pointId, true);
+          if (!next) continue;
+          boundaryByFace.set(face.id, next);
+          touched += 1;
+        }
+        for (const loop of state.construction.loops) {
+          const boundary = boundaryByLoop.get(loop.id)!;
+          const next = insertPointOnBoundaryEdge(boundary, edgeAId, edgeBId, pointId, loop.closed);
+          if (!next) continue;
+          boundaryByLoop.set(loop.id, next);
+        }
+        if (touched === 0) throw new Error('Bevel Edge could not propagate one offset point into authored topology.');
+      };
+
+      for (const [neighborId, pointId] of offsetsA) {
+        insertOnAllAuthoredBoundaries(pointA.id, neighborId, pointId);
+      }
+      for (const [neighborId, pointId] of offsetsB) {
+        insertOnAllAuthoredBoundaries(pointB.id, neighborId, pointId);
+      }
+
+      const insertTerminalProfilePoint = (
+        face: StaticMeshConstructionFace,
+        endpointId: string,
+        selectedOtherId: string,
+        pointId: string,
+      ) => {
+        const originalIndex = face.pointIds.indexOf(endpointId);
+        if (originalIndex < 0) throw new Error(`Bevel Edge could not resolve authored face '${face.id}'.`);
+        const count = face.pointIds.length;
+        const previousId = face.pointIds[(originalIndex - 1 + count) % count];
+        const nextId = face.pointIds[(originalIndex + 1) % count];
+        if (selectedOtherId !== previousId && selectedOtherId !== nextId) {
+          throw new Error('Bevel Edge could not orient a terminal profile point.');
+        }
+        const boundary = boundaryByFace.get(face.id);
+        if (!boundary) throw new Error(`Bevel Edge could not resolve authored face '${face.id}'.`);
+        const endpointIndex = boundary.indexOf(endpointId);
+        if (endpointIndex < 0) throw new Error('Bevel Edge lost a terminal endpoint before face reconstruction.');
+        const next = [...boundary];
+        if (selectedOtherId === nextId) next.splice(endpointIndex + 1, 0, pointId);
+        else next.splice(endpointIndex, 0, pointId);
+        boundaryByFace.set(face.id, next);
+      };
+
+      // edgecount==2 terminal: each selected face needs a different point on
+      // its own offset line. Insert those into only their representative face;
+      // the shared artificial leg point was inserted above on the sole
+      // unbeveled edge. Placement uses the original face winding so both ends
+      // may independently be edgecount==2 without fighting over AB adjacency.
+      if (endpointATwoEdge) {
+        insertTerminalProfilePoint(forward.face, pointA.id, pointB.id, forwardAId);
+        insertTerminalProfilePoint(reverse.face, pointA.id, pointB.id, reverseAId);
+      }
+      if (endpointBTwoEdge) {
+        insertTerminalProfilePoint(forward.face, pointB.id, pointA.id, forwardBId);
+        insertTerminalProfilePoint(reverse.face, pointB.id, pointA.id, reverseBId);
+      }
+
+      const removePointFromFaceBoundary = (faceId: string, pointId: string) => {
+        const boundary = boundaryByFace.get(faceId);
+        if (!boundary || !boundary.includes(pointId)) return;
+        const next = boundary.filter(id => id !== pointId);
+        if (next.length < 3 || new Set(next).size !== next.length) {
+          throw new Error('Bevel Edge would create a degenerate face boundary.');
+        }
+        boundaryByFace.set(faceId, next);
+      };
+
+      // Every face using A/B belongs to the local one-ring that was validated by
+      // the fan planner. Remove the old endpoint after its incident edges have
+      // received semantic offset points.
+      for (const face of state.construction.faces) {
+        if (face.pointIds.includes(pointA.id)) removePointFromFaceBoundary(face.id, pointA.id);
+        if (face.pointIds.includes(pointB.id)) removePointFromFaceBoundary(face.id, pointB.id);
+      }
+
+      const removeEndpointFromLoops = (endpointId: string, offsetIds: ReadonlySet<string>) => {
+        for (const loop of state.construction.loops) {
+          let boundary = boundaryByLoop.get(loop.id)!;
+          if (!boundary.includes(endpointId)) continue;
+          const touchingOffsets = boundary.filter(pointId => offsetIds.has(pointId));
+          // A loop that passes through an endpoint owns two incident edges. Both
+          // have already received offsets, so the old corner can leave the loop.
+          if (touchingOffsets.length >= 2) boundary = boundary.filter(pointId => pointId !== endpointId);
+          if (boundary.length < (loop.closed ? 3 : 2) || new Set(boundary).size !== boundary.length) {
+            throw new Error('Bevel Edge would create a degenerate Construction Loop.');
+          }
+          boundaryByLoop.set(loop.id, boundary);
+        }
+      };
+      removeEndpointFromLoops(pointA.id, new Set(offsetsA.values()));
+      removeEndpointFromLoops(pointB.id, new Set(offsetsB.values()));
+      for (const loop of state.construction.loops) loop.pointIds = boundaryByLoop.get(loop.id)!;
+
+      const updatedFaceIds: string[] = [];
+      for (const face of state.construction.faces) {
+        const nextBoundary = boundaryByFace.get(face.id)!;
+        if (nextBoundary.length === face.pointIds.length
+          && nextBoundary.every((pointId, index) => pointId === face.pointIds[index])) {
+          continue;
+        }
+        replaceConstructionFaceBoundaryInState(state, face, nextBoundary);
+        updatedFaceIds.push(face.id);
+      }
+
+      const endpointCapFaceIds: string[] = [];
+      const addEndpointCapPoints = (label: 'a' | 'b', pointIds: string[]) => {
+        if (pointIds.length < 3) return;
+        const cap = addConstructionFaceToState(state, {
+          id: `${operationId}.cap.${label}`,
+          name: `Bevel Endpoint ${label.toUpperCase()} Cap`,
+          pointIds,
+        });
+        endpointCapFaceIds.push(cap.id);
+      };
+      const addEndpointCap = (label: 'a' | 'b', plan: BevelEndpointFanPlan, offsets: Map<string, string>) => {
+        addEndpointCapPoints(label, plan.neighborIds.map(neighborId => offsets.get(neighborId)!));
+      };
+      if (endpointATwoEdge) {
+        addEndpointCapPoints('a', [forwardAId, offsetsA.get(neighborAForward)!, reverseAId]);
+      } else {
+        addEndpointCap('a', endpointAPlan!, offsetsA);
+      }
+      if (endpointBTwoEdge) {
+        addEndpointCapPoints('b', [reverseBId, offsetsB.get(neighborBForward)!, forwardBId]);
+      } else {
+        addEndpointCap('b', endpointBPlan!, offsetsB);
+      }
+
+      const bevelFace = addConstructionFaceToState(state, {
+        id: `${operationId}.face`,
+        name: `${forward.face.name ?? forward.face.id} / ${reverse.face.name ?? reverse.face.id} Bevel`,
+        pointIds: [forwardAId, reverseAId, reverseBId, forwardBId],
+      });
+
+      // A/B are no longer part of any logical face after a valid local bevel.
+      // Compact those orphan render vertices while preserving the semantic Points
+      // themselves as planning/history handles with empty vertex bindings.
+      compactUnusedConstructionVertices(state);
+
+      const forwardAVertex = findConstructionPoint(state.construction, forwardAId).vertexIds?.[0];
+      const forwardBVertex = findConstructionPoint(state.construction, forwardBId).vertexIds?.[0];
+      const reverseAVertex = findConstructionPoint(state.construction, reverseAId).vertexIds?.[0];
+      const reverseBVertex = findConstructionPoint(state.construction, reverseBId).vertexIds?.[0];
+      if ([forwardAVertex, forwardBVertex, reverseAVertex, reverseBVertex].some(vertexId => vertexId === undefined)) {
+        throw new Error('Bevel Edge failed to materialize its offset topology.');
+      }
+
+      const bevelEdgeIds: [string, string] = [
+        meshEdgeKey(forwardAVertex!, forwardBVertex!),
+        meshEdgeKey(reverseAVertex!, reverseBVertex!),
+      ];
+      finalizeConstructionMutation(state);
+
+      return {
+        id: operationId,
+        sourcePointIds: [pointA.id, pointB.id],
+        sidePointIds: [[forwardAId, forwardBId], [reverseAId, reverseBId]],
+        bevelFaceId: bevelFace.id,
+        bevelLogicalFaceId: bevelFace.faceId,
+        endpointCapFaceIds,
+        updatedFaceIds,
+        bevelEdgeIds,
+        width: args.width,
+      };
+    });
+  }
+
+  /**
    * Splits one authored Construction Edge by inserting a new semantic Point and
    * updating every incident Construction Face/Loop that uses that edge. Faces
    * keep their stable semantic/logical ids; only their ordered boundary grows.
    */
-  splitEdge(args: SplitConstructionEdgeArgs): SplitConstructionEdgeResult {
+  splitConstructionEdge(args: SplitConstructionEdgeArgs): SplitConstructionEdgeResult {
     return assetHistory.execute(args.assetId, 'Split Construction Edge', () => {
       const asset = requireStaticMesh(args.assetId, 'target');
       const state = createConstructionMutationState(asset);
@@ -1470,7 +3227,7 @@ class StaticMeshAssetAPIService {
    * face/topology arrays remain dense and every remaining semantic face mapping
    * is updated in the same atomic history step.
    */
-  deleteFace(args: DeleteConstructionFaceArgs): DeleteConstructionFaceResult {
+  deleteConstructionFace(args: DeleteConstructionFaceArgs): DeleteConstructionFaceResult {
     return assetHistory.execute(args.assetId, 'Delete Construction Face', () => {
       const asset = requireStaticMesh(args.assetId, 'target');
       const state = createConstructionMutationState(asset);
@@ -1482,17 +3239,18 @@ class StaticMeshAssetAPIService {
   }
 
   /**
-   * Insets one convex planar Construction Face by a constant world-space amount.
-   * The input semantic face id is preserved and becomes the inner face, while a
-   * ring of new border faces connects the old boundary to the new inner boundary.
+   * Insets one Construction Face by scaling its ordered boundary toward the
+   * arithmetic face center. The input semantic face id is preserved and becomes
+   * the inner face, while a ring of new border faces connects the old boundary
+   * to the new inner boundary. This relative inset does not require planarity.
    */
-  insetFace(args: InsetConstructionFaceArgs): InsetConstructionFaceResult {
+  insetConstructionFace(args: InsetConstructionFaceArgs): InsetConstructionFaceResult {
     return assetHistory.execute(args.assetId, 'Inset Construction Face', () => {
       const asset = requireStaticMesh(args.assetId, 'target');
       const state = createConstructionMutationState(asset);
       const sourceFace = findConstructionFace(state.construction, args.faceId);
       const originalPointIds = [...sourceFace.pointIds];
-      const insetPositions = computeInsetPositions(state.construction, originalPointIds, args.amount);
+      const insetPositions = computeInsetPositions(state.construction, originalPointIds, args.ratio);
       const operationId = makeUniqueOperationId(
         args.id,
         'inset',
@@ -1564,7 +3322,7 @@ class StaticMeshAssetAPIService {
       });
   }
 
-  extrudeFace(args: ExtrudeConstructionFaceArgs): ExtrudeConstructionFaceResult {
+  extrudeConstructionFace(args: ExtrudeConstructionFaceArgs): ExtrudeConstructionFaceResult {
     return assetHistory.execute(args.assetId, 'Extrude Construction Face', () => {
       const asset = requireStaticMesh(args.assetId, 'target');
       if (!Number.isFinite(args.distance) || Math.abs(args.distance) <= 1e-8) {
@@ -1572,6 +3330,7 @@ class StaticMeshAssetAPIService {
       }
       const state = createConstructionMutationState(asset);
       const sourceFace = findConstructionFace(state.construction, args.faceId);
+      const sourcePointIds = [...sourceFace.pointIds];
       const operationId = makeUniqueOperationId(
         args.id,
         'extrude',
@@ -1581,13 +3340,15 @@ class StaticMeshAssetAPIService {
           ...state.construction.points.map(point => point.id),
         ],
       );
-      const direction = args.direction
-        ? normalizeVector(args.direction, 'Extrude direction')
-        : computeConstructionFaceNormal(state.construction, sourceFace.pointIds);
+      // Face Extrude is normal-based by contract. A positive distance follows
+      // the current ordered logical face normal; a negative distance goes in the
+      // exact opposite direction. Arbitrary sweep directions belong in a separate
+      // future operation rather than weakening this modeller primitive.
+      const direction = computeConstructionFaceNormal(state.construction, sourcePointIds);
 
       const topPointIds: string[] = [];
-      for (let index = 0; index < sourceFace.pointIds.length; index += 1) {
-        const sourcePoint = findConstructionPoint(state.construction, sourceFace.pointIds[index]);
+      for (let index = 0; index < sourcePointIds.length; index += 1) {
+        const sourcePoint = findConstructionPoint(state.construction, sourcePointIds[index]);
         const pointId = makeUniqueConstructionId(
           `${operationId}.point.${index}`,
           'point',
@@ -1610,17 +3371,20 @@ class StaticMeshAssetAPIService {
         topPointIds.push(pointId);
       }
 
-      const topFace = addConstructionFaceToState(state, {
-        id: `${operationId}.top`,
-        name: `${sourceFace.name ?? sourceFace.id} Extruded Top`,
-        pointIds: topPointIds,
-      });
+      // Modeller-style extrusion consumes the source surface instead of leaving
+      // a duplicate cap behind at the original boundary. Preserve the stable
+      // semantic/logical face handle by moving that face onto the new top points;
+      // the old boundary remains available only through the generated side walls.
+      // This is equivalent to deleting the old source surface and continuing to
+      // edit the extruded face, while keeping AI/script handles stable.
+      replaceConstructionFaceBoundaryInState(state, sourceFace, topPointIds);
+
       const sideFaceIds: string[] = [];
-      for (let i = 0; i < sourceFace.pointIds.length; i += 1) {
-        const next = (i + 1) % sourceFace.pointIds.length;
+      for (let i = 0; i < sourcePointIds.length; i += 1) {
+        const next = (i + 1) % sourcePointIds.length;
         const side = addConstructionFaceToState(state, {
           id: `${operationId}.side.${i}`,
-          pointIds: [sourceFace.pointIds[i], sourceFace.pointIds[next], topPointIds[next], topPointIds[i]],
+          pointIds: [sourcePointIds[i], sourcePointIds[next], topPointIds[next], topPointIds[i]],
         });
         sideFaceIds.push(side.id);
       }
@@ -1630,11 +3394,12 @@ class StaticMeshAssetAPIService {
         state.construction.loops.map(loop => loop.id),
       );
       state.construction.loops.push({ id: topLoopId, pointIds: [...topPointIds], closed: true });
+
       finalizeConstructionMutation(state);
       return {
         id: operationId,
         sourceFaceId: sourceFace.id,
-        topFaceId: topFace.id,
+        topFaceId: sourceFace.id,
         topLoopId,
         topPointIds,
         sideFaceIds,

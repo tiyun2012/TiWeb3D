@@ -31,8 +31,6 @@ export interface StaticMeshToolDockProps {
   onGlobalComponentSelect?: (mode: Exclude<MeshComponentMode, 'OBJECT'>) => void;
   onObjectSelect?: () => void;
   assetRevision?: number;
-  selectedConstructionPointIds?: readonly string[];
-  onConstructionPointSelect?: (pointId: string | null, operation?: 'REPLACE' | 'TOGGLE') => void;
   selectionCounts: MeshSelectionCounts;
   softSelectionEnabled: boolean;
   softSelectionRadius: number;
@@ -47,15 +45,23 @@ export interface StaticMeshToolDockProps {
   onSoftSelectionConnectivityChange: (connectivity: SoftSelectionConnectivity) => void;
   compositionSources?: StaticMeshCompositionSource[];
   onAppendMesh?: (sourceAssetId: string) => void;
-  topologyInsetAmount: number;
+  topologyInsetRatio: number;
   topologyExtrudeDistance: number;
   topologySplitPosition: number;
+  topologyBevelWidth: number;
+  topologyBevelSegments: number;
+  topologyBevelProfile: number;
+  topologyBevelClampOverlap: boolean;
   topologySplitEndpointLabel?: string | null;
   topologyCutEndpointLabel?: string | null;
   topologyFeedback?: string | null;
-  onTopologyInsetAmountChange: (amount: number) => void;
+  onTopologyInsetRatioChange: (ratio: number) => void;
   onTopologyExtrudeDistanceChange: (distance: number) => void;
   onTopologySplitPositionChange: (position: number) => void;
+  onTopologyBevelWidthChange: (width: number) => void;
+  onTopologyBevelSegmentsChange: (segments: number) => void;
+  onTopologyBevelProfileChange: (profile: number) => void;
+  onTopologyBevelClampOverlapChange: (enabled: boolean) => void;
   commandContext: EditorCommandContext;
 }
 
@@ -210,8 +216,6 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   onGlobalComponentSelect,
   onObjectSelect,
   assetRevision = 0,
-  selectedConstructionPointIds = [],
-  onConstructionPointSelect,
   selectionCounts,
   softSelectionEnabled,
   softSelectionRadius,
@@ -226,15 +230,23 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   onSoftSelectionConnectivityChange,
   compositionSources = [],
   onAppendMesh,
-  topologyInsetAmount,
+  topologyInsetRatio,
   topologyExtrudeDistance,
   topologySplitPosition,
+  topologyBevelWidth,
+  topologyBevelSegments,
+  topologyBevelProfile,
+  topologyBevelClampOverlap,
   topologySplitEndpointLabel = null,
   topologyCutEndpointLabel = null,
   topologyFeedback = null,
-  onTopologyInsetAmountChange,
+  onTopologyInsetRatioChange,
   onTopologyExtrudeDistanceChange,
   onTopologySplitPositionChange,
+  onTopologyBevelWidthChange,
+  onTopologyBevelSegmentsChange,
+  onTopologyBevelProfileChange,
+  onTopologyBevelClampOverlapChange,
   commandContext,
 }) => {
   const [hierarchyExpanded, setHierarchyExpanded] = useState(true);
@@ -324,12 +336,12 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
   const topologyActionButtons = useMemo(() => {
     const maybeCommand = (id: string) => editorCommandRegistry.resolve(id, commandContext);
     return [
-      { key: 'extrude', command: maybeCommand('staticMesh.extrude'), label: 'Extrude', icon: 'ArrowUpSquare', badge: 'API', hint: 'Extrude the selected authored Construction Face.' },
-      { key: 'inset', command: maybeCommand('staticMesh.inset'), label: 'Inset', icon: 'Shrink', badge: 'API', hint: 'Inset the selected authored Construction Face.' },
-      { key: 'deleteFace', command: maybeCommand('staticMesh.deleteFace'), label: 'Delete Face', icon: 'Trash2', badge: 'API', hint: 'Delete the selected authored Construction Face and leave an opening.' },
-      { key: 'splitEdge', command: maybeCommand('staticMesh.splitEdge'), label: 'Split Edge', icon: 'Scissors', badge: 'API', hint: 'Insert one Construction Point on the selected authored edge.' },
-      { key: 'cutFace', command: maybeCommand('staticMesh.cutFace'), label: 'Cut Face', icon: 'Scissors', badge: 'API', hint: 'Cut one authored face between two selected non-adjacent Construction-backed vertices.' },
-      { key: 'bevel', command: maybeCommand('staticMesh.bevel'), label: 'Bevel', icon: 'Ungroup', badge: 'M3', hint: 'Bevel selected edges or faces.' },
+      { key: 'extrude', command: maybeCommand('staticMesh.extrude'), label: 'Extrude', icon: 'ArrowUpSquare', badge: 'API', hint: 'Extrude the selected logical face.' },
+      { key: 'inset', command: maybeCommand('staticMesh.inset'), label: 'Inset', icon: 'Shrink', badge: 'API', hint: 'Inset the selected logical face.' },
+      { key: 'deleteFace', command: maybeCommand('staticMesh.deleteFace'), label: 'Delete Face', icon: 'Trash2', badge: 'API', hint: 'Delete the selected logical face and leave an opening.' },
+      { key: 'splitEdge', command: maybeCommand('staticMesh.splitEdge'), label: 'Split Edge', icon: 'Scissors', badge: 'API', hint: 'Insert one mesh vertex on the selected logical edge.' },
+      { key: 'cutFace', command: maybeCommand('staticMesh.cutFace'), label: 'Cut Face', icon: 'Scissors', badge: 'API', hint: 'Cut one logical face between two selected non-adjacent mesh vertices.' },
+      { key: 'bevel', command: maybeCommand('staticMesh.bevel'), label: 'Bevel', icon: 'Ungroup', badge: 'API', hint: 'Bevel the selected manifold logical edge.' },
       { key: 'connect', command: maybeCommand('staticMesh.connect'), label: 'Connect', icon: 'GitCommit', badge: 'M3', hint: 'Connect selected components with new topology.' },
     ];
   }, [commandContext]);
@@ -413,8 +425,6 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
               onObjectSelect={onObjectSelect}
               selectionCounts={selectionCounts}
               assetRevision={assetRevision}
-              selectedConstructionPointIds={selectedConstructionPointIds}
-              onConstructionPointSelect={onConstructionPointSelect}
               showHeader={false}
             />
           </div>
@@ -659,7 +669,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
             <div className="space-y-1.5 pt-1 border-t border-white/5">
               <SubsectionLabel
                 title="Topology"
-                subtitle="Topology primitives call the same tested Construction API used by scripts/AI. Select exactly one authored face or edge."
+                subtitle="Edit selected Logical Mesh faces, edges, and vertices directly."
               />
               {meshComponentMode === 'FACE' && (
                 <div className="grid grid-cols-2 gap-1.5 rounded border border-white/5 bg-black/15 p-2">
@@ -676,18 +686,20 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                     />
                   </label>
                   <label className="space-y-1 text-[8px] text-text-secondary">
-                    <span>Inset Amount</span>
+                    <span>Inset Ratio</span>
                     <input
                       type="number"
-                      title="Inset amount"
-                      aria-label="Inset amount"
-                      min="0.0001"
-                      step="0.1"
-                      value={topologyInsetAmount}
-                      onChange={event => onTopologyInsetAmountChange(Number(event.target.value))}
+                      title="Inset ratio"
+                      aria-label="Inset ratio"
+                      min="0.005"
+                      max="0.99"
+                      step="0.005"
+                      value={topologyInsetRatio}
+                      onChange={event => onTopologyInsetRatioChange(Number(event.target.value))}
                       className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
                     />
                   </label>
+                  <div className="col-span-2 text-[8px] leading-3 text-text-secondary/70">Inset applies the ratio independently to every selected logical face.</div>
                   {topologyFeedback && (
                     <div
                       role="status"
@@ -700,7 +712,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                 </div>
               )}
               {meshComponentMode === 'EDGE' && (
-                <div className="grid grid-cols-1 gap-1.5 rounded border border-white/5 bg-black/15 p-2">
+                <div className="grid grid-cols-2 gap-1.5 rounded border border-white/5 bg-black/15 p-2">
                   <label className="space-y-1 text-[8px] text-text-secondary">
                     <span>Split Position</span>
                     <input
@@ -714,16 +726,75 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
                       onChange={event => onTopologySplitPositionChange(Number(event.target.value))}
                       className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
                     />
-                    {topologySplitEndpointLabel && (
-                      <div className="font-mono text-[8px] leading-3 text-text-secondary/80">{topologySplitEndpointLabel}</div>
-                    )}
-                    <div className="text-[8px] leading-3 text-text-secondary/70">0 = first endpoint, 1 = second endpoint. Default 0.5 splits at the midpoint.</div>
                   </label>
+                  <div className="flex items-end justify-end pb-1 text-[8px] text-text-secondary/60">
+                    0..1 along edge
+                  </div>
+                  <div className="col-span-2 mt-0.5 border-t border-white/5 pt-1.5 text-[8px] font-medium uppercase tracking-wide text-text-secondary/80">
+                    Bevel
+                  </div>
+                  <label className="space-y-1 text-[8px] text-text-secondary">
+                    <span>Width</span>
+                    <input
+                      type="number"
+                      title="Bevel edge width"
+                      aria-label="Bevel edge width"
+                      min="0.0001"
+                      step="0.05"
+                      value={topologyBevelWidth}
+                      onChange={event => onTopologyBevelWidthChange(Number(event.target.value))}
+                      className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  <label className="space-y-1 text-[8px] text-text-secondary">
+                    <span>Segments</span>
+                    <input
+                      type="number"
+                      title="Bevel profile segments"
+                      aria-label="Bevel profile segments"
+                      min="1"
+                      max="64"
+                      step="1"
+                      value={topologyBevelSegments}
+                      onChange={event => onTopologyBevelSegmentsChange(Number(event.target.value))}
+                      className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50"
+                    />
+                  </label>
+                  <label className="space-y-1 text-[8px] text-text-secondary">
+                    <span>Profile</span>
+                    <input
+                      type="number"
+                      title="Bevel profile shape; 0.5 is circular"
+                      aria-label="Bevel profile shape"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={topologyBevelProfile}
+                      onChange={event => onTopologyBevelProfileChange(Number(event.target.value))}
+                      className="h-7 w-full rounded border border-white/10 bg-black/25 px-2 text-[9px] font-mono text-white outline-none focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={topologyBevelSegments < 2}
+                    />
+                  </label>
+                  <label className="flex h-7 items-center gap-2 self-end rounded border border-white/5 bg-black/10 px-2 text-[8px] text-text-secondary">
+                    <input
+                      type="checkbox"
+                      checked={topologyBevelClampOverlap}
+                      onChange={event => onTopologyBevelClampOverlapChange(event.target.checked)}
+                      className="h-3 w-3 accent-accent"
+                    />
+                    <span>Clamp Overlap</span>
+                  </label>
+                  {topologySplitEndpointLabel && (
+                    <div className="col-span-2 font-mono text-[8px] leading-3 text-text-secondary/80">{topologySplitEndpointLabel}</div>
+                  )}
+                  <div className="col-span-2 text-[8px] leading-3 text-text-secondary/70">
+                    Segments = 1 preserves the current sharp chamfer. Segments &gt; 1 samples a Blender-style superellipse profile; Profile 0.5 is circular. The selected edge network is solved in one Undo step before topology mutation.
+                  </div>
                   {topologyFeedback && (
                     <div
                       role="status"
                       aria-live="polite"
-                      className="rounded border border-red-400/25 bg-red-500/10 px-2 py-1.5 text-[8px] leading-relaxed text-red-200"
+                      className="col-span-2 rounded border border-red-400/25 bg-red-500/10 px-2 py-1.5 text-[8px] leading-relaxed text-red-200"
                     >
                       {topologyFeedback}
                     </div>
@@ -733,7 +804,7 @@ export const StaticMeshToolDock: React.FC<StaticMeshToolDockProps> = ({
               {meshComponentMode === 'VERTEX' && (
                 <div className="grid grid-cols-1 gap-1.5 rounded border border-white/5 bg-black/15 p-2">
                   <div className="text-[8px] leading-3 text-text-secondary/70">
-                    Select exactly two non-adjacent authored vertices on one Construction Face, then use Cut Face.
+                    Select exactly two non-adjacent vertices on one logical face, then use Cut Face.
                   </div>
                   {topologyCutEndpointLabel && (
                     <div className="font-mono text-[8px] leading-3 text-text-secondary/80">{topologyCutEndpointLabel}</div>

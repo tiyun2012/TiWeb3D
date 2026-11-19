@@ -243,4 +243,5 @@ export const STATIC_MESH_DOCK_COMMANDS = [
   'staticMesh.deleteFace',
   'staticMesh.splitEdge',
   'staticMesh.cutFace',
+  'staticMesh.bevel',
 ] as const;

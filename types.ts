@@ -239,7 +239,12 @@ export interface StaticMeshAsset extends Asset {
     geometry: MeshGeometry;
     /** Optional Mesh Shell naming/provenance metadata. Actual membership is detected from logical topology. */
     shells?: StaticMeshShell[];
-    /** Semantic construction layer used by procedural/AI modeling. Points are not mesh vertices. */
+    /**
+     * Optional legacy/planning metadata. Normal Static Mesh editing is authoritative
+     * on geometry + LogicalMesh and never requires this layer. Future AI planning
+     * tools may keep separate semantic metadata without making it editor topology.
+     * @deprecated Do not require Construction data for normal mesh modeling.
+     */
     construction?: StaticMeshConstructionData;
     /** Optional asset-default material. Empty/undefined uses built-in Standard Lambert. */
     materialId?: string;

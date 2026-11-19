@@ -153,13 +153,13 @@ neighbor; poles, triangles, and irregular valence need explicit loop rules.
 
 ### Modeling validation in the Static Mesh UI
 
-Construction modeling APIs remain strict and atomic: invalid inputs such as an inset amount that collapses a face throw before topology is committed. The Static Mesh editor treats these expected validation failures as normal user feedback. It shows the API message inline beside the topology controls, leaves the entered value available for correction, creates no partial topology/history step, and does not emit a console error stack for expected inset validation. Unexpected failures are still logged for debugging.
+Static Mesh modeling APIs remain strict and atomic: invalid inputs such as an Inset ratio outside the open `0..1` interval throw before topology is committed. The Static Mesh editor treats these expected validation failures as normal user feedback. It shows the API message inline beside the topology controls, leaves the entered value available for correction, creates no partial topology/history step, and does not emit a console error stack for expected inset validation. Unexpected failures are still logged for debugging.
 
 ## Quad topology intelligence and read-only traversal
 
 `engine/mesh-editing/StaticMeshTopologyQueries.ts` builds higher-level modeling queries on top of
 `LogicalMesh.faces` and `MeshConnectivity`. These queries are **read-only** and work on logical topology
-whether or not the mesh was created through Construction Points.
+regardless of how the mesh was created.
 
 The public `staticMeshAssetAPI` wrappers are:
 
@@ -192,7 +192,7 @@ BOUNDARY | NON_QUAD | BRANCH | CYCLE | INVALID_TOPOLOGY | MAX_STEPS
 ```
 
 `closed: true` is returned for a ring that cycles back to its seed edge. Query calls never create Asset
-History entries and never mutate Construction data, geometry, Shells, or selection.
+History entries and never mutate geometry, LogicalMesh, Shells, optional planning metadata, or selection.
 
 The Static Mesh editor exposes the same query layer under Selection Actions:
 

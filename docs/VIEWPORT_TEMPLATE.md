@@ -18,6 +18,7 @@ This separation lets a viewport reuse the common visual/input primitives without
 
 - `toolbarLeft` — primary viewport controls.
 - `toolbarRight` — stats and secondary controls.
+- `toolbarCenter` — optional centered viewport widget such as the Static Mesh Display eye menu.
 - `hudBottomLeft` / `hudBottomRight` — passive status/readout areas.
 - `viewportChildren` — canvas-local visuals such as selection rectangles.
 - `overlayChildren` — menus, tooltips, brush readouts, or portals.
