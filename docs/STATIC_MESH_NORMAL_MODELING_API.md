@@ -292,11 +292,19 @@ selected logical edges
     -> sample endpoint profiles when segments > 1
     -> rewrite every original face once
     -> create `segments` selected-edge strip faces per source edge
+<<<<<<< HEAD
     -> create one corner patch where the boundary has 3+ vertices
     -> clamp the whole network before mutation when boundaries would overlap
 ```
 
 This makes shared corners deterministic: two selected cube edges can weld directly through a two-point corner boundary, three selected cube edges create one triangular corner patch, four-edge loops are solved as one network, and valence-4 endpoint fans are handled without applying the setback twice. The generated topology is validated by the focused mesh test as one shell with paired half-edges.
+=======
+    -> create the classified corner VMesh (`NONE`, `POLY`, `TRI_FAN`, or structured `ADJ`)
+    -> clamp the whole network before mutation when boundaries would overlap
+```
+
+This makes shared corners deterministic: whenever exactly two selected edges reduce to a two-point effective corner boundary, their segmented profile rows weld directly through `M_NONE` regardless of whether the edges are straight or angled; one-segment three-edge corners create one triangular patch; segmented general corners that still require a surface use authored `ADJ` grid cells; four-edge loops are solved as one network; and valence-4 endpoint fans are handled without applying the setback twice. The generated topology is validated by the focused mesh tests as one shell with paired half-edges.
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 
 The current joint-kernel scope is deliberately smaller than Blender's full bevel implementation:
 
@@ -304,7 +312,11 @@ The current joint-kernel scope is deliberately smaller than Blender's full bevel
 - closed cyclic one-rings are supported, plus the common one-gap open terminal face chain when `selcount == 1`;
 - `segments = 1` is the stable sharp-chamfer compatibility path;
 - `segments > 1` samples a normalized superellipse profile and emits multiple edge strips while expanding the owning original/corner boundaries;
+<<<<<<< HEAD
 - the current segmented corner interior is one manifold n-gon patch, not yet Blender's final Grid Fill / `M_ADJ` VMesh interior;
+=======
+- `selcount == 2` corners with exactly two effective boundary roles are Blender-style `M_NONE` welds even when the selected edges meet at an angle; only closed segmented corners that still require a real surface after that classification use the structured `M_ADJ` VMesh grid; topology/parity follows Blender, while interior point placement is currently Coons-based rather than Blender's full cubic subdivision;
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 - explicit inner/outer miter modes, multi-selected open fans, custom profile curves, and UV/custom-loop interpolation remain future work.
 
 Endpoint valence is independent: one end may have a different number of incident edges or selected edges than the other. The joint path includes Blender-style degree-2 terminal construction, straight/near-collinear terminal handling, finite-segment clamping for zero-offset neighbors, reflex/non-planar corner handling, and topology-safe local welding. A legacy semantic Construction bevel remains available for compatibility, but normal numeric-ID bevels do not intentionally decompose a supported selection into repeated single-edge mutations.

@@ -70,9 +70,183 @@ The profile parameter is normalized to `0..1` and defaults to `0.5`. The impleme
 
 For each endpoint of a selected edge, the kernel first solves the same two outer one-segment boundary points as before. It then finds a profile middle point on the original selected edge and maps normalized superellipse samples through the `start -> middle -> end` local parallelogram, matching Blender's `set_profile_params()` / unit-square profile-map architecture. Samples are redistributed by approximate arc length so segment spacing stays useful for editing instead of clustering strongly near one end.
 
+<<<<<<< HEAD
 The generated profile arc must be owned by existing topology rather than blindly capped. If an original reconstructed face owns that side of the corner, its replacement boundary is expanded with the intermediate samples. Otherwise the samples expand the local corner/VMesh boundary. This keeps the new strip grid watertight and preserves the rule that original faces are reconstructed once.
 
 The current multi-segment corner interior is intentionally a **staging implementation**: the expanded corner boundary is emitted as one valid n-gon patch. This is manifold and gives us a stable subdivision/profile API, but it is not yet Blender's final `M_ADJ` / Grid Fill VMesh interior. A later milestone can replace that interior fill without changing the public `segments`/`profile` contract or the already-stable `segments = 1` path.
+=======
+For a terminal endpoint (`selcount == 1`, ordinary `edgecount >= 3` case), Blender may then move the profile plane through the two boundary points and the original source vertex. Ti3D mirrors that step: intermediate profile samples are projected **along the selected-edge direction** onto that terminal plane. This matters on slanted/skewed geometry. Without it, the outer rails can be correct while the interior segment rows bow out of the endpoint face, producing a visibly different result from Blender even though the strip remains manifold.
+
+The generated profile arc must be owned by existing topology rather than blindly capped. A real corner VMesh (`POLY`, `TRI_FAN`, or `ADJ`) owns its sampled profile arc; an `M_NONE` corner has no separate vertex patch, so a closed opposite reconstructed source face may own that arc instead. **VMesh ownership is explicit in the bevel plan** and is semantic, not just `boundary.length < 3`. In particular, adding `segments > 1` can turn a two-point terminal profile into many sampled points without changing `M_NONE` into a cap.
+
+This is critical on an open box/hole rim. A `selcount == 1` open terminal with only two effective boundary vertices stays `meshKind = NONE`; its intermediate profile samples simply form part of the intentional open boundary, so no diagonal/top cap is introduced across the missing-face gap. A closed `M_NONE` terminal instead lets the opposite reconstructed source face consume the profile arc, preserving manifold closure without a separate corner polygon.
+
+A terminal with **three** effective boundary vertices is different. Blender classifies that case as `M_TRI_FAN`: the third boundary vertex is a persistent fan apex, and when `segments > 1` every adjacent pair of profile samples forms its own triangle with that apex. Ti3D records this as `meshKind = TRI_FAN` plus `fanPointKey` and materializes separate logical triangle faces. Do not replace this with one n-gon cap: render triangulation is not authored topology, and the radial fan edges are required for later selection/editing and to match Blender's result.
+
+There is a broader Blender **two-profile weld** case that must be classified before `POLY`/`ADJ`. If exactly two selected edges meet at a source vertex and the effective pre-subdivision VMesh boundary has exactly two `BoundVert` roles (`selcount == 2 && vm.count == 2` in Blender), the corner is `M_NONE` regardless of the angle between those two selected edges. The two independently sampled profile rows are orientation-matched, reconciled (midpoint when their local profile planes differ), and canonicalized to the same generated topology vertices. No corner face is authored. A straight/opposite selected-chain split is only one special geometry inside this more general weld rule; an ordinary 90-degree face-loop corner on a box is also a two-boundary weld. Treating that 90-degree case as `POLY` works accidentally for `segments = 1`, but `segments > 1` turns the sampled rows into a false cap with the small pole/triangle structures seen in the editor screenshots.
+
+General closed segmented corners now have a **structured `M_ADJ` VMesh baseline** only after the `M_NONE` weld cases are excluded. When `segments > 1`, two or more selected sectors meet at a closed corner, and the effective boundary still requires a real corner surface (three or more effective boundary roles after weld/classification), the planner promotes the one-segment `POLY` corner to `ADJ`. Profile rows are carried through a canonical `(boundary sector, ring, segment)` grid instead of being dumped into one n-gon cap. This removes pole-style authored diagonals while preserving the already-correct terminal `M_NONE`, two-profile `M_NONE` weld, and `M_TRI_FAN` cases.
+
+The topology/indexing and odd/even center rules follow Blender's `mesh_vert_canon()` / `bevel_build_rings()` structure. Ti3D currently places the interior stations with a stable Coons interpolation from the solved profile boundary and a profile-fullness center target; Blender goes further with cubic subdivision plus pipe/special-triangle branches. Treat the current geometry placement as the **baseline ADJ implementation**, not the final pixel-identical Blender interpolation.
+
+## General segmented VMesh (`M_ADJ`) implementation
+
+This section is the implemented contract for the common closed-manifold segmented corner path and the extension boundary for future Blender parity work.
+
+### Why `M_ADJ` is required
+
+Once `segments > 1`, a general corner cannot be represented faithfully by taking all sampled boundary points and triangulating one cap polygon. That strategy may remain manifold, but it creates authored pole vertices and diagonal edges that Blender does not create, changes local edge flow, and can make overlap limiting react to artificial short edges rather than the intended bevel surface.
+
+The required topology is a structured VMesh whose rows continue the sampled edge profiles through the shared vertex. In Blender terminology this is the `M_ADJ` (adjacent-edges) mesh pattern and is built by `bevel_build_rings()` after the boundary and profile samples are known.
+
+Conceptually:
+
+```text
+OLD staging fill                         IMPLEMENTED M_ADJ topology
+
+profile samples                          profile samples
+p0--p1--p2--p3                           p0--p1--p2--p3
+ \   \  | /                              |   |   |   |
+  \   \ |/        authored poles         q0--q1--q2--q3
+   \   [x]        / diagonals             |   |   |   |
+    \  / |                              r0--r1--r2--r3
+     apex / n-gon
+```
+
+The exact grid shape depends on valence and segment parity, but the invariant is that profile stations remain ordered and are connected by VMesh rows/rings rather than collapsed into one arbitrary triangulated cap.
+
+### Mesh-kind selection policy
+
+Do not choose the corner fill from `segments` alone. First classify the **effective pre-subdivision VMesh boundary roles** after topology-safe collapse/weld:
+
+| Local case | Required mesh kind | Rule |
+| --- | --- | --- |
+| Two selected edges + exactly two effective boundary roles (`selcount == 2`, `VMesh count == 2`) | `NONE` / weld | Share/reconcile the two profile rows; no corner surface. Angle does not matter. Straight continuation and 90-degree face-loop corners are both instances. |
+| True two-boundary terminal / open-rim no-cap (`selcount == 1`) | `NONE` | Profile samples belong to reconstructed faces/open boundary; subdivision must not create a cap. |
+| Three-boundary terminal | `TRI_FAN` | One persistent apex + one authored triangle per profile segment. |
+| General corner with `segments == 1` | `POLY` | Keep the already-stable one-segment corner patch. |
+| General corner with `segments > 1` and two or more beveled sectors requiring a corner surface | `ADJ` | Build a structured segmented VMesh. |
+| Future cutoff/custom-profile endpoint | `CUTOFF` (future) | Keep separate from `ADJ`; do not overload `POLY`. |
+
+`M_ADJ` must never be used to paper over unsupported topology. Multi-gap open fans, non-manifold selected edges, or ambiguous face ordering still reject/fall back according to the normal topology policy until they receive an explicit design.
+
+### Planned kernel data model
+
+Extend the plan-level mesh kind without changing the public bevel options:
+
+```ts
+type BevelMeshKind = 'NONE' | 'POLY' | 'TRI_FAN' | 'ADJ';
+
+interface BevelCornerPlan {
+  sourceVertexId: number;
+  meshKind: BevelMeshKind;
+  boundary: BevelBoundaryRole[]; // ordered pre-subdivision VMesh boundary
+  segments: number;
+  profile: number;
+
+  // Present only for ADJ.
+  adj?: {
+    boundaryRows: string[][];     // profile sample keys arriving from beveled sectors
+    rings: string[][];            // generated interior VMesh rows/rings
+    faces: string[][];            // authored polygon boundaries, usually quads
+    centerPointKey?: string;      // only if parity/topology genuinely requires one
+  };
+}
+```
+
+The actual TypeScript names may differ, but the ownership rules may not: generated VMesh points belong to one source `BevVert`-equivalent corner plan; edge-strip plans consume the corner's boundary/profile points rather than creating independent duplicates.
+
+### Construction algorithm
+
+Implement `ADJ` only after the existing selected-edge network, corner boundary, width clamp, and profile sampling have succeeded.
+
+1. **Keep the current ordered `BevVert` boundary.** Do not infer corner order from render triangles or generated coordinates.
+2. **Identify each beveled boundary interval.** Every `BoundVert -> next BoundVert` interval owned by a selected `EdgeHalf` has `segments + 1` profile samples.
+3. **Normalize orientation.** All arriving profile rows must run in the same VMesh winding direction. Reverse row indexing when the neighboring edge's natural profile direction is opposite.
+4. **Allocate VMesh stations by boundary index and profile index.** Treat `(boundary-sector, profile-station)` as the semantic coordinate system before assigning mesh vertex IDs. This is the analogue of Blender's indexed VMesh storage.
+5. **Reuse boundary/profile vertices first.** The outermost stations reference already-planned edge-profile keys. Never duplicate a boundary sample merely because two faces consume it.
+6. **Generate interior rings/rows.** Interpolate/construct the interior from corresponding profile stations using the corner boundary geometry, preserving monotone ordering from one beveled sector to the next. The initial implementation should target Blender's common Grid Fill / adjacent-edge pattern, not an arbitrary triangulation.
+7. **Handle segment parity explicitly.** Odd/even segment counts may have different center topology. Do not force a center pole for every corner. A center vertex is legal only when the chosen VMesh pattern requires it.
+8. **Emit authored faces from the VMesh cells.** Prefer quads where four distinct stations define a valid cell; compact a cell to a triangle only when topology-safe welding collapses two semantic roles. Render triangulation remains a compiler concern.
+9. **Reconstruct original faces after the corner ownership is known.** Source n-gons consume the same VMesh boundary keys; they must not recreate competing points along the bevel boundary.
+10. **Run plan validation before mutation.** Check duplicate consecutive keys, zero-area cells, reversed orientation, local self-intersection, and source-corner-scoped coincident vertices. If invalid, reduce width through the existing Clamp Overlap loop when width-dependent; otherwise reject atomically.
+
+### Topology invariants for `ADJ`
+
+The implementation is accepted only if all of the following remain true:
+
+- one geometric profile station at a shared corner maps to one logical topology vertex;
+- edge strips and corner VMesh share the same boundary vertices;
+- no global position-based weld is used;
+- no authored diagonal is introduced solely because an n-gon render triangulator needs triangles;
+- each closed-manifold generated half-edge has exactly one opposite half-edge;
+- intentional open boundaries stay open;
+- source Mesh Shell count changes only when the operation semantically splits/joins shells (ordinary bevel must not);
+- `segments = 1` remains byte/topology compatible with the current stable path except for unrelated bug fixes;
+- `NONE` and `TRI_FAN` decisions are made from effective boundary roles **before** profile subdivision and are not promoted to `ADJ` merely because sampled points increase the point count.
+
+### Regression captured from the September 21 screenshot
+
+The original failing case is frozen as the behavioral target for the ADJ work:
+
+```text
+Input:
+- already modeled rounded/chamfered solid corner
+- one newly selected connected edge/corner network as in the reference screenshot
+- width   = 0.25
+- segments = 3
+- profile  = 0.3
+- Clamp Overlap = true
+
+Pre-ADJ symptom (historical):
+- operation succeeded but reported a reduced effective width (~0.23685 in the captured run)
+- the general corner was filled as a pole/diagonal patch
+- vertex mode exposed several interior authored points/diagonals not present in Blender
+
+Implemented topology requirement:
+- corner plan selects ADJ
+- three profile strips continue through the corner as structured VMesh rows
+- no arbitrary pole-style diagonal fan is authored
+- no coincident-but-distinct VMesh vertices
+- edge strips share boundary vertices with the corner grid
+- one Mesh Shell remains
+- manifold half-edges remain paired
+- Clamp Overlap is driven by real source/profile collisions, not artificial cap diagonals
+- Undo/Redo remains one selection-level history step
+```
+
+The regression asserts topology, not screenshot pixels. The current focused three-sector `segments=3` case produces **six quads plus one center triangle (7 ADJ faces)**, while the even `segments=4` parity regression produces **12 quads and no center n-gon**. Both remain one shell with paired manifold half-edges. A full cube at `segments=3` produces 56 ADJ corner cells (7 per original corner) in addition to 36 edge strips and 6 reconstructed source faces.
+
+### Implemented baseline and extension order
+
+The current implementation now includes:
+
+1. `ADJ` in the internal corner-plan enum/type.
+2. Canonical VMesh indexed storage keyed by boundary sector + ring + segment station.
+3. The common closed-manifold multi-selected corner path.
+4. Shared perimeter/profile keys between edge strips, reconstructed faces, and VMesh cells.
+5. Blender-style parity topology: odd segment counts end in a center n-gon; even counts converge to one shared center vertex.
+6. Materialized authored VMesh cells rather than render-only triangulation.
+7. Regressions for `segments=3/profile=.3/width=.25`, even `segments=4`, and the full segmented cube, plus all earlier terminal/open/reflex cases.
+
+Next, improve **geometry placement and coverage**, not the basic ADJ ownership model: port Blender's cubic subdivision and special `pipe_adj_vmesh` / `tri_corner_adj_vmesh` behavior, then generalize to concave/inner miters, open multi-selected fans, and custom profiles.
+
+Do **not** mix those geometry refinements with Miter Outer/Inner UI, custom profile widgets, UV interpolation, Harden Normals, or material assignment. Those features should continue to build on the stable VMesh topology contract.
+
+### Blender source anchors for the port
+
+When implementing, start from these concepts in `bmesh_bevel.cc` rather than copying unrelated surrounding code:
+
+- `MeshKind` / `M_ADJ` — distinguishes structured corner filling from `M_NONE`, `M_POLY`, and `M_TRI_FAN`;
+- `VMesh` — stores the common segment count and indexed replacement mesh for one beveled vertex;
+- `set_profile_params()` / profile coordinates — source of the sampled rows arriving at the VMesh boundary;
+- `build_boundary()` — authoritative ordered corner boundary and mesh-kind decision;
+- `build_vmesh()` — maps boundary/profile data into the vertex mesh;
+- `bevel_build_rings()` — materializes `M_ADJ` as structured rings/cells;
+- weld handling around `M_NONE` — preserve the general `selcount == 2 && boundaryCount == 2` profile-row weld, including straight chains and angled face-loop corners.
+
+Source: <https://github.com/blender/blender/blob/main/source/blender/bmesh/tools/bmesh_bevel.cc>
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 
 ## Current boundary construction
 
@@ -163,14 +337,29 @@ Do not extend the open-fan path to multiple selected edges or multiple face-chai
 - complete four-edge cube loop;
 - all 12 cube edges at once (8 triangular corner patches);
 - a single source edge with `segments = 5`, `profile = 0.5` (5 strip faces / 6 profile rails), including Undo/Redo;
+<<<<<<< HEAD
 - a four-edge connected cube loop with `segments = 3`, verifying that profile subdivision preserves joint corner ownership and manifold pairing;
 - all 12 cube edges with `segments = 3`, producing 36 edge-strip faces plus 8 shared corner patches while remaining one closed shell;
+=======
+- a slanted source edge with `segments = 5` whose interior profile samples must stay in the two terminal endpoint-face planes after profile-plane projection;
+- two collinear selected edge halves split by an unrelated loop with `segments = 5`; the middle station shares one profile row, creates no synthetic cap, and remains manifold;
+- a four-edge connected cube loop with `segments = 3`, verifying that profile subdivision preserves joint corner ownership and manifold pairing;
+- a three-sector closed corner with `segments = 3`, `profile = 0.3`, `width = 0.25`, producing 6 ADJ quads plus one center triangle;
+- the same three-sector corner with even `segments = 4`, producing 12 ADJ quads and no center n-gon;
+- all 12 cube edges with `segments = 3`, producing 36 edge-strip faces plus 56 ADJ corner cells (7 per original corner) while remaining one closed shell;
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 - oversized three-edge corner with network-wide overlap clamping;
 - the same oversized case with `clampOverlap: false`, verifying atomic rejection/rollback;
 - repeated bevel of the generated longitudinal rails across reconstructed 5-, 7-, and 11+-vertex n-gons, including network-wide clamping;
 - a strongly warped/non-planar corner where the old whole-face-plane solver inverted across a neighboring edge;
 - a straight/near-collinear `selcount == 1` terminal split where the offset boundary must stay perpendicular instead of collapsing back to the source vertex;
 - a manifold selected edge whose endpoints sit on open one-ring face chains, including a richer endpoint with an extra unselected face and a generated terminal polygon patch;
+<<<<<<< HEAD
+=======
+- an open-top box rim with one selected vertical edge and `segments = 5`; the two-point terminal remains `M_NONE`, produces five bevel strips, preserves the open rim, and creates **no** synthetic terminal cap;
+- a closed four-edge face loop with `width = 0.25`, `segments = 3`, `profile = 0.3`; every loop corner has `selcount = 2` and two effective boundary roles, so all four corners use `M_NONE` profile-row welding, produce **zero corner faces**, and the cube has exactly `6 reconstructed + 12 strips = 18` logical faces;
+- a single selected edge whose terminal has three effective boundary vertices with `segments = 3`; the endpoint is `TRI_FAN`, creates three authored fan triangles sharing one apex, and exposes the radial profile edges Blender creates;
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 - a collapsed endpoint where two boundary roles clamp to the same source position; the roles weld to one mesh vertex and the edge strip becomes a triangle with no coincident duplicate vertices.
 - existing single-edge, high-valence single-edge, and vertex-disjoint Edge Ring bevel regressions.
 
@@ -192,7 +381,11 @@ Logical face identity remains the n-gon boundary. Render triangles are only its 
 ## Next milestones toward Blender-level behavior
 
 1. **Multi-selected open fans / multiple gaps.** One-gap `selcount == 1` face chains are implemented. Generalize the VMesh boundary and miter logic without pretending missing face sectors are cyclic.
+<<<<<<< HEAD
 2. **Full segmented VMesh interior.** Edge profiles and expanded corner boundaries are implemented. Replace the current manifold n-gon corner fill with Blender-style indexed `M_ADJ` / Grid Fill geometry so high-valence segmented corners get structured interior topology.
+=======
+2. **Refine `M_ADJ` geometry toward Blender cubic subdivision.** The common structured topology is implemented; port Blender's subdivision/interpolation and special pipe/triangle-corner branches so interior station placement matches Blender more closely at high curvature and irregular valence.
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 3. **Miter modes.** Add explicit sharp/patch/arc outer and inner miter decisions rather than a single polygon junction rule.
 4. **Full inner/outer reflex miter behavior.** Local reflex classification and zero-offset endpoint fallback are implemented; port Blender's remaining edges-between projection and explicit inner/outer miter policy for multi-edge concave fans.
 5. **Per-edge widths/weights.** Move from one network width to left/right edge-half offsets.

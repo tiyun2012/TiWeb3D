@@ -220,6 +220,10 @@ export interface BevelLogicalEdgeResult {
   bevelFaceId: number;
   /** All strip faces for this source edge. Length equals segments. */
   bevelFaceIds: number[];
+<<<<<<< HEAD
+=======
+  /** All corner/cap faces touching either source-edge endpoint; TRI_FAN and ADJ may contribute multiple faces at one endpoint. */
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
   endpointCapFaceIds: number[];
   updatedFaceIds: number[];
   /** Outer profile rails retained for compatibility with the one-segment API. */
@@ -235,7 +239,11 @@ export interface BevelLogicalEdgesResult {
   results: BevelLogicalEdgeResult[];
   bevelFaceIds: number[];
   endpointCapFaceIds: number[];
+<<<<<<< HEAD
   /** Corner VMesh-style patch faces created where 3+ selected edges meet. */
+=======
+  /** All generated corner VMesh faces, including segmented TRI_FAN and structured ADJ cells. */
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
   cornerFaceIds: number[];
   updatedFaceIds: number[];
   bevelEdgeIds: string[];
@@ -1692,6 +1700,7 @@ const applyJointBevelPlan = (
     bevelFaceIdsByEdge.push(sourceEdgeFaceIds);
   }
 
+<<<<<<< HEAD
   const cornerFaceIdBySourcePoint = new Map<string, string>();
   for (let index = 0; index < plan.corners.length; index += 1) {
     const corner = plan.corners[index];
@@ -1703,6 +1712,16 @@ const applyJointBevelPlan = (
     // A manifold cap must traverse every shared boundary edge opposite to the
     // already-created neighboring face. Use the first shared edge to normalize
     // the cyclic boundary orientation before triangulation.
+=======
+  const cornerFaceIdsBySourcePoint = new Map<string, string[]>();
+  const allCornerFaceIds: string[] = [];
+
+  const normalizeCornerBoundaryOrientation = (inputPointIds: string[]): string[] => {
+    let pointIds = [...inputPointIds];
+    // A manifold cap must traverse every shared boundary edge opposite to the
+    // already-created neighboring face. Use the first shared edge to normalize
+    // the cyclic boundary orientation before materializing the corner mesh.
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     let shouldReverse = false;
     let foundSharedDirection = false;
     for (let edgeIndex = 0; edgeIndex < pointIds.length && !foundSharedDirection; edgeIndex += 1) {
@@ -1717,6 +1736,7 @@ const applyJointBevelPlan = (
       }
     }
     if (shouldReverse) pointIds = [...pointIds].reverse();
+<<<<<<< HEAD
 
     const cap = addConstructionFaceToState(state, {
       id: `${operationId}.corner.${index}`,
@@ -1724,6 +1744,89 @@ const applyJointBevelPlan = (
       pointIds,
     });
     cornerFaceIdBySourcePoint.set(corner.sourcePointId, cap.id);
+=======
+    return pointIds;
+  };
+
+  for (let index = 0; index < plan.corners.length; index += 1) {
+    const corner = plan.corners[index];
+    // Blender M_NONE is a semantic no-cap decision, not merely a consequence
+    // of having two boundary points. Segmented profiles can contain 3+ samples
+    // while the endpoint still owns no corner polygon (notably an open box rim).
+    if (corner.meshKind === 'NONE' || corner.boundaryPointKeys.length < 3) continue;
+    let pointIds = corner.boundaryPointKeys.map(resolvePlanPoint);
+    pointIds = pointIds.filter((pointId, pointIndex) => pointIds.indexOf(pointId) === pointIndex);
+    if (pointIds.length < 3) continue;
+    pointIds = normalizeCornerBoundaryOrientation(pointIds);
+
+    const createdFaceIds: string[] = [];
+    if (corner.meshKind === 'ADJ') {
+      if (!corner.adj || corner.adj.facePointKeys.length === 0) {
+        throw new Error('Bevel ADJ corner is missing its structured VMesh cells.');
+      }
+
+      // M_ADJ cells are authored topology, not render triangulation. Materialize
+      // every ring/grid cell as its own logical face so the profile rows continue
+      // through the corner exactly as the edge strips do. The first outer cells
+      // share edges with already-created bevel/source faces; normalizing each cell
+      // against the current mesh then propagates a consistent manifold winding
+      // inward through the grid.
+      for (let cellIndex = 0; cellIndex < corner.adj.facePointKeys.length; cellIndex += 1) {
+        let cellPointIds = corner.adj.facePointKeys[cellIndex].map(resolvePlanPoint);
+        cellPointIds = cellPointIds.filter((pointId, pointIndex) => cellPointIds.indexOf(pointId) === pointIndex);
+        if (cellPointIds.length < 3) continue;
+        cellPointIds = normalizeCornerBoundaryOrientation(cellPointIds);
+        const face = addConstructionFaceToState(state, {
+          id: `${operationId}.corner.${index}.adj.${cellIndex}`,
+          name: `Bevel Corner ${index + 1} Grid ${cellIndex + 1}`,
+          pointIds: cellPointIds,
+        });
+        createdFaceIds.push(face.id);
+        allCornerFaceIds.push(face.id);
+      }
+    }
+    else if (corner.meshKind === 'TRI_FAN') {
+      if (!corner.fanPointKey) throw new Error('Bevel triangle-fan corner is missing its fan apex.');
+      const fanPointId = resolvePlanPoint(corner.fanPointKey);
+      const fanIndex = pointIds.indexOf(fanPointId);
+      if (fanIndex < 0) throw new Error('Bevel triangle-fan apex is not part of the corner boundary.');
+
+      // Rotate the cyclic boundary so the fan apex is first. All remaining
+      // vertices are the segmented profile chain in boundary order. Splitting
+      // [fan, p0, p1, ... pn] into [fan, pi, pi+1] matches Blender's
+      // bevel_build_trifan() and creates the visible radial edges missing from
+      // a single n-gon cap.
+      const rotated = [
+        ...pointIds.slice(fanIndex),
+        ...pointIds.slice(0, fanIndex),
+      ];
+      if (rotated.length < 3) continue;
+      for (let fanSegment = 1; fanSegment < rotated.length - 1; fanSegment += 1) {
+        const trianglePointIds = [rotated[0], rotated[fanSegment], rotated[fanSegment + 1]];
+        if (new Set(trianglePointIds).size !== 3) continue;
+        const face = addConstructionFaceToState(state, {
+          id: `${operationId}.corner.${index}.fan.${fanSegment - 1}`,
+          name: `Bevel Corner ${index + 1} Fan ${fanSegment}`,
+          pointIds: trianglePointIds,
+        });
+        createdFaceIds.push(face.id);
+        allCornerFaceIds.push(face.id);
+      }
+    }
+    else {
+      const cap = addConstructionFaceToState(state, {
+        id: `${operationId}.corner.${index}`,
+        name: `Bevel Corner ${index + 1}`,
+        pointIds,
+      });
+      createdFaceIds.push(cap.id);
+      allCornerFaceIds.push(cap.id);
+    }
+
+    if (createdFaceIds.length > 0) {
+      cornerFaceIdsBySourcePoint.set(corner.sourcePointId, createdFaceIds);
+    }
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
   }
 
   compactUnusedConstructionVertices(state);
@@ -1733,8 +1836,12 @@ const applyJointBevelPlan = (
     bevelFaceId: bevelFaceIdsByEdge[index][0],
     bevelFaceIds: bevelFaceIdsByEdge[index],
     endpointCapFaceIds: [edgePlan.pointAId, edgePlan.pointBId]
+<<<<<<< HEAD
       .map(pointId => cornerFaceIdBySourcePoint.get(pointId))
       .filter((faceId): faceId is string => Boolean(faceId)),
+=======
+      .flatMap(pointId => cornerFaceIdsBySourcePoint.get(pointId) ?? []),
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     updatedFaceIds: Array.from(new Set([
       ...(updatedFacesBySourcePoint.get(edgePlan.pointAId) ?? []),
       ...(updatedFacesBySourcePoint.get(edgePlan.pointBId) ?? []),
@@ -1748,7 +1855,11 @@ const applyJointBevelPlan = (
 
   return {
     edgeResults,
+<<<<<<< HEAD
     cornerFaceIds: Array.from(cornerFaceIdBySourcePoint.values()),
+=======
+    cornerFaceIds: allCornerFaceIds,
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     updatedFaceIds,
   };
 };

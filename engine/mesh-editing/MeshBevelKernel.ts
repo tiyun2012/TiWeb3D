@@ -159,6 +159,30 @@ const mapProfileSample = (
 };
 
 /**
+<<<<<<< HEAD
+=======
+ * Project a generated profile point along the beveled edge direction onto a
+ * target profile plane. Blender does this after mapping the superellipse into
+ * the start/middle/end parallelogram. In terminal-edge corners it may move the
+ * profile plane to the plane through the two boundary points and the original
+ * vertex (`move_profile_plane()`), which keeps the segmented cap aligned with
+ * the adjacent endpoint face instead of bowing out of that face.
+ */
+const projectAlongDirectionToPlane = (
+  position: Vector3,
+  direction: Vector3,
+  planePoint: Vector3,
+  planeNormal: Vector3,
+): Vector3 => {
+  const denominator = dot3(direction, planeNormal);
+  if (!Number.isFinite(denominator) || Math.abs(denominator) <= 1e-10) return position;
+  const t = dot3(sub3(planePoint, position), planeNormal) / denominator;
+  if (!Number.isFinite(t)) return position;
+  return add3(position, scale3(direction, t));
+};
+
+/**
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
  * Blender's offset_meet() deliberately prefers the plane formed by the two
  * incident boundary edges at a corner when a logical face is non-planar. The
  * whole-face normal is retained only to choose which side of that local plane
@@ -225,10 +249,44 @@ export interface BevelKernelEdgePlan {
   endpointCornerKeys: [string[], string[]];
 }
 
+<<<<<<< HEAD
+=======
+export type BevelKernelCornerMeshKind = 'NONE' | 'POLY' | 'TRI_FAN' | 'ADJ';
+
+export interface BevelKernelAdjPlan {
+  /** Ordered pre-subdivision VMesh boundary roles. */
+  baseBoundaryPointKeys: string[];
+  /** Canonical interior VMesh points created only for this source corner. */
+  interiorPointKeys: string[];
+  /** Authored VMesh cells in winding-neutral key order; materialization orients them. */
+  facePointKeys: string[][];
+}
+
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 export interface BevelKernelCornerPlan {
   sourcePointId: string;
   selectedEdgeKeys: string[];
   boundaryPointKeys: string[];
+<<<<<<< HEAD
+=======
+  /**
+   * Blender-style VMesh ownership for this endpoint. NONE means the profile
+   * terminates without a separate corner polygon (for example a two-boundary-
+   * point terminal/open-rim endpoint). POLY means materialize one corner face.
+   * Keep this semantic state explicit: Segments > 1 may add profile samples to
+   * the boundary, but those samples must not resurrect a corner Blender marked
+   * as M_NONE.
+   */
+  meshKind: BevelKernelCornerMeshKind;
+  /** Effective boundary roles before Segments inserts intermediate profile samples. */
+  baseBoundaryPointKeys: string[];
+  /** Whether the incident source-face fan closes around the source vertex. */
+  closed: boolean;
+  /** For TRI_FAN, the boundary vertex used as the shared fan apex. */
+  fanPointKey?: string;
+  /** Structured segmented vertex mesh for ADJ corners. */
+  adj?: BevelKernelAdjPlan;
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
 }
 
 export interface BevelKernelPlan {
@@ -753,6 +811,22 @@ const solveAtWidth = (
   const replacements = new Map<string, string[]>();
   const corners: BevelKernelCornerPlan[] = [];
   const canonicalKeyByKey = new Map<string, string>();
+<<<<<<< HEAD
+=======
+  // Blender's general two-profile weld case is angle-independent: when
+  // exactly two selected edges meet and the pre-subdivision VMesh boundary has
+  // exactly two effective BoundVerts, the two profile rows are welded together
+  // and the corner mesh becomes M_NONE regardless of the angle between edges.
+  // Keep these vertices explicit so Segments > 1 cannot accidentally turn the
+  // two-boundary weld into a POLY cap with pole/diagonal topology.
+  const twoSelectedProfileWeldVertices = new Set<string>();
+  // Blender's selcount==1 terminal path may move the profile projection plane
+  // to the endpoint plane through the two boundary points and source vertex.
+  // Record those endpoint vertices while their ordered one-ring is available;
+  // the actual plane depends on the final profile start/end points and is built
+  // later during segmented profile sampling.
+  const terminalProfileProjectionVertices = new Set<string>();
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
   // Rail endpoint per original face corner. Usually this is also the sole
   // replacement point for that corner, but Blender's edgecount==2 terminal
   // case replaces the source corner with TWO points (leg + profile side) while
@@ -780,6 +854,10 @@ const solveAtWidth = (
     const vertexPosition = findPoint(construction, vertexId);
     const selectedNeighborSet = new Set(star.neighbors.filter(neighborId => selectedKeys.has(edgeKey(vertexId, neighborId))));
     if (selectedNeighborSet.size === 0) throw new Error('Bevel lost a selected edge at a touched vertex.');
+<<<<<<< HEAD
+=======
+
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     // Blender can order a touched vertex as one continuous face chain with a
     // single boundary gap. The common and well-defined edge-bevel case there
     // is a terminal selected edge (selcount==1). Multi-selected open fans need
@@ -797,6 +875,15 @@ const solveAtWidth = (
     // edge. Keeping this inside the joint planner is essential when the other
     // endpoint has a different/high-valence fan.
     const twoEdgeTerminal = star.neighbors.length === 2 && selectedNeighborSet.size === 1;
+<<<<<<< HEAD
+=======
+    // Blender calls move_profile_plane() for terminal bevels with edgecount>=3.
+    // This is the common single selected-edge box/chamfer endpoint and is what
+    // makes multi-segment profiles terminate in the endpoint-face plane.
+    if (selectedNeighborSet.size === 1 && star.neighbors.length >= 3) {
+      terminalProfileProjectionVertices.add(vertexId);
+    }
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     const terminalSelectedNeighborId = twoEdgeTerminal ? Array.from(selectedNeighborSet)[0] : null;
     const terminalUnselectedNeighborId = twoEdgeTerminal
       ? star.neighbors.find(neighborId => !selectedNeighborSet.has(neighborId)) ?? null
@@ -1018,6 +1105,18 @@ const solveAtWidth = (
         sourcePointId: vertexId,
         selectedEdgeKeys: [edgeKey(vertexId, selectedNeighborId)],
         boundaryPointKeys: uniqueBoundary,
+<<<<<<< HEAD
+=======
+        baseBoundaryPointKeys: [...uniqueBoundary],
+        closed: star.closed,
+        // Blender build_boundary_terminal_edge() uses M_TRI_FAN when a
+        // terminal boundary has exactly three effective BoundVerts. With
+        // Segments > 1, the bevel profile is inserted between the two side
+        // verts and every profile sample is connected to the artificial leg
+        // point. Treating this as one POLY hides those required radial edges.
+        meshKind: uniqueBoundary.length === 3 ? 'TRI_FAN' : 'NONE',
+        fanPointKey: uniqueBoundary.length === 3 ? legKey : undefined,
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
       });
     }
     else {
@@ -1080,10 +1179,56 @@ const solveAtWidth = (
       }
       if (boundary.length > 1 && boundary[0] === boundary[boundary.length - 1]) boundary.pop();
       const uniqueBoundary = boundary.filter((key, index) => boundary.indexOf(key) === index);
+<<<<<<< HEAD
+=======
+
+      let terminalFanPointKey: string | undefined;
+      if (selectedNeighborSet.size === 1 && uniqueBoundary.length === 3) {
+        // Blender's selcount==1 terminal path classifies a three-BoundVert
+        // corner as M_TRI_FAN. The fan apex is the one boundary point that is
+        // not either side of the selected-edge profile. Determine those two
+        // profile endpoints from the selected edge's two incident faces, then
+        // keep the remaining boundary point explicit through subdivision.
+        const selectedNeighborId = Array.from(selectedNeighborSet)[0];
+        const selectedIncidents = edgeFaces.get(edgeKey(vertexId, selectedNeighborId)) ?? [];
+        const profileEndpointKeys = new Set(
+          selectedIncidents
+            .map(incident => railPointKeyByFaceVertex.get(cornerKey(incident.faceId, vertexId)))
+            .filter((key): key is string => Boolean(key))
+            .map(canonicalKey),
+        );
+        terminalFanPointKey = uniqueBoundary.find(key => !profileEndpointKeys.has(key));
+        if (!terminalFanPointKey) {
+          throw new Error('Bevel terminal triangle fan could not resolve its apex boundary vertex.');
+        }
+      }
+
+      const isTwoSelectedProfileWeld = selectedNeighborSet.size === 2 && uniqueBoundary.length === 2;
+      if (isTwoSelectedProfileWeld) twoSelectedProfileWeldVertices.add(vertexId);
+
+      const isNoCap = (selectedNeighborSet.size === 1 && uniqueBoundary.length <= 2)
+        || isTwoSelectedProfileWeld;
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
       corners.push({
         sourcePointId: vertexId,
         selectedEdgeKeys: star.neighbors.filter(neighborId => selectedNeighborSet.has(neighborId)).map(neighborId => edgeKey(vertexId, neighborId)),
         boundaryPointKeys: uniqueBoundary,
+<<<<<<< HEAD
+=======
+        baseBoundaryPointKeys: [...uniqueBoundary],
+        closed: star.closed,
+        // Match Blender's VMesh classification before subdivision: a terminal
+        // two-boundary corner is M_NONE, and the general selcount==2/count==2
+        // case is also M_NONE because Blender welds the two profile rows. Three
+        // terminal boundary roles use TRI_FAN. Larger real corners remain POLY
+        // for one segment and may later promote to ADJ for segmented bevels.
+        meshKind: isNoCap
+          ? 'NONE'
+          : terminalFanPointKey
+            ? 'TRI_FAN'
+            : 'POLY',
+        fanPointKey: terminalFanPointKey,
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
       });
     }
   }
@@ -1169,10 +1314,42 @@ const solveAtWidth = (
     };
 
     const attachProfileArcAtEndpoint = (endpointId: string, profileKeys: string[]) => {
+<<<<<<< HEAD
       // Blender's M_NONE corner case (typically one selected edge in a 3-edge
       // manifold fan) has no separate vertex patch: the opposite reconstructed
       // original face owns the profile arc directly. Expand that face-corner
       // replacement first so every endpoint profile segment gets a paired edge.
+=======
+      // Blender's selcount==2/count==2 weld owns no corner surface. Its two
+      // profile rows are reconciled after all incident rows have been sampled.
+      // Inserting either row into a reconstructed face or POLY boundary here
+      // would manufacture the false segmented cap/pole topology this weld is
+      // specifically meant to avoid. Straight chains and angled face-loop
+      // corners both use this same path.
+      if (twoSelectedProfileWeldVertices.has(endpointId)) return;
+
+      const corner = corners.find(candidate => candidate.sourcePointId === endpointId);
+      if (!corner) {
+        throw new BevelKernelUnsupportedTopologyError(
+          'Multi-segment bevel could not find an endpoint face or VMesh boundary to own its profile arc.',
+        );
+      }
+
+      // A real VMesh owns the profile arc. This ordering matters for general
+      // connected corners: giving the sampled profile to a reconstructed source
+      // face first would steal the perimeter that M_ADJ needs to continue its
+      // profile rows through the vertex. Blender's M_POLY/M_TRI_FAN/M_ADJ paths
+      // all keep these samples on the vertex-mesh boundary.
+      if (corner.meshKind !== 'NONE') {
+        corner.boundaryPointKeys = insertProfileArc(corner.boundaryPointKeys, profileKeys);
+        return;
+      }
+
+      // Blender's M_NONE corner case has no separate vertex patch. On a closed
+      // fan, the appropriate reconstructed original face owns the profile arc;
+      // on an open rim there may be no opposite face, and the row intentionally
+      // remains part of the open mesh boundary.
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
       const endpointCorners = cornersByVertex.get(endpointId) ?? [];
       for (const endpointCorner of endpointCorners) {
         const replacementKey = cornerKey(endpointCorner.faceId, endpointId);
@@ -1184,6 +1361,7 @@ const solveAtWidth = (
           return;
         }
       }
+<<<<<<< HEAD
 
       // Otherwise the endpoint VMesh/cap owns the arc. This is the common path
       // for terminal triangles and connected selected-edge corners.
@@ -1194,6 +1372,8 @@ const solveAtWidth = (
         );
       }
       corner.boundaryPointKeys = insertProfileArc(corner.boundaryPointKeys, profileKeys);
+=======
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
     };
 
     for (const edgePlan of edgePlans) {
@@ -1230,10 +1410,43 @@ const solveAtWidth = (
         for (let segment = 1; segment < segments; segment += 1) {
           const sample = normalizedProfile[segment];
           const key = `p:${edgePlan.edgeKey}:${endpointIndex}:${segment}`;
+<<<<<<< HEAD
           generatedByKey.set(key, {
             key,
             sourcePointId: endpointId,
             position: mapProfileSample(startPoint.position, middle, endPoint.position, sample),
+=======
+          let profilePosition = mapProfileSample(startPoint.position, middle, endPoint.position, sample);
+
+          if (terminalProfileProjectionVertices.has(endpointId)) {
+            // Blender's build_boundary_terminal_edge() calls set_profile_params()
+            // and then move_profile_plane(): if possible, the final profile is
+            // projected along the beveled-edge direction onto the plane through
+            // start, end and the original terminal vertex. Without this step a
+            // skewed/slanted selected edge produces a visibly twisted endpoint
+            // profile even though its longitudinal strips are otherwise valid.
+            const source = findPoint(construction, endpointId);
+            const terminalPlaneRaw = cross3(
+              sub3(source, startPoint.position),
+              sub3(source, endPoint.position),
+            );
+            const terminalPlaneLength = length3(terminalPlaneRaw);
+            if (Number.isFinite(terminalPlaneLength) && terminalPlaneLength > 1e-8) {
+              const terminalPlaneNormal = scale3(terminalPlaneRaw, 1 / terminalPlaneLength);
+              profilePosition = projectAlongDirectionToPlane(
+                profilePosition,
+                edgeDirection,
+                startPoint.position,
+                terminalPlaneNormal,
+              );
+            }
+          }
+
+          generatedByKey.set(key, {
+            key,
+            sourcePointId: endpointId,
+            position: profilePosition,
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
           });
           keys.push(key);
         }
@@ -1257,6 +1470,412 @@ const solveAtWidth = (
       attachProfileArcAtEndpoint(edgePlan.pointAId, aProfile);
       attachProfileArcAtEndpoint(edgePlan.pointBId, bProfile);
     }
+<<<<<<< HEAD
+=======
+
+    // Weld segmented profile rows whenever Blender's VMesh is the two-boundary
+    // selcount==2 weld case. A straight selected-chain split is one instance,
+    // but adjacent selected edges at an ordinary box/face-loop corner are also
+    // welded when the effective VMesh boundary has exactly two BoundVerts.
+    // Reuse one topology row (midpoint-reconciling independently sampled local
+    // profile planes) instead of manufacturing a POLY cap between the rows.
+    const profileWeldVertices = twoSelectedProfileWeldVertices;
+    for (const vertexId of profileWeldVertices) {
+      const incident = edgePlans.filter(edgePlan => edgePlan.pointAId === vertexId || edgePlan.pointBId === vertexId);
+      if (incident.length !== 2) continue;
+
+      const rowFor = (edgePlan: BevelKernelEdgePlan): string[] => (
+        edgePlan.pointAId === vertexId ? edgePlan.profilePointKeys[0] : edgePlan.profilePointKeys[1]
+      );
+      const rowA = rowFor(incident[0]);
+      const rowB = rowFor(incident[1]);
+      if (rowA.length !== segments + 1 || rowB.length !== segments + 1) {
+        throw new Error('Bevel two-profile weld rows do not match the requested segment count.');
+      }
+
+      const rowDistance = (reverseB: boolean): number => {
+        let sum = 0;
+        for (let index = 0; index < rowA.length; index += 1) {
+          const a = generatedByKey.get(canonicalKey(rowA[index]));
+          const bIndex = reverseB ? rowB.length - 1 - index : index;
+          const b = generatedByKey.get(canonicalKey(rowB[bIndex]));
+          if (!a || !b) throw new Error('Bevel lost a two-profile weld point.');
+          sum += length3(sub3(a.position, b.position));
+        }
+        return sum;
+      };
+
+      const reverseB = rowDistance(true) + EPSILON < rowDistance(false);
+      for (let index = 0; index < rowA.length; index += 1) {
+        const bIndex = reverseB ? rowB.length - 1 - index : index;
+        const rootA = canonicalKey(rowA[index]);
+        const rootB = canonicalKey(rowB[bIndex]);
+        if (rootA === rootB) continue;
+        const pointA = generatedByKey.get(rootA);
+        const pointB = generatedByKey.get(rootB);
+        if (!pointA || !pointB) throw new Error('Bevel lost a two-profile weld point.');
+
+        // If neighboring faces produce slightly different local profile planes,
+        // use the midpoint just like Blender's weld/profile reconciliation.
+        // Both semantic roles then resolve to one generated topology vertex.
+        pointA.position = midpoint3(pointA.position, pointB.position);
+        canonicalKeyByKey.set(rootB, rootA);
+      }
+    }
+
+    // Build Blender-style M_ADJ structured vertex meshes for closed segmented
+    // corners that still require a real corner surface. The topology follows
+    // Blender's canonical VMesh indexing: (sector i, ring j, segment k) aliases
+    // into neighboring sectors after the profile midpoint. This is the key
+    // difference from the old single n-gon cap: profile stations continue
+    // through a ring/grid and never need arbitrary triangulation spokes.
+    const adjCanon = (
+      sector: number,
+      ring: number,
+      segmentIndex: number,
+      sectorCount: number,
+    ): [number, number, number] => {
+      const half = Math.floor(segments / 2);
+      const odd = segments % 2;
+      const i = ((sector % sectorCount) + sectorCount) % sectorCount;
+      if (!odd && ring === half && segmentIndex === half) return [0, half, half];
+      if (ring <= half - 1 + odd && segmentIndex <= half) return [i, ring, segmentIndex];
+      if (segmentIndex <= half) {
+        return [((i + sectorCount - 1) % sectorCount), segmentIndex, segments - ring];
+      }
+      return [((i + 1) % sectorCount), segments - segmentIndex, ring];
+    };
+
+    const adjTupleId = (tuple: readonly [number, number, number]): string => `${tuple[0]}:${tuple[1]}:${tuple[2]}`;
+
+    const findReplacementOwningPair = (vertexId: string, start: string, end: string): string | null => {
+      for (const endpointCorner of cornersByVertex.get(vertexId) ?? []) {
+        const replacementKey = cornerKey(endpointCorner.faceId, vertexId);
+        const replacement = replacements.get(replacementKey);
+        if (!replacement) continue;
+        for (let index = 0; index < replacement.length - 1; index += 1) {
+          if ((replacement[index] === start && replacement[index + 1] === end)
+            || (replacement[index] === end && replacement[index + 1] === start)) {
+            return replacementKey;
+          }
+        }
+      }
+      return null;
+    };
+
+    const profileFullness = (() => {
+      const exponent = profileSuperellipseExponent(profile);
+      const halfSample = Math.pow(Math.SQRT1_2, 2 / exponent);
+      // For a straight chamfer (profile=.25, r=1) this is zero; a circular
+      // profile is ~0.414. Concave profiles are allowed to pull inward.
+      return Math.max(-0.75, Math.min(0.9, 2 * halfSample - 1));
+    })();
+
+    for (const corner of corners) {
+      if (corner.meshKind !== 'POLY'
+        || corner.selectedEdgeKeys.length < 2
+        || !corner.closed
+        || corner.baseBoundaryPointKeys.length < 3) continue;
+
+      const base = corner.baseBoundaryPointKeys.map(canonicalKey);
+      if (new Set(base).size !== base.length) continue;
+      const sectorCount = base.length;
+      const incidentPlans = edgePlans.filter(edgePlan => edgePlan.pointAId === corner.sourcePointId || edgePlan.pointBId === corner.sourcePointId);
+      const rowsByPair = new Map<string, string[]>();
+
+      const pairId = (a: string, b: string) => a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
+      for (const edgePlan of incidentPlans) {
+        const rawRow = edgePlan.pointAId === corner.sourcePointId
+          ? edgePlan.profilePointKeys[0]
+          : edgePlan.profilePointKeys[1];
+        const row = rawRow.map(canonicalKey);
+        if (row.length !== segments + 1) continue;
+        const start = row[0];
+        const end = row[row.length - 1];
+        const startIndex = base.indexOf(start);
+        if (startIndex >= 0 && base[(startIndex + 1) % sectorCount] === end) {
+          rowsByPair.set(pairId(start, end), row);
+          continue;
+        }
+        const endIndex = base.indexOf(end);
+        if (endIndex >= 0 && base[(endIndex + 1) % sectorCount] === start) {
+          const reversed = [...row].reverse();
+          rowsByPair.set(pairId(start, end), reversed);
+        }
+      }
+
+
+      const sectorRows: string[][] = [];
+      const syntheticRows: Array<{ replacementKey: string; row: string[] }> = [];
+      let canBuildAdj = true;
+      for (let sector = 0; sector < sectorCount; sector += 1) {
+        const start = base[sector];
+        const end = base[(sector + 1) % sectorCount];
+        const existing = rowsByPair.get(pairId(start, end));
+        if (existing) {
+          const oriented = existing[0] === start ? existing : [...existing].reverse();
+          sectorRows.push(oriented);
+          continue;
+        }
+
+        // Blender's indexed VMesh has a segment coordinate for every boundary
+        // sector. For an unselected sector, create a straight zero-profile row
+        // and make the reconstructed source face share it. This keeps the ADJ
+        // perimeter manifold without inventing a positional weld.
+        const replacementKey = findReplacementOwningPair(corner.sourcePointId, start, end);
+        if (!replacementKey) {
+          canBuildAdj = false;
+          break;
+        }
+        const startPoint = generatedByKey.get(start);
+        const endPoint = generatedByKey.get(end);
+        if (!startPoint || !endPoint) {
+          canBuildAdj = false;
+          break;
+        }
+        const row = [start];
+        for (let sample = 1; sample < segments; sample += 1) {
+          const key = `adj-boundary:${corner.sourcePointId}:${sector}:${sample}`;
+          generatedByKey.set(key, {
+            key,
+            sourcePointId: corner.sourcePointId,
+            position: lerp3(startPoint.position, endPoint.position, sample / segments),
+          });
+          row.push(key);
+        }
+        row.push(end);
+        sectorRows.push(row);
+        syntheticRows.push({ replacementKey, row });
+      }
+      if (!canBuildAdj || sectorRows.length !== sectorCount) continue;
+
+      // Stage source-face boundary expansion until the ADJ plan is complete.
+      // If later canonical-grid validation fails, falling back to POLY must not
+      // leave synthetic ADJ-only points spliced into reconstructed source faces.
+      const pendingReplacementUpdates = new Map<string, string[]>();
+      for (const { replacementKey, row } of syntheticRows) {
+        const replacement = pendingReplacementUpdates.get(replacementKey) ?? replacements.get(replacementKey)!;
+        const expanded = insertProfileArcIntoReplacement(replacement, row);
+        if (!expanded) {
+          canBuildAdj = false;
+          break;
+        }
+        pendingReplacementUpdates.set(replacementKey, expanded);
+      }
+      if (!canBuildAdj) continue;
+
+      const canonicalKeyByTuple = new Map<string, string>();
+      const half = Math.floor(segments / 2);
+      const odd = segments % 2;
+
+      const setTupleKey = (sector: number, ring: number, segmentIndex: number, key: string) => {
+        const tuple = adjCanon(sector, ring, segmentIndex, sectorCount);
+        const id = adjTupleId(tuple);
+        const previous = canonicalKeyByTuple.get(id);
+        if (previous && previous !== key) {
+          const a = generatedByKey.get(previous);
+          const b = generatedByKey.get(key);
+          if (!a || !b || length3(sub3(a.position, b.position)) > Math.max(1e-7, width * 1e-5)) {
+            canBuildAdj = false;
+            return;
+          }
+          canonicalKeyByKey.set(key, previous);
+        }
+        else {
+          canonicalKeyByTuple.set(id, key);
+        }
+      };
+
+      // Seed the complete VMesh perimeter with the already-authored profile
+      // rows. The canonical mapping automatically makes the second half of one
+      // profile the neighboring sector's radial boundary, exactly as Blender's
+      // mesh_vert_canon() does.
+      for (let sector = 0; sector < sectorCount && canBuildAdj; sector += 1) {
+        const row = sectorRows[sector];
+        for (let k = 0; k <= segments; k += 1) setTupleKey(sector, 0, k, row[k]);
+      }
+      if (!canBuildAdj) continue;
+
+      const sourcePosition = findPoint(construction, corner.sourcePointId);
+      const basePositions = base.map(key => generatedByKey.get(key)?.position).filter((value): value is Vector3 => Boolean(value));
+      if (basePositions.length !== sectorCount) continue;
+      const centroid = scale3(basePositions.reduce((sum, position) => add3(sum, position), { x: 0, y: 0, z: 0 }), 1 / sectorCount);
+      const centerTarget = lerp3(centroid, sourcePosition, profileFullness);
+
+      const getTupleKey = (sector: number, ring: number, segmentIndex: number): string => {
+        const tuple = adjCanon(sector, ring, segmentIndex, sectorCount);
+        const id = adjTupleId(tuple);
+        const key = canonicalKeyByTuple.get(id);
+        if (!key) throw new Error(`Bevel ADJ lost VMesh station ${id}.`);
+        return canonicalKey(key);
+      };
+      const getTuplePosition = (sector: number, ring: number, segmentIndex: number): Vector3 => {
+        const point = generatedByKey.get(getTupleKey(sector, ring, segmentIndex));
+        if (!point) throw new Error('Bevel ADJ lost a generated VMesh point.');
+        return point.position;
+      };
+
+      // Seed the center station(s). Odd segment counts have one center polygon
+      // vertex per boundary sector; even counts converge to one shared center.
+      if (odd) {
+        const pull = half / (half + 1);
+        for (let sector = 0; sector < sectorCount; sector += 1) {
+          const horizontal = getTuplePosition(sector, 0, half);
+          const vertical = getTuplePosition(sector, half, 0);
+          const anchor = midpoint3(horizontal, vertical);
+          const key = `adj-center:${corner.sourcePointId}:${sector}`;
+          generatedByKey.set(key, {
+            key,
+            sourcePointId: corner.sourcePointId,
+            position: lerp3(anchor, centerTarget, Math.max(0.5, pull)),
+          });
+          setTupleKey(sector, half, half, key);
+        }
+      }
+      else {
+        const key = `adj-center:${corner.sourcePointId}:shared`;
+        generatedByKey.set(key, { key, sourcePointId: corner.sourcePointId, position: centerTarget });
+        setTupleKey(0, half, half, key);
+      }
+      if (!canBuildAdj) continue;
+
+      // Allocate all remaining canonical stations using a Coons patch per
+      // boundary sector. Its two outer curves are the real profile halves, and
+      // its inner edges terminate at the parity-correct center station(s).
+      const canonicalTuples: Array<[number, number, number]> = [];
+      for (let sector = 0; sector < sectorCount; sector += 1) {
+        for (let ring = 0; ring <= half; ring += 1) {
+          for (let k = 0; k <= half; k += 1) {
+            const isCanonical = odd
+              ? ring <= half && k <= half
+              : ((ring < half && k <= half) || (ring === half && k === half && sector === 0));
+            if (!isCanonical) continue;
+            canonicalTuples.push([sector, ring, k]);
+          }
+        }
+      }
+
+      // Boundary axes and center(s) are already seeded, so every remaining
+      // canonical station can be evaluated independently from those curves.
+      for (const tuple of canonicalTuples) {
+        const id = adjTupleId(tuple);
+        if (canonicalKeyByTuple.has(id)) continue;
+        const [sector, ring, k] = tuple;
+        const u = half === 0 ? 0 : k / half;
+        const v = half === 0 ? 0 : ring / half;
+        const q00 = getTuplePosition(sector, 0, 0);
+        const q10 = getTuplePosition(sector, 0, half);
+        const q01 = getTuplePosition(sector, half, 0);
+        const q11 = odd
+          ? getTuplePosition(sector, half, half)
+          : getTuplePosition(0, half, half);
+        const bottom = getTuplePosition(sector, 0, k);
+        const left = getTuplePosition(sector, ring, 0);
+        const top = lerp3(q01, q11, u);
+        const right = lerp3(q10, q11, v);
+        const bilinear = add3(
+          add3(scale3(q00, (1 - u) * (1 - v)), scale3(q10, u * (1 - v))),
+          add3(scale3(q01, (1 - u) * v), scale3(q11, u * v)),
+        );
+        const coons = sub3(
+          add3(
+            add3(scale3(bottom, 1 - v), scale3(top, v)),
+            add3(scale3(left, 1 - u), scale3(right, u)),
+          ),
+          bilinear,
+        );
+        const key = `adj:${corner.sourcePointId}:${sector}:${ring}:${k}`;
+        generatedByKey.set(key, { key, sourcePointId: corner.sourcePointId, position: coons });
+        canonicalKeyByTuple.set(id, key);
+      }
+
+      const vmeshKey = (sector: number, ring: number, segmentIndex: number): string => {
+        const tuple = adjCanon(sector, ring, segmentIndex, sectorCount);
+        const key = canonicalKeyByTuple.get(adjTupleId(tuple));
+        if (!key) throw new Error('Bevel ADJ could not resolve an indexed VMesh station.');
+        return canonicalKey(key);
+      };
+
+      const facePointKeys: string[][] = [];
+      for (let sector = 0; sector < sectorCount; sector += 1) {
+        for (let ring = 0; ring < half; ring += 1) {
+          for (let k = 0; k < half + odd; k += 1) {
+            const face = [
+              vmeshKey(sector, ring, k),
+              vmeshKey(sector, ring, k + 1),
+              vmeshKey(sector, ring + 1, k + 1),
+              vmeshKey(sector, ring + 1, k),
+            ];
+            const compact = face.filter((key, index) => index === 0 || key !== face[index - 1]);
+            const unique = compact.filter((key, index) => compact.indexOf(key) === index);
+            if (unique.length >= 3) facePointKeys.push(unique);
+          }
+        }
+      }
+      if (odd) {
+        const centerFace = Array.from({ length: sectorCount }, (_, sector) => vmeshKey(sector, half, half));
+        const uniqueCenter = centerFace.filter((key, index) => centerFace.indexOf(key) === index);
+        if (uniqueCenter.length >= 3) facePointKeys.push(uniqueCenter);
+      }
+
+      if (facePointKeys.length === 0) continue;
+      for (const [replacementKey, replacement] of pendingReplacementUpdates) {
+        replacements.set(replacementKey, replacement);
+      }
+      corner.meshKind = 'ADJ';
+      corner.adj = {
+        baseBoundaryPointKeys: base,
+        interiorPointKeys: Array.from(canonicalKeyByTuple.values())
+          .map(canonicalKey)
+          .filter(key => !corner.boundaryPointKeys.includes(key)),
+        facePointKeys,
+      };
+    }
+
+    // Profile-row welding happens after the base boundary/replacement arrays
+    // were authored, so normalize every plan reference through the final
+    // canonical map before materialization. Keep row lengths intact: multiple
+    // source-edge rows may share keys across edges, but a single row still has
+    // exactly segments + 1 profile stations.
+    const compactLinearKeys = (keys: string[]): string[] => {
+      const result: string[] = [];
+      for (const key of keys.map(canonicalKey)) {
+        if (result[result.length - 1] !== key) result.push(key);
+      }
+      return result;
+    };
+    for (const [replacementKey, replacement] of replacements) {
+      replacements.set(replacementKey, compactLinearKeys(replacement));
+    }
+    for (const corner of corners) {
+      let boundary = compactLinearKeys(corner.boundaryPointKeys);
+      if (boundary.length > 1 && boundary[0] === boundary[boundary.length - 1]) boundary = boundary.slice(0, -1);
+      corner.boundaryPointKeys = boundary.filter((key, index) => boundary.indexOf(key) === index);
+      corner.baseBoundaryPointKeys = compactLinearKeys(corner.baseBoundaryPointKeys);
+      if (corner.fanPointKey) corner.fanPointKey = canonicalKey(corner.fanPointKey);
+      if (corner.adj) {
+        corner.adj.baseBoundaryPointKeys = compactLinearKeys(corner.adj.baseBoundaryPointKeys);
+        corner.adj.interiorPointKeys = Array.from(new Set(corner.adj.interiorPointKeys.map(canonicalKey)));
+        corner.adj.facePointKeys = corner.adj.facePointKeys
+          .map(face => compactLinearKeys(face))
+          .map(face => face.length > 1 && face[0] === face[face.length - 1] ? face.slice(0, -1) : face)
+          .map(face => face.filter((key, index) => face.indexOf(key) === index))
+          .filter(face => face.length >= 3);
+      }
+    }
+    for (const edgePlan of edgePlans) {
+      edgePlan.bevelPointKeys = edgePlan.bevelPointKeys.map(canonicalKey) as [string, string, string, string];
+      edgePlan.profilePointKeys = [
+        edgePlan.profilePointKeys[0].map(canonicalKey),
+        edgePlan.profilePointKeys[1].map(canonicalKey),
+      ];
+      edgePlan.railPointKeys = edgePlan.railPointKeys.map(([a, b]) => [canonicalKey(a), canonicalKey(b)]) as [[string, string], [string, string]];
+      edgePlan.endpointCornerKeys = [
+        edgePlan.endpointCornerKeys[0].map(canonicalKey),
+        edgePlan.endpointCornerKeys[1].map(canonicalKey),
+      ];
+    }
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
   }
 
   // Track longitudinal usage on selected edges too. Bound points are lateral to
@@ -1347,10 +1966,20 @@ const solveAtWidth = (
  * - closed one-rings plus one-gap open terminal face fans (`selcount == 1`),
  * - Segments=1 remains the exact sharp-chamfer compatibility path,
  * - Segments>1 emits profile strips and expands endpoint VMesh boundaries,
+<<<<<<< HEAD
  * - global overlap clamping.
  *
  * The current multi-segment corner fill is deliberately a boundary n-gon, not
  * Blender's final M_ADJ/Grid Fill interior. General miter/VMesh subdivision,
+=======
+ * - closed general corners with 2+ selected sectors use structured M_ADJ cells,
+ * - global overlap clamping.
+ *
+ * The M_ADJ topology follows Blender's canonical (sector, ring, segment) aliasing
+ * and odd/even center rules. Interior placement currently uses a stable Coons
+ * interpolation from the solved profile boundary rather than Blender's complete
+ * cubic-subdivision / pipe / special-triangle implementations. General miters,
+>>>>>>> 2c48464ccb5f254c2f1d4f8ac46c518b2a0d2ac0
  * multi-selected open-fan miters, multiple face-chain gaps and UV interpolation
  * should extend this plan rather than reintroduce per-edge mutation.
  */
